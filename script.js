@@ -403,6 +403,55 @@ class Projectile {
             return;
         }
 
+        if (style === 'crowBolt') {
+            ctx.translate(this.x, this.y);
+            ctx.rotate(angle);
+            ctx.fillStyle = '#2e3646';
+            ctx.shadowColor = 'rgba(110, 165, 255, 0.95)';
+            ctx.shadowBlur = 28;
+            ctx.beginPath();
+            ctx.moveTo(-this.size * 0.45, 0);
+            ctx.lineTo(0, -this.size * 1.12);
+            ctx.lineTo(this.size * 0.45, 0);
+            ctx.lineTo(this.size * 0.28, this.size * 0.35);
+            ctx.lineTo(this.size * 0.18, this.size * 0.2);
+            ctx.lineTo(-this.size * 0.18, this.size * 0.2);
+            ctx.lineTo(-this.size * 0.28, this.size * 0.35);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+            ctx.lineWidth = 2.2;
+            ctx.stroke();
+
+            ctx.fillStyle = 'rgba(150, 185, 235, 0.45)';
+            ctx.beginPath();
+            ctx.moveTo(-this.size * 0.18, -this.size * 0.25);
+            ctx.lineTo(0, -this.size * 0.55);
+            ctx.lineTo(this.size * 0.18, -this.size * 0.25);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(0, this.size * 0.95);
+            ctx.lineTo(-this.size * 0.24, this.size * 0.78);
+            ctx.lineTo(0, this.size * 0.64);
+            ctx.lineTo(this.size * 0.24, this.size * 0.78);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(56, 67, 92, 0.92)';
+            ctx.fill();
+
+            ctx.strokeStyle = 'rgba(120, 180, 255, 0.5)';
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.moveTo(0, -this.size * 1.12);
+            ctx.lineTo(0, this.size * 0.95);
+            ctx.stroke();
+
+            ctx.restore();
+            return;
+        }
+
         if (style === 'basicFire') {
             ctx.fillStyle = this.color;
             ctx.shadowColor = this.color;
@@ -652,13 +701,7 @@ class Monster {
     }
 
     chooseType() {
-        const unlockedTypes = ['shooter', 'swarm', 'caster', 'basic'];
-        const allUnlocked = unlockedTypes.every(type => monsterTypeKills[type]);
-        if (allUnlocked) {
-            unlockedTypes.push('tank');
-        }
-        const index = Math.floor(Math.random() * unlockedTypes.length);
-        return unlockedTypes[index];
+        return chooseMonsterType();
     }
 
     update(playerX, playerY) {
@@ -1221,6 +1264,12 @@ class Monster {
             gradient.addColorStop(0, '#9df4ff');
             gradient.addColorStop(0.4, '#15c7ee');
             gradient.addColorStop(1, '#06314d');
+        } else if (this.type === 'avianightmare') {
+            fillColor = '#2a3245';
+            strokeColor = '#4b5a76';
+            gradient.addColorStop(0, '#758398');
+            gradient.addColorStop(0.4, '#3b4a63');
+            gradient.addColorStop(1, '#11192a');
         } else {
             fillColor = '#cc3333';
             strokeColor = '#ff5d5d';
@@ -1270,6 +1319,47 @@ class Monster {
                 ctx.arc(centerX, centerY, radius * (0.45 + i * 0.16), 0, Math.PI * 2);
                 ctx.stroke();
             }
+        } else if (this.type === 'avianightmare') {
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY - radius * 0.95);
+            ctx.bezierCurveTo(centerX + radius * 0.95, centerY - radius * 0.7, centerX + radius * 0.92, centerY + radius * 0.6, centerX, centerY + radius * 0.95);
+            ctx.bezierCurveTo(centerX - radius * 0.92, centerY + radius * 0.6, centerX - radius * 0.95, centerY - radius * 0.7, centerX, centerY - radius * 0.95);
+            ctx.fill();
+            ctx.strokeStyle = strokeColor;
+            ctx.lineWidth = 5;
+            ctx.stroke();
+
+            // Penas pontiagudas e sombreamento interno
+            ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+            ctx.lineWidth = 2;
+            const featherStart = centerY - radius * 0.2;
+            for (let i = -2; i <= 2; i++) {
+                const offset = i * radius * 0.18;
+                ctx.beginPath();
+                ctx.moveTo(centerX + offset, featherStart);
+                ctx.lineTo(centerX + offset * 0.5, centerY - radius * 0.55);
+                ctx.stroke();
+            }
+
+            // Bico mais ameaçador
+            ctx.fillStyle = '#10131b';
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY + radius * 0.16);
+            ctx.lineTo(centerX - radius * 0.28, centerY + radius * 0.05);
+            ctx.lineTo(centerX - radius * 0.16, centerY + radius * 0.28);
+            ctx.lineTo(centerX + radius * 0.16, centerY + radius * 0.28);
+            ctx.lineTo(centerX + radius * 0.28, centerY + radius * 0.05);
+            ctx.closePath();
+            ctx.fill();
+
+            // Traços sombrios e fissuras
+            ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.moveTo(centerX - radius * 0.34, centerY + radius * 0.2);
+            ctx.lineTo(centerX - radius * 0.08, centerY + radius * 0.36);
+            ctx.lineTo(centerX + radius * 0.34, centerY + radius * 0.2);
+            ctx.stroke();
         } else {
             ctx.beginPath();
             ctx.arc(centerX, centerY, radius * 0.95, 0, Math.PI * 2);
@@ -1289,6 +1379,28 @@ class Monster {
             ctx.fill();
             ctx.beginPath();
             ctx.arc(centerX + tankRadius * 0.22, centerY - tankRadius * 0.16, tankRadius * 0.1, 0, Math.PI * 2);
+            ctx.fill();
+        } else if (this.type === 'avianightmare') {
+            ctx.fillStyle = 'rgba(255,255,255,0.06)';
+            const wingOffset = radius * 0.75;
+            ctx.beginPath();
+            ctx.ellipse(centerX - wingOffset * 0.6, centerY + radius * 0.18, wingOffset * 0.35, radius * 0.18, -0.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(centerX + wingOffset * 0.6, centerY + radius * 0.18, wingOffset * 0.35, radius * 0.18, 0.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.12)';
+            ctx.beginPath();
+            ctx.moveTo(centerX - radius * 0.56, centerY - radius * 0.1);
+            ctx.lineTo(centerX - radius * 0.36, centerY + radius * 0.36);
+            ctx.lineTo(centerX - radius * 0.46, centerY + radius * 0.42);
+            ctx.closePath();
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(centerX + radius * 0.56, centerY - radius * 0.1);
+            ctx.lineTo(centerX + radius * 0.36, centerY + radius * 0.36);
+            ctx.lineTo(centerX + radius * 0.46, centerY + radius * 0.42);
+            ctx.closePath();
             ctx.fill();
         } else {
             ctx.fillStyle = '#ffff88';
@@ -1382,9 +1494,9 @@ let monsterTypeKills = {
     shooter: false,
     swarm: false,
     caster: false,
-    basic: false
+    avianightmare: false
 };
-const baseMonsterTypes = ['shooter', 'swarm', 'caster', 'basic'];
+const baseMonsterTypes = ['shooter', 'swarm', 'caster', 'avianightmare'];
 
 function getAllowedMonsterTypes() {
     const allowed = [...baseMonsterTypes];
@@ -1969,31 +2081,33 @@ function getPlayerProjectileStyle(weaponType) {
 function getProjectileDefaultSize(style) {
     switch (style) {
         case 'bowArrow':
-            return 6;
+            return 8;
         case 'gunBullet':
-            return 5;
-        case 'staffOrb':
-            return 12;
-        case 'coneShard':
-            return 16;
-        case 'spinAttack':
-            return 14;
-        case 'shooterBolt':
-            return 8;
-        case 'tankShell':
-            return 12;
-        case 'swarmPod':
             return 7;
-        case 'casterShard':
-            return 10;
-        case 'casterBurst':
-            return 12;
-        case 'basicFire':
-            return 9;
-        case 'toothBolt':
+        case 'staffOrb':
+            return 14;
+        case 'coneShard':
+            return 18;
+        case 'spinAttack':
             return 16;
+        case 'shooterBolt':
+            return 10;
+        case 'tankShell':
+            return 14;
+        case 'swarmPod':
+            return 10;
+        case 'casterShard':
+            return 12;
+        case 'casterBurst':
+            return 14;
+        case 'basicFire':
+            return 11;
+        case 'crowBolt':
+            return 16;
+        case 'toothBolt':
+            return 18;
         default:
-            return 8;
+            return 10;
     }
 }
 
@@ -2007,6 +2121,8 @@ function getMonsterProjectileStyle(monsterType) {
             return 'swarmPod';
         case 'caster':
             return 'casterBurst';
+        case 'avianightmare':
+            return 'crowBolt';
         default:
             return 'basicFire';
     }
@@ -2298,7 +2414,7 @@ function gameLoop() {
             upgradeOverlayAnimating = true;
         }
 
-        drawCountdownOverlay('Melhorias em breve...', '0,5s', upgradeOverlayY, upgradeOverlayAlpha);
+        drawCountdownOverlay('Melhorias!', 'Pense bem...', upgradeOverlayY, upgradeOverlayAlpha);
     } else if (upgradeOverlayAnimating) {
         player.draw();
         currentMonster.draw();
