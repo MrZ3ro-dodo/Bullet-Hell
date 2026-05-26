@@ -5,34 +5,36 @@
 }
 
 body {
-    font-family: Arial, sans-serif;
-    background-color: #1a1a2e;
-    color: #ffffff;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: radial-gradient(circle at top, #1f3258 0%, #07101f 40%, #03060b 100%);
+    color: #e1e8ff;
     display: flex;
     justify-content: center;
     align-items: center;
     min-height: 100vh;
-    padding: 10px;
+    padding: 12px;
+    overflow-x: hidden;
 }
 
 #gameContainer {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 15px;
+    gap: 16px;
     width: min(100%, 1600px);
-    max-width: none;
 }
 
 #hud {
     display: flex;
     justify-content: space-around;
     width: 100%;
-    background-color: #16213e;
-    padding: 15px;
-    border-radius: 10px;
-    border: 2px solid #0f3460;
-    gap: 30px;
+    background: rgba(6, 16, 37, 0.88);
+    padding: 18px 22px;
+    border-radius: 20px;
+    border: 1px solid rgba(0, 212, 255, 0.18);
+    gap: 26px;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.24);
+    backdrop-filter: blur(10px);
 }
 
 .hudSection {
@@ -40,43 +42,47 @@ body {
     flex-direction: column;
     gap: 8px;
     flex: 1;
+    min-width: 130px;
 }
 
 .hudSection span {
-    font-size: 14px;
-    font-weight: bold;
-    color: #e94560;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #86d0ff;
 }
 
 #phaseDisplay {
     font-size: 18px;
-    color: #00d4ff;
+    color: #7efff7;
 }
 
 .healthBar {
     width: 100%;
     height: 20px;
-    background-color: #0f3460;
-    border-radius: 5px;
+    background: rgba(13, 52, 96, 0.45);
+    border-radius: 999px;
     overflow: hidden;
-    border: 1px solid #00d4ff;
+    border: 1px solid rgba(0, 212, 255, 0.22);
+    position: relative;
 }
 
 .healthBar::after {
     content: '';
-    display: block;
-    height: 100%;
+    position: absolute;
+    inset: 0;
     width: 100%;
-    background: linear-gradient(90deg, #00ff00, #00aa00);
-    background-color: #00ff00;
+    background: linear-gradient(90deg, #72ff72 0%, #00c8ff 40%, #4a8aff 100%);
+    box-shadow: 0 0 18px rgba(0, 212, 255, 0.22);
+    transform-origin: left;
+    transition: width 0.2s ease;
 }
 
 #gameCanvas {
-    border: 3px solid #e94560;
-    background-color: #0f1419;
+    border-radius: 24px;
+    box-shadow: 0 0 72px rgba(0, 212, 255, 0.16), inset 0 0 28px rgba(255, 255, 255, 0.05);
+    background: #060a14;
     display: block;
-    box-shadow: 0 0 20px rgba(233, 69, 96, 0.5);
-    border-radius: 5px;
     width: auto;
     height: auto;
     max-height: calc(100vh - 260px);
@@ -85,20 +91,21 @@ body {
 #gameInfo {
     width: 100%;
     text-align: center;
-    background-color: #16213e;
-    padding: 15px;
-    border-radius: 10px;
-    border: 2px solid #0f3460;
+    background: rgba(7, 18, 34, 0.92);
+    padding: 16px 18px;
+    border-radius: 20px;
+    border: 1px solid rgba(0, 212, 255, 0.16);
+    box-shadow: 0 18px 38px rgba(0, 0, 0, 0.18);
 }
 
 #instructions {
     font-size: 14px;
-    color: #00d4ff;
+    color: #90e6ff;
     margin-bottom: 10px;
 }
 
 #statsDisplay {
-    font-size: 12px;
-    color: #e94560;
+    font-size: 13px;
+    color: #ffd97d;
     line-height: 1.6;
 }
