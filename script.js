@@ -41,12 +41,14 @@ class Projectile {
         this.x = x;
         this.y = y;
         this.size = size;
-        this.speed = speed;
+        // Aplicar redução global de velocidade: reduzir em 50%
+        const actualSpeed = (typeof speed === 'number') ? speed * 0.5 : 0;
+        this.speed = actualSpeed;
         const dx = targetX - x;
         const dy = targetY - y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        this.vx = (dx / dist) * speed;
-        this.vy = (dy / dist) * speed;
+        this.vx = (dx / dist) * actualSpeed;
+        this.vy = (dy / dist) * actualSpeed;
         this.damage = damage;
         this.color = color;
         this.owner = owner;
@@ -59,9 +61,28 @@ class Projectile {
         this.splitOnPlayerAttack = opts.splitOnPlayerAttack || false;
         this.splitDistance = opts.splitDistance || 90;
         this.splitTriggered = false;
+        this.delayTimer = opts.delayTimer || 0;
+        this.delayDuration = opts.delayDuration || 0;
+        this.savedVx = this.vx;
+        this.savedVy = this.vy;
     }
 
     update() {
+        // Se está em delay, não se move ainda
+        if (this.delayTimer > 0) {
+            this.delayTimer--;
+            this.vx = 0;
+            this.vy = 0;
+            return;
+        }
+        
+        // Restaurar velocidade após o delay
+        if (this.delayTimer === 0 && this.delayDuration > 0) {
+            this.vx = this.savedVx;
+            this.vy = this.savedVy;
+            this.delayDuration = 0;
+        }
+        
         if (this.homing && this.homingTarget) {
             const tx = this.homingTarget.x + (this.homingTarget.width || 0) / 2;
             const ty = this.homingTarget.y + (this.homingTarget.height || 0) / 2;
@@ -96,9 +117,9 @@ class Player {
     constructor() {
         this.x = gameWidth / 2;
         this.y = gameHeight - 150;
-        this.width = 15;
-        this.height = 20;
-        this.speed = 3.75;
+        this.width = 12.5;
+        this.height = 12.5;
+        this.speed = 3;
         this.health = 100;
         this.maxHealth = 100;
         this.attackCooldown = 0;
@@ -132,6 +153,8 @@ class Player {
         this.weapon = null;
         this.meleeCritPercent = 0;
         this.coneCritPercent = 0;
+        this.tankHitCount = 0;
+        this.tankHitWindow = 0;
     }
 
     update(keys) {
@@ -165,6 +188,13 @@ class Player {
         }
 
         if (this.attackCooldown > 0) this.attackCooldown--;
+        
+        // Decrementar janela de acertos no tank (0.75 segundos = 45 frames)
+        if (this.tankHitWindow > 0) {
+            this.tankHitWindow--;
+        } else {
+            this.tankHitCount = 0;
+        }
     }
 
     draw() {
@@ -215,7 +245,7 @@ class Monster {
     constructor(phase, type = null) {
         this.phase = phase;
         this.type = type || this.chooseType();
-        this.width = 80 + phase * 20;
+        this.width = 100 + phase * 20;
         this.height = 100 + phase * 20;
         this.x = Math.random() * (gameWidth - this.width);
         this.y = 50 + Math.random() * 100;
@@ -231,20 +261,38 @@ class Monster {
         this.direction = Math.random() > 0.5 ? 1 : -1;
 
         if (this.type === 'shooter') {
-            this.health = 35 + phase * 15;
+            this.health = 50 + phase * 22;
             this.speed = 1 + phase * 0.15;
             this.maxHealth = this.health;
             this.desiredDistance = 250;
             this.projectileSpeed = 6 + phase * 0.5;
         } else if (this.type === 'tank') {
-            this.health = 90 + phase * 40;
+            this.health = 135 + phase * 60;
             this.speed = 1.16 + phase * 0.29;
             this.maxHealth = this.health;
             this.dashCooldown = 100;
             this.dashTimer = 0;
             this.dashSpeed = 7.25 + phase * 1.16;
+            this.triggered75 = false;
+            this.triggered50 = false;
+            this.triggered25 = false;
+        } else if (this.type === 'swarm') {
+            this.health = 55 + phase * 20;
+            this.speed = 1.8 + phase * 0.35;
+            this.maxHealth = this.health;
+            this.swarmCooldown = 0;
+            this.orbitalAngle = 0;
+            this.markSpawnCooldown = 0;
+        } else if (this.type === 'caster') {
+            this.health = 70 + phase * 25;
+            this.speed = 0.5 + phase * 0.1;
+            this.maxHealth = this.health;
+            this.portalCooldown = 0;
+            this.portalTimer = 0;
+            this.portalX = this.x + this.width / 2;
+            this.portalY = this.y + this.height / 2;
         } else {
-            this.health = 50 + phase * 30;
+            this.health = 75 + phase * 45;
             this.speed = 1.45 + phase * 0.725;
             this.maxHealth = this.health;
         }
@@ -252,8 +300,10 @@ class Monster {
 
     chooseType() {
         const roll = Math.random();
-        if (roll < 0.35) return 'shooter';
-        if (roll < 0.65) return 'tank';
+        if (roll < 0.25) return 'shooter';
+        if (roll < 0.45) return 'tank';
+        if (roll < 0.65) return 'swarm';
+        if (roll < 0.8) return 'caster';
         return 'basic';
     }
 
@@ -317,6 +367,21 @@ class Monster {
                 this.areaAttackCooldown--;
             }
         } else if (this.type === 'tank') {
+            // Verificar milestones de vida para spawnar counter attack
+            const healthPercent = this.health / this.maxHealth;
+            if (healthPercent <= 0.75 && !this.triggered75) {
+                this.triggered75 = true;
+                spawnTankCounterAttack();
+            }
+            if (healthPercent <= 0.50 && !this.triggered50) {
+                this.triggered50 = true;
+                spawnTankCounterAttack();
+            }
+            if (healthPercent <= 0.25 && !this.triggered25) {
+                this.triggered25 = true;
+                spawnTankCounterAttack();
+            }
+            
             if (this.dashTimer > 0) {
                 this.x += (dx / dist) * this.dashSpeed;
                 this.y += (dy / dist) * this.dashSpeed;
@@ -361,7 +426,101 @@ class Monster {
                     this.dashCooldown--;
                 }
             }
+        } else if (this.type === 'swarm') {
+            // Swarm: se move rapidamente e spawna enxames de projéteis homing
+            this.x += (dx / dist) * this.speed * 0.8;
+            this.y += (dy / dist) * this.speed * 0.8;
+            
+            this.orbitalAngle += 0.15;
+            
+            if (this.swarmCooldown <= 0) {
+                // Spawna 3 projéteis em formação giratória
+                for (let i = 0; i < 3; i++) {
+                    const angle = this.orbitalAngle + (i * Math.PI * 2 / 3);
+                    const spawnX = this.x + this.width / 2 + Math.cos(angle) * 60;
+                    const spawnY = this.y + this.height / 2 + Math.sin(angle) * 60;
+                    
+                    // 20% de chance de preferir mirar uma marca existente ao invés do jogador
+                    let targetX = playerX;
+                    let targetY = playerY;
+                    let homingOpt = { homing: true, homingTarget: player, homingStrength: 0.08 };
+                    if (Math.random() < 0.2 && swarmMarks.length > 0) {
+                        const mk = swarmMarks[Math.floor(Math.random() * swarmMarks.length)];
+                        targetX = mk.x;
+                        targetY = mk.y;
+                        homingOpt = {}; // ir reto para a marca
+                    }
+                    projectiles.push(new Projectile(
+                        spawnX, spawnY,
+                        targetX, targetY,
+                        this.getAttackDamage() * 0.6,
+                        '#ff00ff',
+                        3.5 + this.phase * 0.2,
+                        'monster',
+                        6,
+                        homingOpt
+                    ));
+                }
+                this.swarmCooldown = Math.max(50, 80 - this.phase * 6);
+            } else {
+                this.swarmCooldown--;
+            }
+            
+            // Spawnar marcas a cada 1.75 segundos (105 frames)
+            if (this.markSpawnCooldown <= 0) {
+                const markX = Math.random() * (gameWidth - 40) + 20;
+                const markY = Math.random() * (gameHeight - 40) + 20;
+                swarmMarks.push({
+                    x: markX,
+                    y: markY,
+                    radius: 15 * 1.5, // aumentar 50%
+                    active: false,
+                    lifetime: 300 // 5 segundos
+                });
+                this.markSpawnCooldown = 105; // 1.75 segundos a 60 fps
+            } else {
+                this.markSpawnCooldown--;
+            }
+        } else if (this.type === 'caster') {
+            // Caster: se move lentamente e spawna portais que disparam projéteis
+            if (dist > 180) {
+                this.x += (dx / dist) * this.speed;
+                this.y += (dy / dist) * this.speed;
+            }
+            
+            if (this.portalCooldown <= 0) {
+                // Spawna portal em locação aleatória próxima ao jogador
+                this.portalX = playerX + (Math.random() - 0.5) * 300;
+                this.portalY = playerY + (Math.random() - 0.5) * 300;
+                this.portalTimer = 45; // Portal ativo por 45 frames
+                this.portalCooldown = 140 - this.phase * 8;
+            } else {
+                this.portalCooldown--;
+            }
+            
+            // Portal atira em padrão estrela do centro
+            if (this.portalTimer > 0) {
+                this.portalTimer--;
+                if (this.portalTimer % 12 === 0) {
+                    const rayCount = 5 + this.phase;
+                    for (let i = 0; i < rayCount; i++) {
+                        const angle = (Math.PI * 2 * i) / rayCount;
+                        const targetX = this.portalX + Math.cos(angle) * 200;
+                        const targetY = this.portalY + Math.sin(angle) * 200;
+                        projectiles.push(new Projectile(
+                            this.portalX, this.portalY,
+                            targetX, targetY,
+                            this.getAttackDamage() * 0.7,
+                            '#00ffff',
+                            4.5 + this.phase * 0.2,
+                            'monster',
+                            7
+                        ));
+                    }
+                }
+            }
         } else {
+            // Basic: padrão original
             if (dist > this.attackRange) {
                 if (dx > 0) this.x += this.speed;
                 else this.x -= this.speed;
@@ -681,6 +840,12 @@ class Monster {
         } else if (this.type === 'tank') {
             ctx.fillStyle = '#770000';
             ctx.strokeStyle = '#ff5555';
+        } else if (this.type === 'swarm') {
+            ctx.fillStyle = '#ff00ff';
+            ctx.strokeStyle = '#ff66ff';
+        } else if (this.type === 'caster') {
+            ctx.fillStyle = '#0099cc';
+            ctx.strokeStyle = '#00ffff';
         } else {
             ctx.fillStyle = '#cc0000';
             ctx.strokeStyle = '#ff0000';
@@ -706,6 +871,33 @@ class Monster {
             ctx.fill();
         }
 
+        if (this.type === 'swarm') {
+            // Desenha padrão giratório ao redor
+            ctx.strokeStyle = '#ff66ff';
+            ctx.lineWidth = 2;
+            for (let i = 0; i < 3; i++) {
+                const angle = this.orbitalAngle + (i * Math.PI * 2 / 3);
+                const px = this.x + this.width / 2 + Math.cos(angle) * 40;
+                const py = this.y + this.height / 2 + Math.sin(angle) * 40;
+                ctx.beginPath();
+                ctx.arc(px, py, 4, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+
+        if (this.type === 'caster') {
+            // Desenha portal ativo se existir
+            if (this.portalTimer > 0) {
+                ctx.fillStyle = 'rgba(0, 255, 255, 0.3)';
+                ctx.beginPath();
+                ctx.arc(this.portalX, this.portalY, 40, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#00ffff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+        }
+
         if (this.attackEffectTimer > 0) {
             ctx.strokeStyle = '#ffff66';
             ctx.lineWidth = 2;
@@ -718,6 +910,8 @@ class Monster {
     getAttackDamage() {
         if (this.type === 'shooter') return 8 + this.phase * 2;
         if (this.type === 'tank') return 12 + this.phase * 4;
+        if (this.type === 'swarm') return 6 + this.phase * 2.5;
+        if (this.type === 'caster') return 7 + this.phase * 3;
         return 5 + this.phase * 3;
     }
 
@@ -747,13 +941,14 @@ let isSelectingWeapon = false;
 let selectedWeaponIndex = 0;
 let projectiles = [];
 let critEffects = [];
+let swarmMarks = [];
 
 const weapons = [
     { name: 'Espada ⚔️', type: 'sword', color: '#ffaa00', cooldown: 0, range: 45, damage: 14 },
     { name: 'Arco 🏹', type: 'bow', color: '#00ff00', cooldown: 90, range: 37.5, damage: 12, speed: 15 },
     { name: 'Varinha 🔮', type: 'staff', color: '#ff00ff', cooldown: 35, range: 25, damage: 22, speed: 0.75 },
-    { name: 'Revolver 🔫', type: 'gun', color: '#ffff00', cooldown: 12, range: 50, damage: 4, speed: 10 },
-    { name: 'Lança Tornado 🌪️', type: 'cone', color: '#83bfd3', cooldown: 35, range: 80, damage: 1, coneAngle: Math.PI / 3 }
+    { name: 'Revolver 🔫', type: 'gun', color: '#ffff00', cooldown: 12, range: 50, damage: 2, speed: 10 },
+    { name: 'Lança Tornado 🌪️', type: 'cone', color: '#83bfd3', cooldown: 35, range: 80, damage: 3, coneAngle: Math.PI / 3 }
 ];
 
 const upgradeOptions = [
@@ -979,6 +1174,41 @@ function updateProjectiles() {
         projectiles.splice(index, 1);
     });
     
+    // Verificar colisões com marcas do swarm
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+        const p = projectiles[i];
+        for (let j = swarmMarks.length - 1; j >= 0; j--) {
+            const mark = swarmMarks[j];
+            const dx = p.x - mark.x;
+            const dy = p.y - mark.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance < mark.radius + p.size) {
+                // Projectile atingiu a marca - gerar 3 projéteis retos aleatórios
+                for (let k = 0; k < 3; k++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const targetX = mark.x + Math.cos(angle) * 200;
+                    const targetY = mark.y + Math.sin(angle) * 200;
+                    const baseSize = 6;
+                    const sizeFromMark = Math.max(1, Math.round(baseSize * 2.75)); // +175%
+                    projectiles.push(new Projectile(
+                        mark.x, mark.y,
+                        targetX, targetY,
+                        8,
+                        '#ffff00',
+                        5 + Math.random() * 3,
+                        'player',
+                        sizeFromMark
+                    ));
+                }
+                
+                // Remover a marca
+                swarmMarks.splice(j, 1);
+                break;
+            }
+        }
+    }
+    
     for (let i = projectiles.length - 1; i >= 0; i--) {
         projectiles[i].update();
         
@@ -1028,6 +1258,20 @@ function updateProjectiles() {
             
             if (isHit) {
                 currentMonster.takeDamage(p.damage);
+                
+                // Rastrear acertos no tank
+                if (currentMonster.type === 'tank') {
+                    player.tankHitCount++;
+                    player.tankHitWindow = 45; // 0.75 segundos a 60 fps
+                    
+                    // Se atingiu 3 acertos, spawnar habilidade
+                    if (player.tankHitCount >= 3) {
+                        spawnTankCounterAttack();
+                        player.tankHitCount = 0;
+                        player.tankHitWindow = 0;
+                    }
+                }
+                
                 projectiles.splice(i, 1);
                     if (p.critPercent > 0) {
                         critEffects.push({
@@ -1160,6 +1404,40 @@ function drawProjectiles() {
     }
 }
 
+function updateAndDrawSwarmMarks() {
+    for (let i = swarmMarks.length - 1; i >= 0; i--) {
+        const mark = swarmMarks[i];
+        
+        // Decrementar lifetime
+        mark.lifetime--;
+        
+        // Desenhar a marca
+        if (mark.active) {
+            ctx.fillStyle = 'rgba(255, 0, 255, 0.6)';
+            ctx.beginPath();
+            ctx.arc(mark.x, mark.y, mark.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#ff00ff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        } else {
+            // Marca inativa - desenhar com estilo diferente
+            ctx.fillStyle = 'rgba(255, 0, 255, 0.2)';
+            ctx.beginPath();
+            ctx.arc(mark.x, mark.y, mark.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255, 0, 255, 0.4)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+        
+        // Remover marcas expiradas
+        if (mark.lifetime <= 0) {
+            swarmMarks.splice(i, 1);
+        }
+    }
+}
+
 function spawnPlayerProjectile(x, y, targetX, targetY, damage, color, speed, opts = {}) {
     const size = opts.size || 8;
     const proj = new Projectile(x, y, targetX, targetY, damage, color, speed, 'player', size);
@@ -1171,6 +1449,41 @@ function spawnPlayerProjectile(x, y, targetX, targetY, damage, color, speed, opt
     }
     projectiles.push(proj);
     return proj;
+}
+
+function spawnTankCounterAttack() {
+    const playerCenterX = player.x + player.width / 2;
+    const playerCenterY = player.y + player.height / 2;
+    const distance = 80;
+    const speed = 6;
+    const delayFrames = 36; // 0.6 segundos a 60 fps
+    
+    // Direções dos 4 projéteis (cima, direita, baixo, esquerda) com variação diagonal
+    const baseDirections = [
+        { x: 0, y: -1 },    // Cima
+        { x: 1, y: 0 },     // Direita
+        { x: 0, y: 1 },     // Baixo
+        { x: -1, y: 0 }     // Esquerda
+    ];
+    
+    for (let dir of baseDirections) {
+        // Adicionar variação diagonal aleatória (-0.4 a 0.4 em cada eixo)
+        const diagonalX = dir.x + (Math.random() - 0.5) * 0.8;
+        const diagonalY = dir.y + (Math.random() - 0.5) * 0.8;
+        
+        const spawnX = playerCenterX + diagonalX * distance;
+        const spawnY = playerCenterY + diagonalY * distance;
+        
+        // Inverter direção: projéteis vêm em direção ao jogador (negativo)
+        const targetX = spawnX - diagonalX * 200;
+        const targetY = spawnY - diagonalY * 200;
+        
+        const proj = new Projectile(spawnX, spawnY, targetX, targetY, 8, '#ffff00', speed, 'player', 10, {
+            delayTimer: delayFrames,
+            delayDuration: delayFrames
+        });
+        projectiles.push(proj);
+    }
 }
 
 function drawCritEffects() {
@@ -1368,6 +1681,8 @@ function gameLoop() {
         player.update(keys);
         currentMonster.update(player.x + player.width / 2, player.y + player.height / 2);
         updateProjectiles();
+        updateProjectiles();
+        updateAndDrawSwarmMarks();
         updateDelayedShots();
 
         // Verificar colisão de contato com o monstro (AABB - Axis-Aligned Bounding Box)
