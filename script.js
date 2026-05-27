@@ -745,7 +745,7 @@ class Player {
         this.meleeHitRegistered = false;
         this.coneHitRegistered = false;
         this.attackRange = 80;
-        this.baseDamage = 3.5;
+        this.baseDamage = 1.0;
         this.coneDirection = 0;
         this.coneAngle = Math.PI / 3;
         this.coneRange = 0;
@@ -1021,6 +1021,8 @@ class Monster {
         this.stunTimer = 0;
         this.tookDamage = false;
         this.direction = Math.random() > 0.5 ? 1 : -1;
+        this.shakeTimer = 0;
+        this.fleeTimer = 0;
 
         if (this.type === 'shooter') {
             this.health = 50 + phase * 22;
@@ -1073,9 +1075,12 @@ class Monster {
     }
 
     update(playerX, playerY) {
-        const dx = playerX - this.x;
-        const dy = playerY - this.y;
+        const monsterCenterX = this.x + this.width / 2;
+        const monsterCenterY = this.y + this.height / 2;
+        const dx = playerX - monsterCenterX;
+        const dy = playerY - monsterCenterY;
         const dist = Math.sqrt(dx * dx + dy * dy);
+        const safeDist = Math.max(dist, 0.0001);
 
         if (this.stunTimer > 0) {
             this.stunTimer--;
@@ -1083,14 +1088,40 @@ class Monster {
         }
 
         if (this.type === 'shooter') {
-            if (dist < this.desiredDistance * 0.8) {
-                const awayX = (this.x - playerX) / dist;
-                const awayY = (this.y - playerY) / dist;
+            const closeThreshold = 170;
+            if (dist < closeThreshold && this.shakeTimer === 0 && this.fleeTimer === 0) {
+                this.shakeTimer = 20;
+            }
+
+            if (this.shakeTimer > 0) {
+                this.shakeTimer--;
+                if (this.shakeTimer === 0) {
+                    this.fleeTimer = 30;
+                }
+            }
+
+            if (this.shakeTimer > 0 || this.fleeTimer > 0) {
+                if (Math.random() < 0.4) {
+                    spawnSweatEffect(monsterCenterX + (Math.random() - 0.5) * this.width * 0.6,
+                        this.y + this.height * 0.18);
+                }
+            }
+
+            if (this.fleeTimer > 0) {
+                this.fleeTimer--;
+                const awayX = (monsterCenterX - playerX) / safeDist;
+                const awayY = (monsterCenterY - playerY) / safeDist;
+                const fleeSpeed = this.speed * 1.8;
+                this.x += awayX * fleeSpeed;
+                this.y += awayY * fleeSpeed;
+            } else if (dist < this.desiredDistance * 0.8) {
+                const awayX = (monsterCenterX - playerX) / safeDist;
+                const awayY = (monsterCenterY - playerY) / safeDist;
                 this.x += awayX * this.speed;
                 this.y += awayY * this.speed;
             } else if (dist > this.desiredDistance + 40) {
-                this.x += (dx / dist) * this.speed * 0.6;
-                this.y += (dy / dist) * this.speed * 0.6;
+                this.x += (dx / safeDist) * this.speed * 0.6;
+                this.y += (dy / safeDist) * this.speed * 0.6;
             } else {
                 this.x += this.speed * (Math.random() > 0.5 ? 1 : -1);
             }
@@ -1686,6 +1717,12 @@ class Monster {
 
     draw() {
         ctx.save();
+        if (this.type === 'shooter' && this.shakeTimer > 0) {
+            const shakeAmount = 8;
+            const shakeX = (Math.random() - 0.5) * shakeAmount;
+            const shakeY = (Math.random() - 0.5) * shakeAmount;
+            ctx.translate(shakeX, shakeY);
+        }
         const centerX = this.x + this.width / 2;
         const centerY = this.y + this.height / 2;
         const radius = Math.max(this.width, this.height) / 2;
@@ -1989,6 +2026,7 @@ let upgradeOverlayAlpha = 1;
 let upgradeOverlayAnimating = false;
 let projectiles = [];
 let critEffects = [];
+let sweatEffects = [];
 let evaporationEffects = [];
 let swarmMarks = [];
 let monsterHitscans = [];
@@ -2003,6 +2041,7 @@ let lastMonsterType = null;
 let phaseMonsterTypes = new Set();
 let prevPhaseMonsterTypes = new Set();
 let selectionBackgroundTick = 0;
+let frameFreeze = 0;
 const selectionBackgroundParticles = Array.from({ length: 24 }, () => ({
     x: Math.random() * (gameWidth || 800),
     y: Math.random() * (gameHeight || 600),
@@ -2945,7 +2984,7 @@ function handleParryProjectile(proj) {
     // Change ownership to player and retarget toward current monster if present
     proj.owner = 'player';
     const currentSpeed = Math.hypot(proj.vx || 0, proj.vy || 0) || 3;
-    const speed = currentSpeed * 3.5; // increased parry speed
+    const speed = currentSpeed * 5.0; // increased parry speed
     let targetX, targetY;
     if (currentMonster) {
         targetX = currentMonster.x + currentMonster.width / 2;
@@ -2962,13 +3001,15 @@ function handleParryProjectile(proj) {
     proj.vy = (dy / dist) * speed;
     proj.color = '#ffffff';
     proj.size = Math.max(proj.size, 8);
-    proj.damage = Math.max(1, Math.round((proj.damage || 1) * 1.8)); // increased parry damage
+    proj.damage = Math.max(1, Math.round((proj.damage || 1) * 2.2)); // increased parry damage
     proj.style = proj.style || 'gunBullet';
     proj.hitTarget = false;
     proj.immortal = false;
     spawnEvaporationForProjectile(proj);
     // allow this parried projectile to destroy other enemy projectiles on touch
     proj.canDestroyOnTouch = true;
+    // Freeze everything visually for 1 frame to emphasize parry
+    frameFreeze = 2;
 }
 
 function drawEvaporationEffects() {
@@ -3238,6 +3279,53 @@ function drawCritEffects() {
         ctx.textAlign = 'center';
         ctx.fillText(effect.text, effect.x, effect.y);
         ctx.globalAlpha = 1;
+    }
+}
+
+function spawnSweatEffect(x, y) {
+    const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.9;
+    const speed = 0.8 + Math.random() * 1.4;
+    sweatEffects.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed * 0.35,
+        vy: Math.sin(angle) * speed * 0.55 - 0.2,
+        life: 22 + Math.floor(Math.random() * 12),
+        alpha: 1,
+        size: 22 + Math.random() * 10,
+        text: '💦',
+        wobble: Math.random() * 0.08
+    });
+}
+
+function updateSweatEffects() {
+    for (let i = sweatEffects.length - 1; i >= 0; i--) {
+        const effect = sweatEffects[i];
+        effect.x += effect.vx;
+        effect.y += effect.vy;
+        effect.vy -= 0.02;
+        effect.life -= 1;
+        effect.alpha = Math.max(0, effect.life / 30);
+        effect.size *= 0.995;
+        effect.wobble += 0.04;
+        if (effect.life <= 0 || effect.alpha <= 0) {
+            sweatEffects.splice(i, 1);
+        }
+    }
+}
+
+function drawSweatEffects() {
+    for (let effect of sweatEffects) {
+        ctx.save();
+        ctx.globalAlpha = effect.alpha;
+        ctx.fillStyle = '#82d2ff';
+        ctx.font = `bold ${Math.round(effect.size)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const x = effect.x + Math.sin(effect.wobble) * 2;
+        const y = effect.y + Math.cos(effect.wobble) * 2;
+        ctx.fillText(effect.text, x, y);
+        ctx.restore();
     }
 }
 
@@ -3616,6 +3704,25 @@ function gameLoop() {
             return;
         }
 
+        // Se frameFreeze ativo, pular atualizações por 1 frame (apenas desenhar)
+        if (frameFreeze > 0) {
+            frameFreeze--;
+            player.draw();
+            currentMonster.draw();
+            drawProjectiles();
+            drawMonsterHitscans();
+            drawCritEffects();
+            updateHealthBars();
+            updateUI();
+            // overlay esbranquiçado durante o freeze (20% branco)
+            ctx.save();
+            ctx.fillStyle = 'rgba(255,255,255,0.20)';
+            ctx.fillRect(0, 0, gameWidth, gameHeight);
+            ctx.restore();
+            requestAnimationFrame(gameLoop);
+            return;
+        }
+
         // Atualizar
         player.update(keys);
         currentMonster.update(player.x + player.width / 2, player.y + player.height / 2);
@@ -3665,6 +3772,7 @@ function gameLoop() {
         drawProjectiles();
         drawMonsterHitscans();
         drawCritEffects();
+        drawSweatEffects();
         updateHealthBars();
         updateUI();
     }
