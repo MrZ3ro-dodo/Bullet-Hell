@@ -1,6 +1,20 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
+let mouseX = 0;
+let mouseY = 0;
+
+canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+    if (typeof player !== 'undefined' && player) {
+        const px = player.x + player.width / 2;
+        const py = player.y + player.height / 2;
+        player.swordAimAngle = Math.atan2(mouseY - py, mouseX - px);
+    }
+});
+
 let gameWidth;
 let gameHeight;
 
@@ -19,6 +33,22 @@ function resizeGameCanvas() {
     canvas.height = gameHeight;
     canvas.style.width = `${gameWidth}px`;
     canvas.style.height = `${gameHeight}px`;
+}
+
+// retorna a distância mínima do ponto (px,py) ao segmento (x1,y1)-(x2,y2)
+function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
+    const vx = x2 - x1;
+    const vy = y2 - y1;
+    const wx = px - x1;
+    const wy = py - y1;
+    const c1 = vx * wx + vy * wy;
+    if (c1 <= 0) return Math.hypot(px - x1, py - y1);
+    const c2 = vx * vx + vy * vy;
+    if (c2 <= c1) return Math.hypot(px - x2, py - y2);
+    const b = c1 / c2;
+    const bx = x1 + b * vx;
+    const by = y1 + b * vy;
+    return Math.hypot(px - bx, py - by);
 }
 
 window.addEventListener('resize', () => {
@@ -58,7 +88,7 @@ class Projectile {
         this.homing = opts.homing || false;
         this.homingTarget = opts.homingTarget || null;
         this.homingStrength = opts.homingStrength || 0.06;
-        this.homingDuration = typeof opts.homingDuration === 'number' ? opts.homingDuration : 0;
+        this.homingDuration = typeof opts.homingDuration === 'number' ? opts.homingDuration : -1;
         this.splitOnPlayerAttack = opts.splitOnPlayerAttack || false;
         this.splitDistance = opts.splitDistance || 90;
         this.splitTriggered = false;
@@ -72,6 +102,8 @@ class Projectile {
         this.pullRadius = opts.pullRadius || 0;
         this.lifetime = opts.lifetime || null;
         this.immortal = opts.immortal || false;
+        this.rotation = opts.rotation || 0;
+        this.rotationSpeed = opts.rotationSpeed || 0;
         this.savedVx = this.vx;
         this.savedVy = this.vy;
     }
@@ -118,6 +150,7 @@ class Projectile {
         this.x += this.vx;
         this.y += this.vy;
         this.traveled += Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+        this.rotation += this.rotationSpeed;
     }
 
     draw() {
@@ -287,12 +320,17 @@ class Projectile {
         if (style === 'tornadoLance') {
             ctx.translate(this.x, this.y);
             ctx.rotate(angle);
-            ctx.fillStyle = this.color;
-            ctx.shadowColor = this.color;
-            ctx.shadowBlur = 14;
-            const shaftLength = Math.max(18, this.size * 8);
-            const shaftWidth = Math.max(2, this.size * 0.4);
+            ctx.shadowColor = 'rgba(170, 235, 255, 0.9)';
+            ctx.shadowBlur = 22;
+            const shaftLength = Math.max(18, this.size * 10);
+            const shaftWidth = Math.max(2.8, this.size * 0.5);
 
+            const shaftGrad = ctx.createLinearGradient(-shaftLength * 0.15, 0, shaftLength + this.size * 1.6, 0);
+            shaftGrad.addColorStop(0, 'rgba(105, 175, 255, 0.35)');
+            shaftGrad.addColorStop(0.3, 'rgba(130, 215, 255, 0.95)');
+            shaftGrad.addColorStop(0.6, 'rgba(210, 245, 255, 1)');
+            shaftGrad.addColorStop(1, 'rgba(90, 150, 255, 0.95)');
+            ctx.fillStyle = shaftGrad;
             ctx.beginPath();
             ctx.moveTo(-shaftLength * 0.15, -shaftWidth);
             ctx.lineTo(shaftLength, -shaftWidth);
@@ -302,18 +340,8 @@ class Projectile {
             ctx.closePath();
             ctx.fill();
 
-            ctx.fillStyle = '#c8d9ff';
-            ctx.beginPath();
-            ctx.moveTo(shaftLength * 0.6, -shaftWidth);
-            ctx.lineTo(shaftLength * 0.6, shaftWidth);
-            ctx.lineTo(shaftLength * 0.45, shaftWidth * 1.8);
-            ctx.lineTo(shaftLength * 0.2, 0);
-            ctx.lineTo(shaftLength * 0.45, -shaftWidth * 1.8);
-            ctx.closePath();
-            ctx.fill();
-
-            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-            ctx.lineWidth = 1.4;
+            ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+            ctx.lineWidth = 1.8;
             ctx.beginPath();
             ctx.moveTo(-shaftLength * 0.15, -shaftWidth);
             ctx.lineTo(shaftLength, -shaftWidth);
@@ -323,6 +351,39 @@ class Projectile {
             ctx.closePath();
             ctx.stroke();
 
+            ctx.fillStyle = 'rgba(220, 245, 255, 0.93)';
+            ctx.beginPath();
+            ctx.moveTo(shaftLength * 0.55, -shaftWidth * 1.2);
+            ctx.lineTo(shaftLength * 0.6, -shaftWidth);
+            ctx.lineTo(shaftLength * 0.75, 0);
+            ctx.lineTo(shaftLength * 0.6, shaftWidth);
+            ctx.lineTo(shaftLength * 0.55, shaftWidth * 1.2);
+            ctx.lineTo(shaftLength * 0.35, shaftWidth * 0.6);
+            ctx.lineTo(shaftLength * 0.35, -shaftWidth * 0.6);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            ctx.beginPath();
+            ctx.moveTo(shaftLength * 0.72, 0);
+            ctx.lineTo(shaftLength * 0.51, -shaftWidth * 1.05);
+            ctx.lineTo(shaftLength * 0.51, shaftWidth * 1.05);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.strokeStyle = 'rgba(170,235,255,0.75)';
+            ctx.lineWidth = 2.2;
+            ctx.beginPath();
+            ctx.moveTo(shaftLength * 0.25, 0);
+            ctx.quadraticCurveTo(shaftLength * 0.4, -shaftWidth * 3.5, shaftLength * 0.55, -shaftWidth * 1.2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(shaftLength * 0.25, 0);
+            ctx.quadraticCurveTo(shaftLength * 0.4, shaftWidth * 3.5, shaftLength * 0.55, shaftWidth * 1.2);
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+            ctx.lineWidth = 1.4;
             ctx.beginPath();
             ctx.moveTo(-shaftLength * 0.15, -shaftWidth);
             ctx.lineTo(-shaftLength * 0.25, 0);
@@ -335,23 +396,72 @@ class Projectile {
 
             if (style === 'tornadoHurricane') {
             ctx.translate(this.x, this.y);
-            const grad = ctx.createRadialGradient(0, 0, this.size * 0.3, 0, 0, this.size * 1.4);
-            grad.addColorStop(0, 'rgba(255,255,255,0.95)');
-            grad.addColorStop(0.2, 'rgba(145, 230, 255, 0.95)');
-            grad.addColorStop(0.45, 'rgba(95, 190, 255, 0.75)');
-            grad.addColorStop(1, 'rgba(20, 80, 170, 0.15)');
-            ctx.fillStyle = grad;
+            ctx.rotate(this.rotation);
+            ctx.shadowColor = 'rgba(170, 235, 255, 0.4)';
+            ctx.shadowBlur = 20;
+            const outerRadius = this.size * 1.55;
+            const swirlRadius = this.size * 1.18;
+            const coreRadius = this.size * 0.9;
+
+            const baseGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, outerRadius);
+            baseGrad.addColorStop(0, 'rgba(255,255,255,0.95)');
+            baseGrad.addColorStop(0.2, 'rgba(190, 240, 255, 0.9)');
+            baseGrad.addColorStop(0.5, 'rgba(125, 205, 255, 0.85)');
+            baseGrad.addColorStop(1, 'rgba(20, 75, 170, 0.18)');
+            ctx.fillStyle = baseGrad;
             ctx.beginPath();
-            ctx.arc(0, 0, this.size * 1.4, 0, Math.PI * 2);
+            ctx.arc(0, 0, outerRadius, 0, Math.PI * 2);
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-            ctx.lineWidth = 4;
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+            ctx.lineWidth = 3.2;
             ctx.beginPath();
-            ctx.arc(0, 0, this.size * 0.85, 0, Math.PI * 2);
+            ctx.arc(0, 0, this.size * 1.05, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(180, 235, 255, 0.9)';
+            ctx.lineWidth = 8;
+            ctx.beginPath();
+            ctx.arc(0, 0, swirlRadius, -Math.PI * 0.35, Math.PI * 0.85);
             ctx.stroke();
             ctx.beginPath();
-            ctx.arc(0, 0, this.size * 1.15, 0, Math.PI * 2);
+            ctx.arc(0, 0, swirlRadius + this.size * 0.12, Math.PI * 0.05, Math.PI * 1.5);
             ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+            ctx.lineWidth = 2.4;
+            for (let i = 0; i < 4; i++) {
+                const angle = i * Math.PI / 2 + (this.x + this.y) * 0.004;
+                ctx.beginPath();
+                ctx.arc(Math.cos(angle) * this.size * 0.35, Math.sin(angle) * this.size * 0.35, this.size * 0.7, angle - 0.7, angle + 0.7);
+                ctx.stroke();
+            }
+
+            const coreGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, coreRadius);
+            coreGrad.addColorStop(0, 'rgba(255,255,255,0.98)');
+            coreGrad.addColorStop(0.45, 'rgba(210, 245, 255, 0.92)');
+            coreGrad.addColorStop(1, 'rgba(135, 205, 255, 0.55)');
+            ctx.fillStyle = coreGrad;
+            ctx.beginPath();
+            ctx.arc(0, 0, coreRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            ctx.arc(0, 0, coreRadius * 0.55, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(-coreRadius * 0.26, -coreRadius * 0.08);
+            ctx.quadraticCurveTo(-coreRadius * 0.08, -coreRadius * 0.3, coreRadius * 0.35, -coreRadius * 0.18);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(-coreRadius * 0.15, coreRadius * 0.3);
+            ctx.quadraticCurveTo(coreRadius * 0.15, coreRadius * 0.08, coreRadius * 0.38, coreRadius * 0.04);
+            ctx.stroke();
+
             ctx.restore();
             return;
         }
@@ -652,15 +762,26 @@ class Player {
         this.extraProjectiles = 0;
         this.spreadProjectiles = 0;
         this.attackMove = 0;
+        this.spinAttackLevel = 0;
         this.spinAttack = false;
+        this.spinAttackCharges = 0;
         this.attackSpeed = 0;
         this.projectileSpeedBonus = 0;
         this.weapon = null;
         this.meleeCritPercent = 0;
         this.coneCritPercent = 0;
+        this.meleeDirection = 0;
+        this.meleeAngle = 160 * Math.PI / 180;
+        this.swordAimAngle = 0;
+        this.swordAlwaysActive = true;
+        this.swordThickness = 18;
+        this.swordHitCooldown = 0;
+        this.parryCooldown = 0;
+        this.parryMax = 240;
         this.tornadoMissCount = 0;
         this.tornadoBurst = null;
         this.hurricaneCooldown = 0;
+        this.hurricaneCooldownMax = 180;
         this.tankHitCount = 0;
         this.tankHitWindow = 0;
     }
@@ -692,10 +813,17 @@ class Player {
                 this.coneHitRegistered = false;
                 this.meleeCritPercent = 0.2;
                 this.coneCritPercent = 0.9;
+                this.slashAlpha = 0;
             }
         }
 
         if (this.attackCooldown > 0) this.attackCooldown--;
+        if (this.parryCooldown > 0) this.parryCooldown--;
+        if (this.slashTimer > 0) {
+            this.slashTimer--;
+            this.slashAlpha = Math.max(0, this.slashAlpha - 0.1);
+        }
+        if (this.swordHitCooldown > 0) this.swordHitCooldown--;
         
         // Decrementar janela de acertos no tank (0.75 segundos = 45 frames)
         if (this.tankHitWindow > 0) {
@@ -749,6 +877,73 @@ class Player {
                 ctx.closePath();
                 ctx.fill();
                 ctx.stroke();
+            } else if (this.weapon && this.weapon.type === 'sword') {
+                const px = this.x + this.width / 2;
+                const py = this.y + this.height / 2;
+                const extraRange = Math.max(0, this.attackRange - 80);
+                const swordLen = (this.weapon.range || 45) + extraRange;
+                const aim = (typeof this.swordAimAngle === 'number') ? this.swordAimAngle : this.meleeDirection || 0;
+
+                // faint arc showing sword reach
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+                ctx.strokeStyle = '#ffd880';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(px, py);
+                ctx.arc(px, py, swordLen, aim - (this.meleeAngle || (160 * Math.PI / 180)) / 2, aim + (this.meleeAngle || (160 * Math.PI / 180)) / 2);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                // draw sword pointing to mouse
+                ctx.save();
+                ctx.translate(px, py);
+                ctx.rotate(aim);
+
+                // handle
+                ctx.fillStyle = '#6b4b2a';
+                ctx.fillRect(-6, -6, 12, 12);
+
+                // blade
+                ctx.beginPath();
+                ctx.moveTo(12, -4);
+                ctx.lineTo(swordLen, 0);
+                ctx.lineTo(12, 4);
+                ctx.closePath();
+                ctx.fillStyle = this.weapon.color || '#ffd880';
+                ctx.shadowColor = this.weapon.color || '#ffd880';
+                ctx.shadowBlur = 14;
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+
+                // small fuller/edge highlight
+                ctx.beginPath();
+                ctx.moveTo(12, -1.5);
+                ctx.lineTo(swordLen * 0.9, 0);
+                ctx.lineTo(12, 1.5);
+                ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+
+                ctx.restore();
+
+                // optional slash indicator while attacking
+                if (this.slashTimer > 0) {
+                    ctx.save();
+                    ctx.translate(px, py);
+                    ctx.rotate(aim);
+                    ctx.globalAlpha = Math.max(0, this.slashAlpha || 0);
+                    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(swordLen * 0.2, -8);
+                    ctx.lineTo(swordLen * 0.9, 0);
+                    ctx.lineTo(swordLen * 0.2, 8);
+                    ctx.stroke();
+                    ctx.restore();
+                }
             } else {
                 ctx.strokeStyle = '#ffff00';
                 ctx.lineWidth = 3;
@@ -756,9 +951,43 @@ class Player {
                     ? this.weapon.range + Math.max(0, this.attackRange - 80)
                     : this.attackRange;
                 ctx.beginPath();
-                ctx.arc(this.x + this.width / 2, this.y + this.height / 2, meleeRadius, 0, Math.PI * 2);
+                if (this.weapon && this.weapon.type === 'sword') {
+                    ctx.arc(this.x + this.width / 2, this.y + this.height / 2, meleeRadius, this.meleeDirection - this.meleeAngle / 2, this.meleeDirection + this.meleeAngle / 2);
+                } else {
+                    ctx.arc(this.x + this.width / 2, this.y + this.height / 2, meleeRadius, 0, Math.PI * 2);
+                }
                 ctx.stroke();
             }
+        }
+        // draw sword even when not actively attacking if always active
+        if (!this.attacking && this.weapon && this.weapon.type === 'sword' && this.swordAlwaysActive) {
+            const px = this.x + this.width / 2;
+            const py = this.y + this.height / 2;
+            const extraRange = Math.max(0, this.attackRange - 80);
+            const swordLen = (this.weapon.range || 45) + extraRange;
+            const aim = (typeof this.swordAimAngle === 'number') ? this.swordAimAngle : this.meleeDirection || 0;
+
+            ctx.save();
+            ctx.translate(px, py);
+            ctx.rotate(aim);
+
+            ctx.fillStyle = '#6b4b2a';
+            ctx.fillRect(-5, -5, 10, 10);
+
+            ctx.beginPath();
+            ctx.moveTo(10, -3);
+            ctx.lineTo(swordLen, 0);
+            ctx.lineTo(10, 3);
+            ctx.closePath();
+            ctx.fillStyle = this.weapon.color || '#ffd880';
+            ctx.shadowColor = this.weapon.color || '#ffd880';
+            ctx.shadowBlur = 12;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            ctx.restore();
         }
     }
 
@@ -789,6 +1018,7 @@ class Monster {
         this.dashCooldown = 0;
         this.dashTimer = 0;
         this.splitAttackCooldown = 0;
+        this.stunTimer = 0;
         this.tookDamage = false;
         this.direction = Math.random() > 0.5 ? 1 : -1;
 
@@ -846,6 +1076,11 @@ class Monster {
         const dx = playerX - this.x;
         const dy = playerY - this.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (this.stunTimer > 0) {
+            this.stunTimer--;
+            return;
+        }
 
         if (this.type === 'shooter') {
             if (dist < this.desiredDistance * 0.8) {
@@ -1754,6 +1989,7 @@ let upgradeOverlayAlpha = 1;
 let upgradeOverlayAnimating = false;
 let projectiles = [];
 let critEffects = [];
+let evaporationEffects = [];
 let swarmMarks = [];
 let monsterHitscans = [];
 let monsterTypeKills = {
@@ -1871,8 +2107,8 @@ const weapons = [
     { name: 'Revolver 🔫', type: 'gun', color: '#ffff00', cooldown: 12, range: 50, damage: 2, speed: 10 },
     { name: 'Arco 🏹', type: 'bow', color: '#00ff00', cooldown: 90, range: 37.5, damage: 12, speed: 15 },
     { name: 'Varinha 🔮', type: 'staff', color: '#ff00ff', cooldown: 35, range: 25, damage: 22, speed: 0.75 },
-    { name: 'Espada ⚔️', type: 'sword', color: '#ffaa00', cooldown: 0, range: 45, damage: 14 },
-    { name: 'Lança Tornado 🌪️', type: 'cone', color: '#83bfd3', cooldown: 35, range: 80, damage: 3, coneAngle: Math.PI / 3 }
+    { name: 'Espada ⚔️', type: 'sword', color: '#ffaa00', cooldown: 0, range: 90, damage: 14 },
+    { name: 'Lança Tornado 🌪️', type: 'cone', color: '#83bfd3', cooldown: 35, range: 80, damage: 1, coneAngle: Math.PI / 3 }
 ];
 
 const upgradeOptions = [
@@ -1889,7 +2125,7 @@ const upgradeOptions = [
     { name: 'Projéteis +0.5', effect: 'extraProjectiles', value: 0.5, desc: 'Dispara 2 projéteis extras em ataques à distância.' },
     { name: 'Tiro em Cone +0.5', effect: 'spreadProjectiles', value: 0.5, desc: 'Dispara projéteis em um cone mais amplo.' },
     { name: 'Tiro Tardio +1', effect: 'lateShots', value: 1, desc: 'Após atirar, um novo projétil aparece no ponto do último tiro. Cada nível concede um projétil tardio adicional.' },
-    { name: 'Ataque Triplo', effect: 'spinAttack', value: 1, desc: 'Ataque automático no início do combate.' },
+    { name: 'Ataque Triplo', effect: 'spinAttack', value: 1, desc: 'Libera um ataque triplo automático no início do combate e, a cada nível extra, adiciona um projétil triplo com efeitos aleatórios.' },
     { name: 'Ataque Rápido +10%', effect: 'attackSpeed', value: 0.1, desc: 'Aumenta a velocidade de ataque em 10%.' },
     { name: 'Tiro Veloz +2', effect: 'projectileSpeedBonus', value: 2, desc: 'Aumenta a velocidade dos projéteis.' }
 ];
@@ -1994,16 +2230,21 @@ function attemptAttack() {
         const baseWeaponDamage = weapon.damage + player.weaponDamage + player.baseDamage;
         const critRoll = Math.random() * 100;
         const critMultiplier = critRoll < player.critChance ? 1 + player.critDamage : 1;
-        const critPercent = critMultiplier > 1 ? player.critDamage : 0;
+        const critPercent = critMultiplier > 1 ? player.critDamage + player.coneCritPercent : 0;
         const attackDamage = Math.round(baseWeaponDamage * critMultiplier);
         const cooldown = Math.max(1, weapon.cooldown - player.cooldownReduction);
         const baseAngle = Math.atan2(targetY - (player.y + player.height / 2), targetX - (player.x + player.width / 2));
+        const specialAttackSpeed = Math.max(6, (weapon.speed || 12) + player.projectileSpeedBonus);
 
         if (weapon.type === 'sword') {
             player.attacking = true;
             player.meleeAttacking = true;
             player.meleeTimer = 14;
             player.meleeHitRegistered = false;
+            player.meleeDirection = (player.swordAimAngle !== undefined) ? player.swordAimAngle : baseAngle;
+            player.meleeAngle = 160 * Math.PI / 180;
+            player.slashTimer = 12;
+            player.slashAlpha = 1;
             player.attackCooldown = Math.max(1, cooldown - Math.round(cooldown * player.attackSpeed));
         } else if (weapon.type === 'cone') {
             player.attacking = true;
@@ -2015,23 +2256,25 @@ function attemptAttack() {
             player.coneRange = weapon.range;
 
             if (!player.tornadoBurst || !player.tornadoBurst.active) {
-                const baseTornadoSpeed = ((weapon.speed || 12) + player.projectileSpeedBonus) * 0.25;
+                const baseTornadoSpeed = ((weapon.speed || 12) + player.projectileSpeedBonus) * 0.25 * 0.5 / 3;
+                const tornadoCount = Math.max(1, Math.round(5 + player.extraProjectiles + player.spreadProjectiles));
                 player.tornadoBurst = {
                     active: true,
                     spawnIndex: 0,
                     nextSpawnDelay: 0,
+                    duration: 10 + tornadoCount * 9,
                     direction: baseAngle,
                     damage: attackDamage,
                     color: weapon.color,
                     speed: baseTornadoSpeed,
                     critPercent: critPercent,
-                    coneAngle: (weapon.coneAngle || Math.PI / 3) * 1.45,
-                    count: 6,
-                    maxDistance: weapon.range * 1.45
+                    coneAngle: (weapon.coneAngle || Math.PI / 3) * 1.45 * (1 + player.spreadProjectiles * 0.15),
+                    count: tornadoCount,
+                    maxDistance: weapon.range * 0.7
                 };
             }
 
-            player.attackCooldown = Math.max(1, cooldown - Math.round(cooldown * player.attackSpeed));
+            player.attackCooldown = Math.max(1, Math.round(cooldown * 2.5) - Math.round(cooldown * player.attackSpeed));
         } else {
             // Ataque à distância (projétil)
             const shots = 1 + player.extraProjectiles + player.spreadProjectiles;
@@ -2068,6 +2311,11 @@ function attemptAttack() {
             }
 
             player.attackCooldown = Math.max(1, cooldown - Math.round(cooldown * player.attackSpeed));
+
+            if (player.spinAttackLevel > 1 && player.spinAttackCharges > 0) {
+                spawnSpinAttackRoulette(targetX, targetY, attackDamage, weapon.color, specialAttackSpeed, critPercent);
+                player.spinAttackCharges -= 1;
+            }
         }
     }
 }
@@ -2078,29 +2326,34 @@ function updateProjectiles() {
     const hurricaneRemovals = new Set();
     
     if (player.tornadoBurst && player.tornadoBurst.active) {
-        if (player.tornadoBurst.nextSpawnDelay <= 0) {
-            const burst = player.tornadoBurst;
+        const burst = player.tornadoBurst;
+        burst.duration -= 1;
+        if (burst.duration <= 0) {
+            burst.active = false;
+        } else if (burst.nextSpawnDelay <= 0) {
             if (burst.spawnIndex < burst.count) {
                 const angleOffset = -burst.coneAngle / 2 + (burst.spawnIndex / (burst.count - 1)) * burst.coneAngle;
                 const fireAngle = burst.direction + angleOffset;
                 const startX = player.x + player.width / 2;
                 const startY = player.y + player.height / 2;
-                const targetX = startX + Math.cos(fireAngle) * burst.maxDistance;
-                const targetY = startY + Math.sin(fireAngle) * burst.maxDistance;
-                spawnPlayerProjectile(startX, startY, targetX, targetY, burst.damage, burst.color, burst.speed, {
+                const lanceSpeed = burst.speed * 2;
+                const lanceRange = burst.maxDistance * 0.5;
+                const targetX = startX + Math.cos(fireAngle) * lanceRange;
+                const targetY = startY + Math.sin(fireAngle) * lanceRange;
+                spawnPlayerProjectile(startX, startY, targetX, targetY, burst.damage, burst.color, lanceSpeed, {
                     size: 4,
                     critPercent: burst.critPercent,
                     style: 'tornadoLance',
-                    maxDistance: burst.maxDistance,
+                    maxDistance: lanceRange,
                     hitTarget: false
                 });
                 burst.spawnIndex += 1;
-                burst.nextSpawnDelay = 10;
+                burst.nextSpawnDelay = 9; // 0.15 segundos a 60 fps
             } else {
                 burst.active = false;
             }
         } else {
-            player.tornadoBurst.nextSpawnDelay -= 1;
+            burst.nextSpawnDelay -= 1;
         }
     }
     
@@ -2119,6 +2372,10 @@ function updateProjectiles() {
             const distance = Math.sqrt(dx * dx + dy * dy);
             
             if (distance < 16) {
+                if (p1.style === 'spinAttack' || p1.style === 'staffOrb') {
+                    projectilesToRemove.add(j);
+                    continue;
+                }
                 projectilesToRemove.add(i);
                 projectilesToRemove.add(j);
                 break;
@@ -2128,6 +2385,10 @@ function updateProjectiles() {
     
     // Remover projéteis que colidiram em ordem reversa para não afetar índices
     Array.from(projectilesToRemove).sort((a, b) => b - a).forEach(index => {
+        const removed = projectiles[index];
+        if (removed) {
+            spawnEvaporationForProjectile(removed);
+        }
         projectiles.splice(index, 1);
     });
     
@@ -2165,6 +2426,26 @@ function updateProjectiles() {
 
     for (let i = projectiles.length - 1; i >= 0; i--) {
         projectiles[i].update();
+        // If this projectile was parried and can destroy others on touch, check collisions
+        if (projectiles[i].parried && projectiles[i].owner === 'player' && projectiles[i].canDestroyOnTouch) {
+            const par = projectiles[i];
+            for (let j = projectiles.length - 1; j >= 0; j--) {
+                if (j === i) continue;
+                const other = projectiles[j];
+                if (!other) continue;
+                // only destroy enemy projectiles
+                if (other.owner === 'monster') {
+                    const dx = par.x - other.x;
+                    const dy = par.y - other.y;
+                    const dist = Math.hypot(dx, dy);
+                    if (dist <= par.size + other.size + 4) {
+                        spawnEvaporationForProjectile(other);
+                        projectiles.splice(j, 1);
+                        if (j < i) i--; // adjust outer index if needed
+                    }
+                }
+            }
+        }
         
         if (projectiles[i].style === 'tornadoHurricane') {
             const hurricane = projectiles[i];
@@ -2176,10 +2457,17 @@ function updateProjectiles() {
                 const dy = hurricane.y - q.y;
                 const dist = Math.sqrt(dx * dx + dy * dy) || 1;
                 if (dist <= hurricane.pullRadius) {
+                    if (q.style === 'tornadoLance' && !q.hurricaneBoosted) {
+                        q.maxDistance *= 2.5;
+                        q.speed *= 1.25;
+                        q.vx *= 1.25;
+                        q.vy *= 1.25;
+                        q.hurricaneBoosted = true;
+                    }
                     const pull = hurricane.pullStrength * (1 + (hurricane.pullRadius - dist) / hurricane.pullRadius);
                     q.vx += (dx / dist) * pull;
                     q.vy += (dy / dist) * pull;
-                    if (dist < hurricane.size + q.size + 6) {
+                    if (dist < hurricane.size + q.size + 6 && q.style !== 'tornadoLance') {
                         hurricaneRemovals.add(q);
                     }
                 }
@@ -2188,9 +2476,18 @@ function updateProjectiles() {
         }
 
         if (!projectiles[i].isAlive()) {
-            if (projectiles[i].style === 'tornadoHurricane') {
+            const p = projectiles[i];
+            if (p.style === 'tornadoLance' && !p.hitTarget) {
+                player.tornadoMissCount = (player.tornadoMissCount || 0) + 1;
+                if (player.tornadoMissCount >= 6 && player.hurricaneCooldown <= 0) {
+                    player.tornadoMissCount = 0;
+                    spawnTornadoHurricane();
+                }
+            }
+            if (p.style === 'tornadoHurricane') {
                 player.hurricaneCooldown = 180;
             }
+            spawnEvaporationForProjectile(p);
             projectiles.splice(i, 1);
             continue;
         }
@@ -2225,22 +2522,6 @@ function updateProjectiles() {
             continue;
         }
         
-        if (!projectiles[i].isAlive()) {
-            const p = projectiles[i];
-            if (p.style === 'tornadoLance' && !p.hitTarget) {
-                player.tornadoMissCount = (player.tornadoMissCount || 0) + 1;
-                if (player.tornadoMissCount >= 6 && player.hurricaneCooldown <= 0) {
-                    player.tornadoMissCount = 0;
-                    spawnTornadoHurricane();
-                }
-            }
-            if (p.style === 'tornadoHurricane') {
-                player.hurricaneCooldown = 180;
-            }
-            projectiles.splice(i, 1);
-            continue;
-        }
-        
         const p = projectiles[i];
 
         if (p.owner === 'player' && !p.ignoreCollision) {
@@ -2253,8 +2534,10 @@ function updateProjectiles() {
             if (isHit) {
                 if (p.style === 'tornadoLance') {
                     p.hitTarget = true;
+                    currentMonster.takeDamage(p.damage * 1.5);
+                } else {
+                    currentMonster.takeDamage(p.damage);
                 }
-                currentMonster.takeDamage(p.damage);
                 
                 // Rastrear acertos no tank
                 if (currentMonster.type === 'tank') {
@@ -2281,6 +2564,33 @@ function updateProjectiles() {
                     }
             }
         } else {
+            const playerCenterX = player.x + player.width / 2;
+            const playerCenterY = player.y + player.height / 2;
+            if (player.weapon && player.weapon.type === 'sword' && (player.meleeAttacking || player.swordAlwaysActive) && player.parryCooldown === 0) {
+                const extraRange = Math.max(0, player.attackRange - 80);
+                const swordLen = (player.weapon.range || 45) + extraRange;
+                const aim = (typeof player.swordAimAngle === 'number') ? player.swordAimAngle : player.meleeDirection || 0;
+
+                const bladeBase = 12; // distance from player center to where blade starts
+                const x1 = playerCenterX + Math.cos(aim) * bladeBase;
+                const y1 = playerCenterY + Math.sin(aim) * bladeBase;
+                const x2 = playerCenterX + Math.cos(aim) * swordLen;
+                const y2 = playerCenterY + Math.sin(aim) * swordLen;
+
+                const distToSegment = pointToSegmentDistance(p.x, p.y, x1, y1, x2, y2);
+                const threshold = p.size + player.swordThickness / 2;
+
+                if (distToSegment <= threshold && (player.slashTimer > 0 || player.swordAlwaysActive)) {
+                    handleParryProjectile(p);
+                    if (currentMonster) currentMonster.stunTimer = 30;
+                    player.parryCooldown = 240;
+                    player.slashTimer = 12;
+                    player.slashAlpha = 1;
+                    // do not remove projectile; it was converted to player-owned by handleParryProjectile
+                    continue;
+                }
+            }
+
             const isHit = 
                 p.x < player.x + player.width &&
                 p.x > player.x &&
@@ -2298,6 +2608,7 @@ function updateProjectiles() {
     if (hurricaneRemovals.size > 0) {
         projectiles = projectiles.filter(proj => !hurricaneRemovals.has(proj));
     }
+    
 }
 
 function updateMonsterHitscans() {
@@ -2394,35 +2705,47 @@ function updateDelayedShots() {
 }
 
 function processMeleeHit() {
-    if (!player.meleeAttacking || player.meleeHitRegistered || !player.weapon || player.weapon.type !== 'sword') return;
+    if (!player.weapon || player.weapon.type !== 'sword') return;
 
     const weapon = player.weapon;
     const extraRange = Math.max(0, player.attackRange - 80);
-    const meleeRadius = weapon.range + extraRange;
+    const swordLen = (weapon.range || 45) + extraRange;
     const px = player.x + player.width / 2;
     const py = player.y + player.height / 2;
+    const aim = (typeof player.swordAimAngle === 'number') ? player.swordAimAngle : player.meleeDirection || 0;
+
+    const bladeBase = 12; // where blade starts relative to player center
+    const x1 = px + Math.cos(aim) * bladeBase;
+    const y1 = py + Math.sin(aim) * bladeBase;
+    const x2 = px + Math.cos(aim) * swordLen;
+    const y2 = py + Math.sin(aim) * swordLen;
+
     const mx = currentMonster.x + currentMonster.width / 2;
     const my = currentMonster.y + currentMonster.height / 2;
-    const dist = Math.sqrt((mx - px) * (mx - px) + (my - py) * (my - py));
-    const targetRadius = Math.max(currentMonster.width, currentMonster.height) / 2;
+    const monsterRadius = Math.max(currentMonster.width, currentMonster.height) / 2;
 
-    if (dist <= meleeRadius + targetRadius) {
+    const distToSegment = pointToSegmentDistance(mx, my, x1, y1, x2, y2);
+
+    if (distToSegment <= monsterRadius + player.swordThickness / 2 && player.swordHitCooldown === 0) {
         const baseWeaponDamage = weapon.damage + player.weaponDamage + player.baseDamage;
         const critRoll = Math.random() * 100;
         const critMultiplier = critRoll < player.critChance ? 1 + player.critDamage : 1;
         const attackDamage = Math.round(baseWeaponDamage * critMultiplier);
 
         currentMonster.takeDamage(attackDamage);
-        player.meleeHitRegistered = true;
+        player.swordHitCooldown = 18; // small cooldown to avoid overly rapid hits
 
-        if (player.attackMove > 0 && dist > 0) {
-            player.x = Math.max(0, Math.min(player.x + ((mx - px) / dist) * player.attackMove, gameWidth - player.width));
-            player.y = Math.max(0, Math.min(player.y + ((my - py) / dist) * player.attackMove, gameHeight - player.height));
+        if (player.attackMove > 0) {
+            const dx = mx - px;
+            const dy = my - py;
+            const dist = Math.hypot(dx, dy) || 1;
+            player.x = Math.max(0, Math.min(player.x + (dx / dist) * player.attackMove, gameWidth - player.width));
+            player.y = Math.max(0, Math.min(player.y + (dy / dist) * player.attackMove, gameHeight - player.height));
         }
 
         if (player.spinAttack) {
             const spinRadius = 18;
-            if (dist <= spinRadius + targetRadius) {
+            if (distToSegment <= spinRadius + monsterRadius) {
                 currentMonster.takeDamage(Math.round(attackDamage * 0.5));
             }
         }
@@ -2466,8 +2789,91 @@ function spawnSpinAttackStartProjectiles() {
     angles.forEach((angle) => {
         const targetX = centerX + Math.cos(angle) * 140;
         const targetY = centerY + Math.sin(angle) * 140;
-        spawnPlayerProjectile(centerX, centerY, targetX, targetY, damage, '#ffcc00', speed, { size, homing: true, homingStrength: 0.05, style: 'spinAttack' });
+        spawnPlayerProjectile(centerX, centerY, targetX, targetY, damage, '#ffcc00', speed, {
+            size,
+            style: 'spinAttack',
+            homing: true,
+            maxDistance: 1400
+        });
     });
+}
+
+function spawnSpinAttackRoulette(targetX, targetY, damage, color, speed, critPercent) {
+    const centerX = player.x + player.width / 2;
+    const centerY = player.y + player.height / 2;
+    const roll = Math.floor(Math.random() * 3);
+
+    if (roll === 0) {
+        spawnSpinAttackFollowProjectiles(centerX, centerY, targetX, targetY, damage, color, speed, critPercent);
+    } else if (roll === 1) {
+        spawnSpinAttackDestroyAll(centerX, centerY, targetX, targetY, damage, color, speed, critPercent);
+    } else {
+        spawnSpinAttackLateBursts(centerX, centerY, targetX, targetY, damage, color, speed, critPercent);
+    }
+}
+
+function spawnSpinAttackFollowProjectiles(centerX, centerY, targetX, targetY, damage, color, speed, critPercent) {
+    const angle = Math.atan2(targetY - centerY, targetX - centerX);
+    const mainTargetX = centerX + Math.cos(angle) * 200;
+    const mainTargetY = centerY + Math.sin(angle) * 200;
+    const main = spawnPlayerProjectile(centerX, centerY, mainTargetX, mainTargetY, damage, color, speed, {
+        style: 'spinAttack',
+        size: 16,
+        maxDistance: 1400,
+        critPercent
+    });
+
+    for (let i = 0; i < 2; i++) {
+        const offsetAngle = angle + (i === 0 ? 0.18 : -0.18);
+        const followerTargetX = centerX + Math.cos(offsetAngle) * 200;
+        const followerTargetY = centerY + Math.sin(offsetAngle) * 200;
+        spawnPlayerProjectile(centerX, centerY, followerTargetX, followerTargetY, Math.max(1, Math.round(damage * 0.85)), color, speed, {
+            style: 'spinAttack',
+            size: 10,
+            homing: true,
+            homingTarget: main,
+            homingStrength: 0.16,
+            maxDistance: 1400,
+            critPercent
+        });
+    }
+}
+
+function spawnSpinAttackDestroyAll(centerX, centerY, targetX, targetY, damage, color, speed, critPercent) {
+    const baseAngle = Math.atan2(targetY - centerY, targetX - centerX);
+    const blastDamage = Math.max(1, Math.round(damage * 1.1));
+    const blastSpeed = Math.max(speed, 7);
+
+    for (let i = -1; i <= 1; i++) {
+        const angle = baseAngle + i * 0.18;
+        const projTargetX = centerX + Math.cos(angle) * 220;
+        const projTargetY = centerY + Math.sin(angle) * 220;
+        spawnPlayerProjectile(centerX, centerY, projTargetX, projTargetY, blastDamage, '#ffea66', blastSpeed, {
+            style: 'spinAttack',
+            size: 18,
+            maxDistance: 1400,
+            critPercent
+        });
+    }
+}
+
+function spawnSpinAttackLateBursts(centerX, centerY, targetX, targetY, damage, color, speed, critPercent) {
+    const baseAngle = Math.atan2(targetY - centerY, targetX - centerX);
+    const delay = 30;
+
+    for (let i = -1; i <= 1; i++) {
+        const angle = baseAngle + i * 0.12;
+        const projTargetX = centerX + Math.cos(angle) * 220;
+        const projTargetY = centerY + Math.sin(angle) * 220;
+        spawnPlayerProjectile(centerX, centerY, projTargetX, projTargetY, damage, color, speed, {
+            style: 'spinAttack',
+            size: 14,
+            maxDistance: 1400,
+            delayTimer: delay,
+            delayDuration: delay,
+            critPercent
+        });
+    }
 }
 
 function drawBackground() {
@@ -2508,6 +2914,86 @@ function drawBackground() {
 function drawProjectiles() {
     for (let proj of projectiles) {
         proj.draw();
+    }
+}
+
+function spawnEvaporationEffect(x, y, color, size, count = 8) {
+    const baseSize = Math.max(2, size * 0.5);
+    for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 1.8 + 0.8;
+        evaporationEffects.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 30 + Math.floor(Math.random() * 10),
+            alpha: 1,
+            size: baseSize * (0.6 + Math.random() * 0.8),
+            color: color || '#ffffff'
+        });
+    }
+}
+
+function spawnEvaporationForProjectile(proj) {
+    spawnEvaporationEffect(proj.x, proj.y, proj.color, proj.size, 10);
+}
+
+function handleParryProjectile(proj) {
+    if (!proj || proj.parried) return;
+    proj.parried = true;
+    // Change ownership to player and retarget toward current monster if present
+    proj.owner = 'player';
+    const currentSpeed = Math.hypot(proj.vx || 0, proj.vy || 0) || 3;
+    const speed = currentSpeed * 3.5; // increased parry speed
+    let targetX, targetY;
+    if (currentMonster) {
+        targetX = currentMonster.x + currentMonster.width / 2;
+        targetY = currentMonster.y + currentMonster.height / 2;
+    } else {
+        // reflect roughly in opposite direction
+        targetX = proj.x - (proj.vx || 0) * 6;
+        targetY = proj.y - (proj.vy || 0) * 6;
+    }
+    const dx = targetX - proj.x;
+    const dy = targetY - proj.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    proj.vx = (dx / dist) * speed;
+    proj.vy = (dy / dist) * speed;
+    proj.color = '#ffffff';
+    proj.size = Math.max(proj.size, 8);
+    proj.damage = Math.max(1, Math.round((proj.damage || 1) * 1.8)); // increased parry damage
+    proj.style = proj.style || 'gunBullet';
+    proj.hitTarget = false;
+    proj.immortal = false;
+    spawnEvaporationForProjectile(proj);
+    // allow this parried projectile to destroy other enemy projectiles on touch
+    proj.canDestroyOnTouch = true;
+}
+
+function drawEvaporationEffects() {
+    for (let effect of evaporationEffects) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, effect.alpha);
+        ctx.fillStyle = effect.color;
+        ctx.beginPath();
+        ctx.arc(effect.x, effect.y, effect.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+function updateEvaporationEffects() {
+    for (let i = evaporationEffects.length - 1; i >= 0; i--) {
+        const effect = evaporationEffects[i];
+        effect.x += effect.vx;
+        effect.y += effect.vy;
+        effect.life -= 1;
+        effect.alpha = Math.max(0, effect.life / 40);
+        effect.size *= 0.96;
+        if (effect.life <= 0 || effect.alpha <= 0) {
+            evaporationEffects.splice(i, 1);
+        }
     }
 }
 
@@ -2669,6 +3155,7 @@ function spawnMonsterProjectile(x, y, targetX, targetY, damage, color, speed, op
 }
 
 function spawnTornadoHurricane() {
+    projectiles = projectiles.filter(proj => proj.style !== 'tornadoHurricane');
     const x = player.x + player.width / 2;
     const y = player.y + player.height / 2;
     const targetX = currentMonster ? currentMonster.x + currentMonster.width / 2 : x + 120;
@@ -2682,7 +3169,8 @@ function spawnTornadoHurricane() {
         homingDuration: 300,
         lifetime: 75,
         immortal: false,
-        pullStrength: 0.55,
+        rotationSpeed: 0.12,
+        pullStrength: 0.18,
         pullRadius: 260,
         maxDistance: 10000
     });
@@ -2903,8 +3391,35 @@ function updateHealthBars() {
 function updateUI() {
     document.getElementById('phaseDisplay').textContent = `Fase: ${phase}`;
     const weaponName = player.weapon ? player.weapon.name : 'Nenhuma';
+    let spinAttackInfo = '';
+    if (player.spinAttackLevel > 0) {
+        spinAttackInfo = ` | Ataque Triplo Nível: ${player.spinAttackLevel}`;
+    }
     document.getElementById('statsDisplay').innerHTML = 
-        `Arma: ${weaponName} | Monstros: ${monstersDefeated} | Vida: ${Math.max(0, Math.round(player.health))}/${player.maxHealth}`;
+        `Arma: <span id="weaponName">${weaponName}</span> | Monstros: ${monstersDefeated} | Vida: ${Math.max(0, Math.round(player.health))}/${player.maxHealth}${spinAttackInfo}`;
+
+    // Cooldown bar logic: show parry cooldown for sword, hurricane cooldown for cone
+    const cooldownFill = document.getElementById('cooldownBarFill');
+    if (cooldownFill) {
+        let cooldown = 0;
+        let max = 1;
+        if (player.weapon && player.weapon.type === 'cone') {
+            cooldown = player.hurricaneCooldown || 0;
+            max = player.hurricaneCooldownMax || 1;
+        } else {
+            cooldown = player.parryCooldown || 0;
+            max = player.parryMax || 1;
+        }
+        const frac = Math.max(0, Math.min(1, cooldown / max));
+        cooldownFill.style.width = `${frac * 100}%`;
+    }
+
+    // Glow indicator when weapon is ready (no attack cooldown)
+    const weaponNameEl = document.getElementById('weaponName');
+    if (weaponNameEl) {
+        if (player.attackCooldown === 0) weaponNameEl.classList.add('glow');
+        else weaponNameEl.classList.remove('glow');
+    }
 }
 
 function spawnNewMonster() {
@@ -2920,6 +3435,8 @@ function spawnNewMonster() {
     projectiles = [];
     monsterHitscans = [];
     currentMonster = new Monster(phase, chooseMonsterType());
+    player.spinAttack = player.spinAttackLevel > 0;
+    player.spinAttackCharges = Math.max(0, player.spinAttackLevel - 1);
     spawnSpinAttackStartProjectiles();
     upgradeChoices = getRandomUpgrades(4);
     selectedUpgradeIndex = 0;
@@ -2954,7 +3471,9 @@ function applyUpgrade(index) {
             player.critDamage += pick.value;
             break;
         case 'spinAttack':
+            player.spinAttackLevel = (player.spinAttackLevel || 0) + 1;
             player.spinAttack = true;
+            player.spinAttackCharges = Math.max(0, player.spinAttackLevel - 1);
             break;
         default:
             player[pick.effect] = (player[pick.effect] || 0) + pick.value;

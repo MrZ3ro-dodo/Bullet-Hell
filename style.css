@@ -78,6 +78,27 @@ body {
     transition: width 0.2s ease;
 }
 
+/* disable default ::after for cooldownBar so inner fill controls width */
+#cooldownBar::after { display: none; }
+
+#cooldownBar {
+    height: 14px;
+    background: rgba(40, 40, 60, 0.5);
+}
+
+#cooldownBarFill {
+    height: 100%;
+    background: linear-gradient(90deg, #ffd880, #fff2b2);
+    box-shadow: 0 0 18px rgba(255,200,120,0.22);
+    width: 0%;
+    transition: width 0.12s linear;
+}
+
+.glow {
+    text-shadow: 0 0 10px rgba(255,215,120,0.95), 0 0 24px rgba(255,180,80,0.5);
+    box-shadow: 0 0 18px rgba(255,200,120,0.12);
+}
+
 #gameCanvas {
     border-radius: 24px;
     box-shadow: 0 0 72px rgba(0, 212, 255, 0.16), inset 0 0 28px rgba(255, 255, 255, 0.05);
