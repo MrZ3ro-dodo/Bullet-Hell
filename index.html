@@ -33,6 +33,23 @@
             <div id="statsDisplay"></div>
         </div>
     </div>
+    <script>
+        window.onerror = function(message, source, lineno, colno, error) {
+            const el = document.createElement('div');
+            el.id = 'debug-error';
+            el.style.position = 'fixed';
+            el.style.top = '0';
+            el.style.left = '0';
+            el.style.right = '0';
+            el.style.background = 'rgba(255,0,0,0.95)';
+            el.style.color = '#fff';
+            el.style.padding = '8px';
+            el.style.fontFamily = 'sans-serif';
+            el.style.zIndex = '9999';
+            el.textContent = message + ' @ ' + source + ':' + lineno + ':' + colno;
+            document.body.appendChild(el);
+        };
+    </script>
     <script src="script.js"></script>
 </body>
 </html>
