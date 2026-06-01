@@ -1487,6 +1487,54 @@ class Player {
             }
         }
 
+        // Desenhar escudos visuais quando em cooldown de parry
+        if (this.parryCooldown > 0 && this.parryDefenseBonus > 0) {
+            ctx.save();
+            ctx.translate(centerX, centerY);
+            
+            const shieldRadius = 45;
+            const shieldsPerCircle = Math.max(3, Math.min(8, Math.ceil(this.parryDefenseBonus)));
+            const angleStep = (Math.PI * 2) / shieldsPerCircle;
+            
+            for (let i = 0; i < Math.ceil(this.parryDefenseBonus); i++) {
+                const circleIndex = Math.floor(i / shieldsPerCircle);
+                const indexInCircle = i % shieldsPerCircle;
+                const currentRadius = shieldRadius + circleIndex * 28;
+                const angle = angleStep * indexInCircle + (performance.now() * 0.0008 + circleIndex * 0.3);
+                
+                const shieldX = Math.cos(angle) * currentRadius;
+                const shieldY = Math.sin(angle) * currentRadius;
+                
+                // Pulso e cor com base na rotação
+                const pulse = 0.85 + 0.15 * Math.sin(performance.now() * 0.003 + i * 0.8);
+                const hue = (angle * 180 / Math.PI + circleIndex * 30) % 360;
+                
+                ctx.save();
+                ctx.translate(shieldX, shieldY);
+                ctx.globalAlpha = 0.7 * pulse;
+                
+                // Desenhar escudo como um pequeno círculo
+                const shieldSize = 6;
+                ctx.fillStyle = `hsl(${hue}, 80%, 55%)`;
+                ctx.shadowColor = `hsl(${hue}, 80%, 55%)`;
+                ctx.shadowBlur = 12;
+                
+                // Desenhar como círculo com brilho
+                ctx.beginPath();
+                ctx.arc(0, 0, shieldSize, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Contorno
+                ctx.strokeStyle = `hsl(${hue}, 100%, 70%)`;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+                
+                ctx.restore();
+            }
+            
+            ctx.restore();
+        }
+
         const canBowDash = this.weapon && this.weapon.type === 'bow' && this.bowDashCharges > 0 && this.attackCooldown > 0 && this.dashTimer === 0;
         const dashGlowActive = canBowDash;
 
@@ -1733,18 +1781,18 @@ class Monster {
         this.confusedTimer = 0;
 
         if (this.type === 'shooter') {
-            this.health = 50 + phase * 22;
-            this.speed = 1 + phase * 0.15;
+            this.health = 37.5 + phase * 11;
+            this.speed = 0.75 + phase * 0.075;
             this.maxHealth = this.health;
             this.desiredDistance = 250;
-            this.projectileSpeed = 6 + phase * 0.5;
+            this.projectileSpeed = 4.5 + phase * 0.25;
         } else if (this.type === 'tank') {
-            this.health = 135 + phase * 60;
-            this.speed = 0.8 + phase * 0.15;
+            this.health = 101.25 + phase * 30;
+            this.speed = 0.6 + phase * 0.075;
             this.maxHealth = this.health;
             this.dashCooldown = 100;
             this.dashTimer = 0;
-            this.dashSpeed = 5.0 + phase * 0.75;
+            this.dashSpeed = 3.75 + phase * 0.375;
             this.triggered75 = false;
             this.triggered50 = false;
             this.triggered25 = false;
@@ -1754,15 +1802,15 @@ class Monster {
             this.burstAttackWarningTimer = 0;
             this.shockwaveAttackWarningTimer = 0;
         } else if (this.type === 'swarm') {
-            this.health = 55 + phase * 20;
-            this.speed = 1.8 + phase * 0.35;
+            this.health = 41.25 + phase * 10;
+            this.speed = 1.35 + phase * 0.175;
             this.maxHealth = this.health;
             this.swarmCooldown = 0;
             this.orbitalAngle = 0;
             this.markSpawnCooldown = 0;
         } else if (this.type === 'caster') {
-            this.health = 70 + phase * 25;
-            this.speed = 0.5 + phase * 0.1;
+            this.health = 52.5 + phase * 12.5;
+            this.speed = 0.375 + phase * 0.05;
             this.maxHealth = this.health;
             this.portalCooldown = 0;
             this.portalWarningTimer = 0;
@@ -1776,8 +1824,8 @@ class Monster {
             this.remoteAttackCooldown = Math.round(1.5 * 60); // frames (~1.5s)
             this.remoteAttackTimer = Math.round(Math.random() * this.remoteAttackCooldown);
         } else if (this.type === 'smart') {
-            this.health = 72 + phase * 28;
-            this.speed = 1.65 + phase * 0.22;
+            this.health = 54 + phase * 14;
+            this.speed = 1.2375 + phase * 0.11;
             this.maxHealth = this.health;
             this.hitscanCooldown = 0;
             this.hitscanWarningTimer = 0;
@@ -1787,15 +1835,15 @@ class Monster {
             this.circleAngle = 0;
             this.smartRange = 180 + phase * 6;
         } else if (this.type === 'avianightmare') {
-            this.health = 65 + phase * 30;
-            this.speed = 1.05 + phase * 0.45;
+            this.health = 48.75 + phase * 15;
+            this.speed = 0.7875 + phase * 0.225;
             this.maxHealth = this.health;
             this.attackRange = 110;
-            this.projectileSpeed = 5 + phase * 0.4;
+            this.projectileSpeed = 3.75 + phase * 0.2;
             this.areaAttackCooldown = 0;
             this.projectileAttackCooldown = 0;
         } else if (this.type === 'simple') {
-            this.health = 30 + phase * 8;
+            this.health = 22.5 + phase * 4;
             this.maxHealth = this.health;
             this.attackRange = 70;
             this.projectileAttackCooldown = 0;
@@ -1806,7 +1854,7 @@ class Monster {
             this.simpleDashCooldown = 0;
             this.simpleDashPauseTimer = 0;
             this.simpleDashTimer = 0;
-            this.simpleDashSpeed = 18 + phase * 1.2;
+            this.simpleDashSpeed = 13.5 + phase * 0.6;
             this.simpleDashVx = 0;
             this.simpleDashVy = 0;
             this.simpleClawDirection = 0;
@@ -1814,14 +1862,16 @@ class Monster {
             this.simpleClawRange = this.attackRange * 3;
             this.speed = 1.45 + phase * 0.18;
         } else if (this.type === 'croc') {
-            this.health = 30 + phase * 8;
+            this.health = 22.5 + phase * 4;
             this.maxHealth = this.health;
             this.attackRange = 70;
             this.speed = 0;
             this.simpleDashCooldown = 45 + Math.round(Math.random() * 30);
             this.simpleDashPauseTimer = 0;
+            this.simpleDashWarningTimer = 0;
+            this.simpleDashWarningDuration = Math.round(0.35 * 60);
             this.simpleDashTimer = 0;
-            this.simpleDashSpeed = 22 + phase * 1.4;
+            this.simpleDashSpeed = 16.5 + phase * 0.7;
             this.simpleDashDistance = 35;
             this.simpleDashDirection = 0;
             this.simpleDashVx = 0;
@@ -1832,18 +1882,21 @@ class Monster {
             // State for being thrown / transparent / confused / stunned
             this.thrown = false;
             this.thrownTimer = 0;
+            this.thrownTotalTime = 0;
             this.thrownVx = 0;
             this.thrownVy = 0;
             this.thrownTargetX = null;
             this.thrownTargetY = null;
+            this.thrownArcHeight = 0;
+            this.fallStarsTimer = 0;
             this.alpha = 1;
             this.confusedLevel = 0;
             this.confusedTimer = 0;
             this.stunnedTimer = 0;
             this.attacksDealtToPlayer = 0; // contador de acertos ao jogador
         } else {
-            this.health = 75 + phase * 45;
-            this.speed = 1.45 + phase * 0.725;
+            this.health = 56.25 + phase * 22.5;
+            this.speed = 1.0875 + phase * 0.3625;
             this.maxHealth = this.health;
         }
     }
@@ -1863,6 +1916,9 @@ class Monster {
 
         if (this.flashTimer > 0) {
             this.flashTimer--;
+        }
+        if (this.fallStarsTimer > 0) {
+            this.fallStarsTimer--;
         }
 
         if (this.impactShakeTimer > 0) {
@@ -2390,13 +2446,18 @@ class Monster {
                 this.y += this.thrownVy * ts;
                 this.thrownTimer--;
                 this.alpha = 0.35;
-                // end of travel: apply confused levels and stunned pause
+                const progress = 1 - this.thrownTimer / Math.max(1, this.thrownTotalTime);
+                this.thrownArcHeight = Math.sin(Math.min(1, Math.max(0, progress)) * Math.PI) * 24;
                 if (this.thrownTimer <= 0) {
                     this.thrown = false;
                     this.alpha = 1;
+                    this.thrownArcHeight = 0;
                     this.confusedLevel = 3;
                     this.confusedTimer = 4 * 60; // 4 seconds
                     this.stunnedTimer = 60; // 1 second stopped
+                    this.fallStarsTimer = 30;
+                    this.impactShakeTimer = 20;
+                    screenShakeTimer = Math.max(screenShakeTimer, 18);
                     // ensure it doesn't move immediately
                     this.simpleDashVx = 0;
                     this.simpleDashVy = 0;
@@ -2413,6 +2474,14 @@ class Monster {
                     if (this.simpleDashPauseTimer > 0) {
                         this.simpleDashPauseTimer--;
                         this.attackCooldown = 1;
+                    } else if (this.simpleDashWarningTimer > 0) {
+                        this.simpleDashWarningTimer--;
+                        if (this.simpleDashWarningTimer <= 0) {
+                            this.simpleDashTimer = 20;
+                            this.attackCooldown = 0;
+                        } else {
+                            this.attackCooldown = 1;
+                        }
                     } else if (this.simpleDashTimer > 0) {
                         this.x += this.simpleDashVx * ts;
                         this.y += this.simpleDashVy * ts;
@@ -2430,8 +2499,8 @@ class Monster {
                         this.simpleDashDirection = dashDir;
                         this.simpleDashVx = Math.cos(dashDir) * this.simpleDashSpeed;
                         this.simpleDashVy = Math.sin(dashDir) * this.simpleDashSpeed;
-                        this.simpleDashTimer = 20;
-                        this.attackCooldown = 0;
+                        this.simpleDashWarningTimer = this.simpleDashWarningDuration;
+                        this.attackCooldown = 1;
                     }
                 }
             }
@@ -3009,6 +3078,8 @@ class Monster {
             const shakeY = (Math.random() - 0.5) * shakeAmount;
             ctx.translate(shakeX, shakeY);
         }
+        const liftOffset = Math.max(0, this.thrownArcHeight || 0);
+        if (liftOffset > 0) ctx.translate(0, -liftOffset);
         const centerX = this.x + this.width / 2;
         const centerY = this.y + this.height / 2;
         const radius = Math.max(this.width, this.height) / 2;
@@ -3358,6 +3429,46 @@ class Monster {
             ctx.beginPath();
             ctx.arc(radius * 0.5, -radius * 0.78, radius * 0.045, 0, Math.PI * 2);
             ctx.fill();
+
+            if (this.fallStarsTimer > 0) {
+                const intensity = this.fallStarsTimer / 30;
+                const starSize = radius * 0.14;
+                for (let i = 0; i < 3; i++) {
+                    const angle = i * (Math.PI * 2 / 3) + gameFrameCount * 0.15;
+                    const starX = centerX + Math.cos(angle) * radius * 1.05;
+                    const starY = centerY - radius * 1.35 + Math.sin(angle) * radius * 0.08;
+                    ctx.fillStyle = `rgba(255, 235, 120, ${0.75 * intensity})`;
+                    ctx.beginPath();
+                    const starRadius = starSize * (0.8 + 0.2 * Math.sin(gameFrameCount * 0.3 + i));
+                    ctx.moveTo(starX, starY - starRadius);
+                    for (let p = 0; p < 5; p++) {
+                        const a = p * (Math.PI * 2 / 5);
+                        const r = p % 2 === 0 ? starRadius : starRadius * 0.4;
+                        ctx.lineTo(starX + Math.sin(a) * r, starY - Math.cos(a) * r);
+                    }
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            }
+
+            if (this.simpleDashWarningTimer > 0) {
+                const progress = 1 - (this.simpleDashWarningTimer / this.simpleDashWarningDuration);
+                const alpha = 0.25 + 0.55 * progress;
+                ctx.strokeStyle = `rgba(255, 120, 60, ${alpha})`;
+                ctx.lineWidth = 5;
+                ctx.beginPath();
+                ctx.arc(0, 0, radius * 1.45, 0, Math.PI * 2);
+                ctx.stroke();
+
+                if (typeof this.simpleDashDirection === 'number') {
+                    ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(Math.cos(this.simpleDashDirection) * radius * 1.45, Math.sin(this.simpleDashDirection) * radius * 1.45);
+                    ctx.stroke();
+                }
+            }
 
             ctx.restore();
         } else if (this.type === 'simple') {
@@ -3760,14 +3871,14 @@ class Monster {
     }
 
     getAttackDamage() {
-        if (this.type === 'shooter') return 8 + this.phase * 2;
-        if (this.type === 'tank') return 5 + this.phase * 1.25;
-        if (this.type === 'swarm') return 6 + this.phase * 2.5;
-        if (this.type === 'caster') return 7 + this.phase * 3;
-        if (this.type === 'avianightmare') return 3 + this.phase * 1.5;
-        if (this.type === 'simple') return 3 + this.phase * 1.5;
-        if (this.type === 'croc') return 12 + this.phase * 5; // croc now deals high base damage
-        return 5 + this.phase * 3;
+        if (this.type === 'shooter') return 6 + this.phase * 1;
+        if (this.type === 'tank') return 3.75 + this.phase * 0.625;
+        if (this.type === 'swarm') return 4.5 + this.phase * 1.25;
+        if (this.type === 'caster') return 5.25 + this.phase * 1.5;
+        if (this.type === 'avianightmare') return 2.25 + this.phase * 0.75;
+        if (this.type === 'simple') return 2.25 + this.phase * 0.75;
+        if (this.type === 'croc') return (12 + this.phase * 5) * 0.5; // croc now deals much less damage
+        return 3.75 + this.phase * 1.5;
     }
 
     takeDamage(amount) {
@@ -4182,7 +4293,7 @@ const weaponUpgradeOptions = {
         { name: 'Alcance +15', effect: 'swordRange', value: 15, desc: 'Aumenta o alcance da espada.' },
         { name: 'Parry Veloz -40', effect: 'parryMax', value: 40, desc: 'Reduz o tempo de cooldown do parry.' },
         { name: 'Carga por Golpe +1.5%', effect: 'parryChargePerHit', value: 1.5, desc: 'Cada ataque bem-sucedido carrega 1.5% do cooldown do parry. Cada nivel adiciona mais 1.5% de carga.' },
-        { name: 'Defesa de Parry +12.5%', effect: 'parryDefenseBonus', value: 12.5, desc: 'Quando voce pode fazer um parry, recebe 12.5% menos dano. Cada nivel adiciona mais protecao.' },
+        { name: 'Defesa de Parry +12.5%', effect: 'parryDefenseBonus', value: 12.5, desc: 'Quando voce nao pode fazer um parry, recebe 12.5% menos dano e ganha escudos visuais de proteção. Cada nivel adiciona mais proteção e mais um escudo.' },
         { name: 'Cura de Parry +2.5%', effect: 'parryHealOnUse', value: 2.5, desc: 'Cura 2.5% da vida ao fazer um parry. Cura 2.5% da vida maxima ao acertar um parry no monstro.' },
         { name: 'Parry Confusao +12.5%', effect: 'parryConfusionChance', value: 12.5, desc: 'Quando o monstro e acertado por um parry, 12.5% de chance de atacar na direcao oposta do jogador. Cada nivel faz a confusao durar 3 segundos.' }
     ],
@@ -5126,7 +5237,7 @@ function updateProjectiles() {
                     projectiles.splice(i, 1);
                 } else {
                     let effectiveDamage = Math.max(0, p.damage - player.damageReduction);
-                    if (player.parryCooldown === 0 && player.parryDefenseBonus > 0) {
+                    if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
                         effectiveDamage *= (1 - player.parryDefenseBonus / 100);
                     }
                     player.health -= effectiveDamage;
@@ -5262,7 +5373,7 @@ function updateMonsterHitscans() {
                 const hitRadius = beam.thickness * 0.75;
                 if (distanceToBeam <= hitRadius && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0) {
                     let effectiveDamage = Math.max(0, beam.damage - player.damageReduction);
-                    if (player.parryCooldown === 0 && player.parryDefenseBonus > 0) {
+                    if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
                         effectiveDamage *= (1 - player.parryDefenseBonus / 100);
                     }
                     player.health -= effectiveDamage;
@@ -7117,7 +7228,7 @@ function getUpgradeDescription(upgrade) {
         case 'parryChargePerHit':
             return `Carga por golpe: ${ply.parryChargePerHit || 0}% -> ${Math.max(0, (ply.parryChargePerHit || 0) + value)}%. Cada ataque reduz uma parte do cooldown do parry.`;
         case 'parryDefenseBonus':
-            return `Defesa de Parry: ${ply.parryDefenseBonus || 0}% -> ${Math.max(0, (ply.parryDefenseBonus || 0) + value)}%. Quando pode parryar, reduz dano recebido.`;
+            return `Defesa de Parry: ${ply.parryDefenseBonus || 0}% -> ${Math.max(0, (ply.parryDefenseBonus || 0) + value)}%. Quando nao pode parryar, reduz dano recebido e ganha escudos visuais.`;
         case 'parryHealOnUse':
             return `Cura de Parry: ${ply.parryHealOnUse || 0}% -> ${Math.max(0, (ply.parryHealOnUse || 0) + value)}%. Cura ao fazer parry com sucesso.`;
         case 'parryConfusionChance':
@@ -7285,7 +7396,7 @@ function gameLoop() {
                 currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
             } else {
                 let effectiveDamage = Math.max(0, currentMonster.getAttackDamage() - player.damageReduction);
-                if (player.parryCooldown === 0 && player.parryDefenseBonus > 0) {
+                if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
                     effectiveDamage *= (1 - player.parryDefenseBonus / 100);
                 }
                 player.health -= effectiveDamage;
@@ -7299,19 +7410,21 @@ function gameLoop() {
                     player.poisonDamagePerTick = 2;
                 }
 
-                // Count attacks dealt by croc to the player and trigger throw after 3 hits
+                // Count attacks dealt by croc to the player and trigger throw after 2 hits
                 if (currentMonster.type === 'croc') {
                     currentMonster.attacksDealtToPlayer = (currentMonster.attacksDealtToPlayer || 0) + 1;
-                    if (currentMonster.attacksDealtToPlayer >= 3 && !currentMonster.thrown) {
+                    if (currentMonster.attacksDealtToPlayer >= 2 && !currentMonster.thrown) {
                         const targetX = Math.random() * Math.max(0, gameWidth - currentMonster.width);
                         const targetY = Math.random() * Math.max(0, gameHeight - currentMonster.height);
-                        const travelFrames = 60; // travel duration (~1s)
+                        const travelFrames = 50; // travel duration (~0.8s)
                         currentMonster.thrown = true;
                         currentMonster.thrownTimer = travelFrames;
+                        currentMonster.thrownTotalTime = travelFrames;
                         currentMonster.thrownTargetX = targetX;
                         currentMonster.thrownTargetY = targetY;
                         currentMonster.thrownVx = (targetX - currentMonster.x) / travelFrames;
                         currentMonster.thrownVy = (targetY - currentMonster.y) / travelFrames;
+                        currentMonster.thrownArcHeight = 0;
                         currentMonster.alpha = 0.35;
                         currentMonster.attackCooldown = 180;
                         currentMonster.attacksDealtToPlayer = 0;
