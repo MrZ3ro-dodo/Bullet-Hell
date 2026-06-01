@@ -1493,10 +1493,11 @@ class Player {
             ctx.translate(centerX, centerY);
             
             const shieldRadius = 45;
-            const shieldsPerCircle = Math.max(3, Math.min(8, Math.ceil(this.parryDefenseBonus)));
+            const totalShields = Math.round(this.parryDefenseBonus / 12.5);
+            const shieldsPerCircle = Math.max(3, Math.min(8, totalShields));
             const angleStep = (Math.PI * 2) / shieldsPerCircle;
             
-            for (let i = 0; i < Math.ceil(this.parryDefenseBonus); i++) {
+            for (let i = 0; i < totalShields; i++) {
                 const circleIndex = Math.floor(i / shieldsPerCircle);
                 const indexInCircle = i % shieldsPerCircle;
                 const currentRadius = shieldRadius + circleIndex * 28;
@@ -2455,9 +2456,33 @@ class Monster {
                     this.confusedLevel = 3;
                     this.confusedTimer = 4 * 60; // 4 seconds
                     this.stunnedTimer = 60; // 1 second stopped
-                    this.fallStarsTimer = 30;
-                    this.impactShakeTimer = 20;
-                    screenShakeTimer = Math.max(screenShakeTimer, 18);
+                    this.fallStarsTimer = 40;
+                    this.impactShakeTimer = 24;
+                    screenShakeTimer = Math.max(screenShakeTimer, 28);
+                    spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#ffd860', 22, 14);
+                    const baseHitX = this.x + this.width / 2;
+                    const baseHitY = this.y + this.height / 2;
+                    const projectileCount = 6;
+                    const launchRadius = Math.max(this.width, this.height) * 0.55;
+                    for (let i = 0; i < projectileCount; i++) {
+                        const angle = Math.random() * Math.PI * 2;
+                        const startX = baseHitX + Math.cos(angle) * launchRadius;
+                        const startY = baseHitY + Math.sin(angle) * launchRadius;
+                        const travelDistance = 260 + Math.random() * 120;
+                        const targetX = startX + Math.cos(angle) * travelDistance;
+                        const targetY = startY + Math.sin(angle) * travelDistance;
+                        const speed = 16 + Math.random() * 4;
+                        spawnMonsterProjectile(
+                            startX,
+                            startY,
+                            targetX,
+                            targetY,
+                            Math.max(1, Math.round(this.getAttackDamage() * 0.2)),
+                            '#ffd860',
+                            speed,
+                            { monsterType: 'croc', size: 10, maxDistance: 1400 }
+                        );
+                    }
                     // ensure it doesn't move immediately
                     this.simpleDashVx = 0;
                     this.simpleDashVy = 0;
