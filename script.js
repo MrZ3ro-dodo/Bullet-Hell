@@ -132,6 +132,9 @@ class Projectile {
         this.preLaunchTargetX = null;
         this.preLaunchTargetY = null;
         this.preLaunchSpeed = 0;
+        this.shakeTimer = 0;
+        this.shakeIntensity = 0;
+        this.pendingRicochetDestroy = false;
     }
 
     update() {
@@ -211,6 +214,7 @@ class Projectile {
             this.delayTimer--;
             this.vx = 0;
             this.vy = 0;
+            if (this.shakeTimer > 0) this.shakeTimer -= 1;
             return;
         }
         
@@ -290,11 +294,18 @@ class Projectile {
                 });
             }
         }
+
+        if (this.shakeTimer > 0) {
+            this.shakeTimer -= 1;
+        }
     }
 
     draw() {
         ctx.save();
-        
+        const shakeX = this.shakeTimer > 0 ? (Math.random() * 2 - 1) * this.shakeIntensity : 0;
+        const shakeY = this.shakeTimer > 0 ? (Math.random() * 2 - 1) * this.shakeIntensity : 0;
+        ctx.translate(shakeX, shakeY);
+
         // If this projectile is being pulled by a hurricane, render it at 50% opacity
         if (this.pulledByHurricane) ctx.globalAlpha = 0.5;
         const angle = Math.atan2(this.vy, this.vx);
@@ -1040,6 +1051,86 @@ class Projectile {
             return;
         }
 
+        if (style === 'casterFlameCircle') {
+            ctx.fillStyle = this.color;
+            ctx.shadowColor = this.color;
+            ctx.shadowBlur = 26;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size * 1.1, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.beginPath();
+            ctx.arc(this.x, this.y - this.size * 0.25, this.size * 0.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,220,140,0.9)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size * 1.45, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
+
+        if (style === 'casterFlameSpiral') {
+            ctx.translate(this.x, this.y);
+            ctx.rotate(angle * 0.8);
+            ctx.fillStyle = this.color;
+            ctx.shadowColor = this.color;
+            ctx.shadowBlur = 20;
+            ctx.beginPath();
+            ctx.moveTo(0, -this.size * 0.9);
+            ctx.bezierCurveTo(this.size * 0.4, -this.size * 0.85, this.size * 0.55, -this.size * 0.1, this.size * 0.3, this.size * 0.3);
+            ctx.bezierCurveTo(this.size * 0.05, this.size * 0.55, -this.size * 0.25, this.size * 0.45, -this.size * 0.35, this.size * 0.18);
+            ctx.bezierCurveTo(-this.size * 0.55, -this.size * 0.1, -this.size * 0.35, -this.size * 0.75, 0, -this.size * 0.9);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,230,180,0.85)';
+            ctx.lineWidth = 1.6;
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
+
+        if (style === 'casterFlameRing') {
+            ctx.fillStyle = this.color;
+            ctx.shadowColor = this.color;
+            ctx.shadowBlur = 24;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size * 0.92, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(255,220,180,0.9)';
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size * 0.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,190,130,0.75)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size * 1.25, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
+
+        if (style === 'casterFlameVolley') {
+            ctx.translate(this.x, this.y);
+            ctx.rotate(angle);
+            ctx.fillStyle = this.color;
+            ctx.shadowColor = this.color;
+            ctx.shadowBlur = 28;
+            ctx.beginPath();
+            ctx.moveTo(-this.size * 0.6, -this.size * 0.25);
+            ctx.lineTo(this.size * 1.2, 0);
+            ctx.lineTo(-this.size * 0.6, this.size * 0.25);
+            ctx.quadraticCurveTo(-this.size * 0.75, 0, -this.size * 0.6, -this.size * 0.25);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            ctx.beginPath();
+            ctx.arc(this.size * 0.1, 0, this.size * 0.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+            return;
+        }
+
         ctx.fillStyle = this.color;
         ctx.shadowColor = this.color;
         ctx.shadowBlur = Math.min(24, this.size * 3);
@@ -1095,6 +1186,7 @@ class Player {
         this.spreadProjectiles = 0;
         this.attackMove = 0;
         this.parryChargePerHit = 0;
+        this.parryChargeAccumulator = 0;
         this.parryDefenseBonus = 0;
         this.parryHealOnUse = 0;
         this.parryConfusionChance = 0;
@@ -2254,7 +2346,7 @@ class Monster {
             } else if (this.portalTimer > 0) {
                 if (this.portalTimer % 12 === 0) {
                     if (this.portalAttackMode === 'circular') {
-                        // Ataque circular original
+                        // Ataque circular com chamas breves
                         const rayCount = 5 + this.phase;
                         for (let i = 0; i < rayCount; i++) {
                             const angle = (Math.PI * 2 * i) / rayCount;
@@ -2264,13 +2356,13 @@ class Monster {
                                 this.portalX, this.portalY,
                                 targetX, targetY,
                                 this.getAttackDamage() * 0.7,
-                                '#00ffff',
+                                '#ff9e3c',
                                 4.5 + this.phase * 0.2,
-                                { monsterType: this.type, size: 7 }
+                                { monsterType: this.type, size: 16, style: 'casterFlameCircle' }
                             );
                         }
                     } else if (this.portalAttackMode === 'spiral') {
-                        // Ataque em espiral
+                        // Ataque em espiral de chamas
                         const spiralCount = 5 + this.phase;
                         const spiralSpacing = 0.25; // Ângulo entre cada projétil na espiral
                         for (let i = 0; i < spiralCount; i++) {
@@ -2282,9 +2374,9 @@ class Monster {
                                 this.portalX, this.portalY,
                                 targetX, targetY,
                                 this.getAttackDamage() * 0.7,
-                                '#00ffff',
+                                '#ff6a2d',
                                 4.5 + this.phase * 0.2,
-                                { monsterType: this.type, size: 7 }
+                                { monsterType: this.type, size: 16, style: 'casterFlameSpiral' }
                             );
                         }
                         this.spiralProjectileCount++; // Incrementa para próxima rodada
@@ -2353,7 +2445,8 @@ class Monster {
                     this.simpleDashCooldown--;
                     this.attackCooldown = 1;
                 } else {
-                    const dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                    let dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                    if (this.confusedTimer > 0) dashDir += Math.PI;
                     this.simpleDashDirection = dashDir;
                     this.simpleDashVx = Math.cos(dashDir) * this.simpleDashSpeed;
                     this.simpleDashVy = Math.sin(dashDir) * this.simpleDashSpeed;
@@ -2433,7 +2526,7 @@ class Monster {
                     }
                 } else if (this.attackCooldown <= 0 && this.clawAttackTimer === 0) {
                     this.attackCooldown = 42;
-                    this.attackEffectTimer = 20;
+                    this.attackEffectTimer = 28;
                     this.clawAttackTimer = 20;
                     this.simpleClawDirection = Math.atan2(playerY - (this.y + this.height / 2), playerX - (this.x + this.width / 2));
                     this.simpleClawAngle = Math.PI * 0.78;
@@ -2454,7 +2547,7 @@ class Monster {
                     this.alpha = 1;
                     this.thrownArcHeight = 0;
                     this.confusedLevel = 3;
-                    this.confusedTimer = 4 * 60; // 4 seconds
+                    this.confusedTimer = 6 * 60; // 6 seconds
                     this.stunnedTimer = 60; // 1 second stopped
                     this.fallStarsTimer = 40;
                     this.impactShakeTimer = 24;
@@ -2462,7 +2555,7 @@ class Monster {
                     spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#ffd860', 22, 14);
                     const baseHitX = this.x + this.width / 2;
                     const baseHitY = this.y + this.height / 2;
-                    const projectileCount = 6;
+                    const projectileCount = 12;
                     const launchRadius = Math.max(this.width, this.height) * 0.55;
                     for (let i = 0; i < projectileCount; i++) {
                         const angle = Math.random() * Math.PI * 2;
@@ -2520,7 +2613,8 @@ class Monster {
                         this.simpleDashCooldown--;
                         this.attackCooldown = 1;
                     } else {
-                        const dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                        let dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                        if (this.confusedTimer > 0) dashDir += Math.PI;
                         this.simpleDashDirection = dashDir;
                         this.simpleDashVx = Math.cos(dashDir) * this.simpleDashSpeed;
                         this.simpleDashVy = Math.sin(dashDir) * this.simpleDashSpeed;
@@ -2642,14 +2736,14 @@ class Monster {
             const radius = 240 + wave * 48;
             const speed = Math.max(1.6, baseSpeed - wave * 0.22);
             const damage = Math.max(2, Math.round(this.getAttackDamage() * 0.6));
-            const color = '#66eeff';
+            const color = '#ffb95d';
 
             const projectilesForWave = [];
             for (let i = 0; i < ringCount; i++) {
                 const angle = (Math.PI * 2 / ringCount) * i + wave * 0.1;
                 const targetX = this.portalX + Math.cos(angle) * radius;
                 const targetY = this.portalY + Math.sin(angle) * radius;
-                projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 8 });
+                projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 16, style: 'casterFlameRing' });
             }
 
             delayedProjectileSpawns.push({
@@ -2688,10 +2782,11 @@ class Monster {
                 targetX,
                 targetY,
                 damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64)),
-                color: '#88ddff',
+                color: this.confusedTimer > 0 ? '#ffd880' : '#ffb14a',
                 speed,
                 monsterType: this.type,
-                size: 9
+                size: 16,
+                style: 'casterFlameVolley'
             });
         }
 
@@ -2715,7 +2810,7 @@ class Monster {
                 const angle = (Math.PI * 2 / rayCount) * i;
                 const targetX = srcX + Math.cos(angle) * 300;
                 const targetY = srcY + Math.sin(angle) * 300;
-                spawnMonsterProjectile(srcX, srcY, targetX, targetY, this.getAttackDamage() * 0.7, '#00ffff', speed, { monsterType: this.type, size: 7 });
+                spawnMonsterProjectile(srcX, srcY, targetX, targetY, this.getAttackDamage() * 0.7, '#ff9c46', speed, { monsterType: this.type, size: 16, style: 'casterFlameCircle' });
             }
         } else if (mode === 'spiral') {
             const spiralCount = 5 + this.phase;
@@ -2725,7 +2820,7 @@ class Monster {
                 const angle = (Math.PI * 2 * i) / spiralCount + Math.random() * spiralSpacing;
                 const targetX = srcX + Math.cos(angle) * 300;
                 const targetY = srcY + Math.sin(angle) * 300;
-                spawnMonsterProjectile(srcX, srcY, targetX, targetY, this.getAttackDamage() * 0.7, '#00ffff', speed, { monsterType: this.type, size: 7 });
+                spawnMonsterProjectile(srcX, srcY, targetX, targetY, this.getAttackDamage() * 0.7, '#ff7430', speed, { monsterType: this.type, size: 16, style: 'casterFlameSpiral' });
             }
         } else if (mode === 'ring') {
             // schedule 1-3 waves like casterRingWaveAttack did
@@ -2738,13 +2833,13 @@ class Monster {
                 const radius = 240 + wave * 48;
                 const speed = Math.max(1.6, baseSpeed - wave * 0.22);
                 const damage = Math.max(2, Math.round(this.getAttackDamage() * 0.6));
-                const color = '#66eeff';
+                const color = '#ffb95d';
                 const projectilesForWave = [];
                 for (let i = 0; i < ringCount; i++) {
                     const angle = (Math.PI * 2 / ringCount) * i + wave * 0.1;
                     const targetX = srcX + Math.cos(angle) * radius;
                     const targetY = srcY + Math.sin(angle) * radius;
-                    projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 8 });
+                    projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 16, style: 'casterFlameRing' });
                 }
                 delayedProjectileSpawns.push({ timer: delay, kind: 'monsterRing', srcX, srcY, projectiles: projectilesForWave });
             }
@@ -2757,7 +2852,7 @@ class Monster {
                 const targetX = playerX + Math.cos(offset) * 27;
                 const targetY = playerY + Math.sin(offset) * 27;
                 const delay = i * framesPerShot;
-                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterAimed', srcX, srcY, targetX, targetY, damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64)), color: '#88ddff', speed, monsterType: this.type, size: 9 });
+                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterAimed', srcX, srcY, targetX, targetY, damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64)), color: this.confusedTimer > 0 ? '#ffd880' : '#ffb14a', speed, monsterType: this.type, size: 16, style: 'casterFlameVolley' });
             }
         }
     }
@@ -2796,6 +2891,7 @@ class Monster {
         const particles = 8;
         const speed = 5.5 + this.phase * 0.2;
         const baseAngle = Math.atan2(targetY - (this.y + this.height / 2), targetX - (this.x + this.width / 2));
+        const projectileColor = this.confusedTimer > 0 ? '#ffe080' : '#66ddff';
         for (let i = 0; i < particles; i++) {
             const angle = baseAngle + (i - (particles - 1) / 2) * 0.18;
             const projTargetX = this.x + this.width / 2 + Math.cos(angle) * 320;
@@ -2806,7 +2902,7 @@ class Monster {
                 projTargetX,
                 projTargetY,
                 Math.max(3, this.getAttackDamage() - 1),
-                '#66ddff',
+                projectileColor,
                 speed,
                 { monsterType: this.type, size: 11 }
             );
@@ -2825,7 +2921,8 @@ class Monster {
         const distance = 480;
         const hitX = startX + Math.cos(angle) * distance;
         const hitY = startY + Math.sin(angle) * distance;
-        spawnMonsterHitscan(startX, startY, hitX, hitY, Math.max(8, this.getAttackDamage()), 'rgba(120,220,255,0.9)', 20, 30);
+        const hitscanColor = this.confusedTimer > 0 ? 'rgba(255,210,110,0.95)' : 'rgba(120,220,255,0.9)';
+        spawnMonsterHitscan(startX, startY, hitX, hitY, Math.max(8, this.getAttackDamage()), hitscanColor, 20, 30);
     }
 
     startSmartHitscanWarning(targetX, targetY) {
@@ -2841,6 +2938,7 @@ class Monster {
         }
         const shots = 6 + this.phase;
         const speed = (this.projectileSpeed || 6) * 0.25;
+        const projectileColor = this.confusedTimer > 0 ? '#ffe080' : '#66bbff';
 
         for (let i = 0; i < shots; i++) {
             const angle = (Math.PI * 2 / shots) * i + (Math.random() - 0.5) * 0.2;
@@ -2853,7 +2951,7 @@ class Monster {
                 targetX,
                 targetY,
                 this.getAttackDamage(),
-                '#66bbff',
+                projectileColor,
                 speed,
                 { monsterType: this.type }
             );
@@ -2870,6 +2968,7 @@ class Monster {
         const shots = 10 + this.phase * 2;
         const speed = 4.5 * 0.67;
         const baseAngle = Math.atan2(playerY - (this.y + this.height / 2), playerX - (this.x + this.width / 2));
+        const projectileColor = this.confusedTimer > 0 ? '#ffd880' : '#44aaff';
 
         for (let i = 0; i < shots; i++) {
             const angle = baseAngle + i * 0.45;
@@ -2882,7 +2981,7 @@ class Monster {
                 targetX,
                 targetY,
                 this.getAttackDamage(),
-                '#44aaff',
+                projectileColor,
                 speed,
                 { monsterType: this.type }
             );
@@ -2900,6 +2999,7 @@ class Monster {
         const speed = 5.5;
         const baseAngle = Math.atan2(playerY - (this.y + this.height / 2), playerX - (this.x + this.width / 2));
 
+        const projectileColor = this.confusedTimer > 0 ? '#ffd880' : '#88eeff';
         for (let i = 0; i < shots; i++) {
             const angle = baseAngle + (i - (shots - 1) / 2) * 0.22;
             const targetX = this.x + this.width / 2 + Math.cos(angle) * 330;
@@ -2911,7 +3011,7 @@ class Monster {
                 targetX,
                 targetY,
                 this.getAttackDamage(),
-                '#88eeff',
+                projectileColor,
                 speed,
                 { monsterType: this.type }
             );
@@ -2936,7 +3036,7 @@ class Monster {
             targetX,
             targetY,
             this.getAttackDamage(),
-            '#ff6633',
+            this.confusedTimer > 0 ? '#ffd880' : '#ff6633',
             speed,
             { monsterType: this.type, size: 10, splitOnPlayerAttack: true, splitDistance: 160, maxDistance: 1400 }
         );
@@ -2950,6 +3050,7 @@ class Monster {
         const shots = 4 + Math.min(3, this.phase);
         const speed = 7;
         const baseAngle = Math.atan2(playerY - (this.y + this.height / 2), playerX - (this.x + this.width / 2));
+        const projectileColor = this.confusedTimer > 0 ? '#ffd880' : '#cc4444';
 
         for (let i = 0; i < shots; i++) {
             const angle = baseAngle + (i - (shots - 1) / 2) * 0.22;
@@ -2962,7 +3063,7 @@ class Monster {
                 targetX,
                 targetY,
                 this.getAttackDamage() + 2,
-                '#cc4444',
+                projectileColor,
                 speed,
                 { monsterType: this.type, size: 12 }
             );
@@ -2981,6 +3082,11 @@ class Monster {
         const baseAngle = Math.atan2(playerY - (this.y + this.height / 2), playerX - (this.x + this.width / 2));
         const damage = Math.max(6, this.getAttackDamage() + 1);
 
+        const missileColor = this.confusedTimer > 0 ? '#ffd880' : '#ff8844';
+        const homingTarget = this.confusedTimer > 0
+            ? { x: playerX, y: playerY }
+            : player;
+
         for (let i = 0; i < missiles; i++) {
             const orbitAngle = baseAngle + (i - 1) * (Math.PI / 4);
             const spawnX = this.x + this.width / 2 + Math.cos(orbitAngle) * 38;
@@ -2995,13 +3101,13 @@ class Monster {
                 targetX,
                 targetY,
                 missileDamage,
-                '#ff8844',
+                missileColor,
                 speed,
                 {
                     monsterType: this.type,
                     size: 11,
                     homing: true,
-                    homingTarget: player,
+                    homingTarget,
                     homingStrength: 0.08,
                     delayTimer: 28,
                     delayDuration: 28,
@@ -3048,6 +3154,11 @@ class Monster {
         let damage = Math.max(4, this.getAttackDamage() - 1);
         damage = Math.max(1, Math.round(damage * 0.75));
 
+        const missileColor = this.confusedTimer > 0 ? '#ffd880' : '#ff3333';
+        const homingTarget = this.confusedTimer > 0
+            ? { x: playerX, y: playerY }
+            : player;
+
         for (let i = 0; i < missiles; i++) {
             const angleOffset = (i - (missiles - 1) / 2) * 0.2;
             const targetX = playerX + Math.cos(angleOffset) * 60;
@@ -3059,9 +3170,9 @@ class Monster {
                 targetX,
                 targetY,
                 damage,
-                '#ff3333',
+                missileColor,
                 speed,
-                { monsterType: this.type, homing: true, homingTarget: player, critPercent: 100, size: 10 }
+                { monsterType: this.type, homing: true, homingTarget, critPercent: 100, size: 10 }
             );
         }
     }
@@ -3287,6 +3398,107 @@ class Monster {
             ctx.beginPath();
             ctx.arc(centerX, centerY, radius * 0.9, 0, Math.PI * 2);
             ctx.stroke();
+        } else if (this.type === 'caster') {
+            ctx.save();
+            ctx.translate(centerX, centerY);
+
+            const faceRadius = radius * 0.75;
+            const hatBrimWidth = faceRadius * 1.3;
+            const hatBrimHeight = faceRadius * 0.14;
+            const hatConeWidth = faceRadius * 0.6;
+            const hatTopY = -faceRadius * 0.5 - faceRadius * 1.35;
+
+            // Rostinho grande cinzento
+            ctx.fillStyle = '#9a9a9a';
+            ctx.beginPath();
+            ctx.arc(0, -faceRadius * 0.2, faceRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            // Olhos do mago
+            ctx.fillStyle = '#242424';
+            ctx.beginPath();
+            ctx.arc(-faceRadius * 0.18, -faceRadius * 0.45, faceRadius * 0.12, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(faceRadius * 0.18, -faceRadius * 0.45, faceRadius * 0.12, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Boca simples
+            ctx.strokeStyle = '#242424';
+            ctx.lineWidth = 2.8;
+            ctx.beginPath();
+            ctx.arc(0, -faceRadius * 0.07, faceRadius * 0.24, 0.12 * Math.PI, 0.88 * Math.PI);
+            ctx.stroke();
+
+            // Barba do mago
+            ctx.fillStyle = '#5c5c5c';
+            ctx.beginPath();
+            ctx.moveTo(-faceRadius * 0.72, faceRadius * 0.08);
+            ctx.lineTo(-faceRadius * 0.4, faceRadius * 0.9);
+            ctx.lineTo(-faceRadius * 0.14, faceRadius * 1.05);
+            ctx.lineTo(0, faceRadius * 1.2);
+            ctx.lineTo(faceRadius * 0.14, faceRadius * 1.05);
+            ctx.lineTo(faceRadius * 0.4, faceRadius * 0.9);
+            ctx.lineTo(faceRadius * 0.72, faceRadius * 0.08);
+            ctx.quadraticCurveTo(faceRadius * 0.45, faceRadius * 0.45, 0, faceRadius * 0.95);
+            ctx.quadraticCurveTo(-faceRadius * 0.45, faceRadius * 0.45, -faceRadius * 0.72, faceRadius * 0.08);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = '#363636';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            // Bigode/linha de transição da barba
+            ctx.strokeStyle = '#2b2b2b';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(-faceRadius * 0.35, faceRadius * 0.18);
+            ctx.quadraticCurveTo(0, faceRadius * 0.33, faceRadius * 0.35, faceRadius * 0.18);
+            ctx.stroke();
+
+            // Chapéu azul estilo emoji de mago
+            ctx.fillStyle = '#2f5bef';
+            ctx.strokeStyle = '#8db5ff';
+            ctx.lineWidth = 3;
+
+            ctx.beginPath();
+            ctx.ellipse(0, -faceRadius * 0.85, hatBrimWidth * 1.05, hatBrimHeight, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(-hatConeWidth, -faceRadius * 0.85);
+            ctx.quadraticCurveTo(-hatConeWidth * 0.3, hatTopY + faceRadius * 0.05, 0, hatTopY);
+            ctx.quadraticCurveTo(hatConeWidth * 0.3, hatTopY + faceRadius * 0.05, hatConeWidth, -faceRadius * 0.85);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = '#8db5ff';
+            ctx.beginPath();
+            ctx.moveTo(-hatConeWidth, -faceRadius * 0.85);
+            ctx.lineTo(hatConeWidth, -faceRadius * 0.85);
+            ctx.lineTo(hatConeWidth * 0.95, -faceRadius * 0.96);
+            ctx.lineTo(-hatConeWidth * 0.95, -faceRadius * 0.96);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = '#ffeb7f';
+            const starPositions = [
+                { x: -hatConeWidth * 0.4, y: hatTopY + faceRadius * 0.28 },
+                { x: hatConeWidth * 0.1, y: hatTopY + faceRadius * 0.08 },
+                { x: hatConeWidth * 0.45, y: hatTopY + faceRadius * 0.35 }
+            ];
+            for (const pos of starPositions) {
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, faceRadius * 0.06, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            ctx.restore();
         } else if (this.type === 'simple' && this.simpleVariant === 'croc') {
             const open = this.simpleDashOpen > 0.05;
             const jawOpen = radius * 0.3 + this.simpleDashOpen * radius * 1.8;
@@ -3301,8 +3513,12 @@ class Monster {
             ctx.translate(centerX, centerY);
             ctx.rotate(tilt);
 
-            // Head shape
-            ctx.fillStyle = skinColor;
+            // Head shape with improved texture
+            const headGradient = ctx.createLinearGradient(-radius, -radius * 0.35, radius, radius * 0.15);
+            headGradient.addColorStop(0, '#79a15d');
+            headGradient.addColorStop(0.5, '#5d7a43');
+            headGradient.addColorStop(1, '#4b6133');
+            ctx.fillStyle = headGradient;
             ctx.beginPath();
             ctx.moveTo(-radius, -radius * 0.35);
             ctx.quadraticCurveTo(-radius * 0.9, -radius * 0.8, -radius * 0.3, -radius * 0.95);
@@ -3318,8 +3534,22 @@ class Monster {
             ctx.lineWidth = 2;
             ctx.stroke();
 
-            // Lower jaw
-            ctx.fillStyle = jawColor;
+            // Head texture and scales
+            ctx.fillStyle = 'rgba(18, 18, 10, 0.15)';
+            for (let i = 0; i < 6; i++) {
+                const px = -radius * 0.55 + i * radius * 0.22;
+                const py = -radius * 0.53 + Math.sin(i * 0.9) * radius * 0.03;
+                ctx.beginPath();
+                ctx.ellipse(px, py, radius * 0.07, radius * 0.035, -0.15, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Lower jaw with shading
+            const jawGradient = ctx.createLinearGradient(-radius, -radius * 0.08, radius, radius * 0.18);
+            jawGradient.addColorStop(0, '#8cab71');
+            jawGradient.addColorStop(0.5, '#708a4f');
+            jawGradient.addColorStop(1, '#5b7242');
+            ctx.fillStyle = jawGradient;
             ctx.beginPath();
             ctx.moveTo(-radius, -radius * 0.08);
             ctx.quadraticCurveTo(0, jawOpen, radius, -radius * 0.08);
@@ -3328,6 +3558,27 @@ class Monster {
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
+
+            // Jaw texture
+            ctx.fillStyle = 'rgba(18, 18, 8, 0.14)';
+            for (let i = 0; i < 4; i++) {
+                const px = -radius * 0.45 + i * radius * 0.3;
+                const py = radius * 0.04 + Math.max(0, jawOpen - radius * 0.04);
+                ctx.beginPath();
+                ctx.ellipse(px, py, radius * 0.06, radius * 0.03, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Subtle tongue
+            if (jawOpen > radius * 0.1) {
+                ctx.fillStyle = 'rgba(172, 88, 36, 0.35)';
+                ctx.beginPath();
+                ctx.moveTo(-radius * 0.32, radius * 0.02);
+                ctx.quadraticCurveTo(0, radius * 0.14 + jawOpen * 0.08, radius * 0.32, radius * 0.02);
+                ctx.quadraticCurveTo(radius * 0.28, radius * 0.08 + jawOpen * 0.05, -radius * 0.28, radius * 0.08 + jawOpen * 0.05);
+                ctx.closePath();
+                ctx.fill();
+            }
 
             // Mouth interior
             ctx.fillStyle = mouthColor;
@@ -3370,6 +3621,11 @@ class Monster {
             ctx.arc(radius * 0.45, -radius * 0.72, radius * 0.04, 0, Math.PI * 2);
             ctx.fill();
 
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.beginPath();
+            ctx.arc(radius * 0.52, -radius * 0.78, radius * 0.03, 0, Math.PI * 2);
+            ctx.fill();
+
             ctx.restore();
         } else if (this.type === 'croc') {
             const isDashing = this.simpleDashOpen > 0.05;
@@ -3386,8 +3642,12 @@ class Monster {
             ctx.translate(centerX, centerY);
             ctx.rotate(rotation + tilt);
 
-            // Head shape
-            ctx.fillStyle = skinColor;
+            // Head shape with richer scales and shading
+            const headGradient = ctx.createLinearGradient(-radius * 1.1, -radius * 0.4, radius * 1.1, radius * 0.18);
+            headGradient.addColorStop(0, '#6c9851');
+            headGradient.addColorStop(0.45, '#4f6f3a');
+            headGradient.addColorStop(1, '#3c552c');
+            ctx.fillStyle = headGradient;
             ctx.beginPath();
             ctx.moveTo(-radius * 1.1, -radius * 0.4);
             ctx.quadraticCurveTo(-radius * 1.0, -radius * 0.95, -radius * 0.35, -radius * 1.05);
@@ -3403,8 +3663,40 @@ class Monster {
             ctx.lineWidth = 2.5;
             ctx.stroke();
 
-            // Lower jaw
-            ctx.fillStyle = jawColor;
+            // Upper snout ridge
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.16)';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(-radius * 0.95, -radius * 0.35);
+            ctx.quadraticCurveTo(-radius * 0.45, -radius * 0.85, 0, -radius * 1.0);
+            ctx.quadraticCurveTo(radius * 0.45, -radius * 0.85, radius * 0.95, -radius * 0.35);
+            ctx.stroke();
+
+            // Nostrils and brow
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+            ctx.beginPath();
+            ctx.ellipse(-radius * 0.42, -radius * 0.72, radius * 0.07, radius * 0.035, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(-radius * 0.25, -radius * 0.75, radius * 0.03, radius * 0.015, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Head scale detail
+            ctx.fillStyle = 'rgba(22, 18, 8, 0.16)';
+            for (let i = 0; i < 7; i++) {
+                const px = -radius * 0.85 + i * radius * 0.28;
+                const py = -radius * 0.57 + Math.cos(i * 1.1) * radius * 0.04;
+                ctx.beginPath();
+                ctx.ellipse(px, py, radius * 0.095, radius * 0.05, -0.18, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Lower jaw with stronger shading
+            const jawGradient = ctx.createLinearGradient(-radius * 1.1, -radius * 0.08, radius * 1.1, radius * 0.2);
+            jawGradient.addColorStop(0, '#93b47a');
+            jawGradient.addColorStop(0.5, '#719356');
+            jawGradient.addColorStop(1, '#556d43');
+            ctx.fillStyle = jawGradient;
             ctx.beginPath();
             ctx.moveTo(-radius * 1.1, -radius * 0.08);
             ctx.quadraticCurveTo(0, jawOpen, radius * 1.1, -radius * 0.08);
@@ -3413,6 +3705,28 @@ class Monster {
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
+
+            // Jaw texture
+            ctx.fillStyle = 'rgba(22, 18, 8, 0.15)';
+            for (let i = 0; i < 6; i++) {
+                const px = -radius * 0.55 + i * radius * 0.3;
+                const py = radius * 0.05 + Math.max(0, jawOpen - radius * 0.05);
+                ctx.beginPath();
+                ctx.ellipse(px, py, radius * 0.08, radius * 0.035, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Tongue detail
+            if (jawOpen > radius * 0.12) {
+                ctx.fillStyle = 'rgba(175, 76, 34, 0.35)';
+                ctx.beginPath();
+                ctx.moveTo(-radius * 0.4, radius * 0.04);
+                ctx.quadraticCurveTo(0, radius * 0.18 + jawOpen * 0.07, radius * 0.4, radius * 0.04);
+                ctx.lineTo(radius * 0.35, radius * 0.14 + jawOpen * 0.05);
+                ctx.quadraticCurveTo(0, radius * 0.2 + jawOpen * 0.1, -radius * 0.35, radius * 0.14 + jawOpen * 0.05);
+                ctx.closePath();
+                ctx.fill();
+            }
 
             // Mouth interior
             ctx.fillStyle = mouthColor;
@@ -3424,57 +3738,115 @@ class Monster {
             ctx.closePath();
             ctx.fill();
 
-            // Teeth
-            ctx.fillStyle = toothColor;
-            const toothCount = 5;
-            for (let i = 0; i < toothCount; i++) {
-                const x = -radius * 0.78 + i * (radius * 0.39);
-                const topY = -radius * 0.06;
+            // Garganta e dentes internos (apenas enquanto a boca está aberta)
+            if (jawOpen > radius * 0.05) {
+                const throatColor = '#0a0f06';
+                const throatWidth = radius * 0.8;
+                const throatDepth = jawOpen * 1.2;
+                const toothHeight = radius * 0.14;
+                const toothCount = 9;
+                
+                // Lados da garganta com pele verde
+                const sideSkinGradient = ctx.createLinearGradient(-throatWidth, radius * 0.08, -throatWidth * 0.2, radius * 0.08 + throatDepth);
+                sideSkinGradient.addColorStop(0, skinColor);
+                sideSkinGradient.addColorStop(1, '#3d5928');
+                ctx.fillStyle = sideSkinGradient;
                 ctx.beginPath();
-                ctx.moveTo(x, topY);
-                ctx.lineTo(x + radius * 0.1, topY + radius * 0.2);
-                ctx.lineTo(x - radius * 0.1, topY + radius * 0.2);
+                ctx.moveTo(-throatWidth, radius * 0.08);
+                ctx.lineTo(-throatWidth * 0.35, radius * 0.08 + throatDepth);
+                ctx.lineTo(-throatWidth * 0.15, radius * 0.08 + throatDepth * 0.5);
+                ctx.lineTo(-throatWidth * 0.15, radius * 0.08);
                 ctx.closePath();
                 ctx.fill();
-                const bottomY = radius * 0.1;
+
                 ctx.beginPath();
-                ctx.moveTo(x, bottomY);
-                ctx.lineTo(x + radius * 0.1, bottomY - radius * 0.2);
-                ctx.lineTo(x - radius * 0.1, bottomY - radius * 0.2);
+                ctx.moveTo(throatWidth, radius * 0.08);
+                ctx.lineTo(throatWidth * 0.35, radius * 0.08 + throatDepth);
+                ctx.lineTo(throatWidth * 0.15, radius * 0.08 + throatDepth * 0.5);
+                ctx.lineTo(throatWidth * 0.15, radius * 0.08);
                 ctx.closePath();
+                ctx.fill();
+
+                ctx.fillStyle = throatColor;
+                ctx.beginPath();
+                ctx.moveTo(-throatWidth, radius * 0.08);
+                ctx.lineTo(throatWidth, radius * 0.08);
+                ctx.quadraticCurveTo(throatWidth * 0.7, radius * 0.08 + throatDepth * 0.5, throatWidth * 0.35, radius * 0.08 + throatDepth);
+                ctx.lineTo(-throatWidth * 0.35, radius * 0.08 + throatDepth);
+                ctx.quadraticCurveTo(-throatWidth * 0.7, radius * 0.08 + throatDepth * 0.5, -throatWidth, radius * 0.08);
+                ctx.closePath();
+                ctx.fill();
+
+                // Dentes superiores da garganta
+                ctx.fillStyle = toothColor;
+                for (let i = 0; i < toothCount; i++) {
+                    const t = i / (toothCount - 1);
+                    const x = -throatWidth + t * (throatWidth * 2);
+                    const y = radius * 0.08;
+                    ctx.beginPath();
+                    ctx.moveTo(x - radius * 0.065, y);
+                    ctx.lineTo(x, y + toothHeight);
+                    ctx.lineTo(x + radius * 0.065, y);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+
+                // Dentes inferiores da garganta (removendo 2 de cada lado)
+                for (let i = 2; i <= 6; i++) {
+                    const t = i / (toothCount - 1);
+                    const x = -throatWidth + t * (throatWidth * 2);
+                    const y = radius * 0.08 + throatDepth;
+                    ctx.beginPath();
+                    ctx.moveTo(x - radius * 0.065, y);
+                    ctx.lineTo(x, y - toothHeight);
+                    ctx.lineTo(x + radius * 0.065, y);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+
+                // Base sob os dentes inferiores (queixo / suporte)
+                const baseTop = radius * 0.08 + throatDepth;
+                const baseBottom = baseTop + radius * 0.08;
+                ctx.fillStyle = '#1c2410';
+                ctx.beginPath();
+                ctx.moveTo(-throatWidth * 0.95, baseTop);
+                ctx.quadraticCurveTo(-throatWidth * 0.4, baseTop + radius * 0.03, -throatWidth * 0.25, baseBottom);
+                ctx.lineTo(throatWidth * 0.25, baseBottom);
+                ctx.quadraticCurveTo(throatWidth * 0.4, baseTop + radius * 0.03, throatWidth * 0.95, baseTop);
+                ctx.closePath();
+                ctx.fill();
+
+                // Brilho da garganta (reflexo)
+                ctx.fillStyle = 'rgba(255, 100, 50, 0.15)';
+                ctx.beginPath();
+                ctx.ellipse(0, radius * 0.1 + throatDepth * 0.3, throatWidth * 0.3, throatDepth * 0.2, 0, 0, Math.PI * 2);
                 ctx.fill();
             }
 
-            // Eye
+            // Eyes
             ctx.fillStyle = eyeColor;
             ctx.beginPath();
             ctx.arc(radius * 0.5, -radius * 0.78, radius * 0.12, 0, Math.PI * 2);
             ctx.fill();
+            ctx.beginPath();
+            ctx.arc(-radius * 0.5, -radius * 0.78, radius * 0.12, 0, Math.PI * 2);
+            ctx.fill();
+            
             ctx.fillStyle = '#232511';
             ctx.beginPath();
             ctx.arc(radius * 0.5, -radius * 0.78, radius * 0.045, 0, Math.PI * 2);
             ctx.fill();
+            ctx.beginPath();
+            ctx.arc(-radius * 0.5, -radius * 0.78, radius * 0.045, 0, Math.PI * 2);
+            ctx.fill();
 
-            if (this.fallStarsTimer > 0) {
-                const intensity = this.fallStarsTimer / 30;
-                const starSize = radius * 0.14;
-                for (let i = 0; i < 3; i++) {
-                    const angle = i * (Math.PI * 2 / 3) + gameFrameCount * 0.15;
-                    const starX = centerX + Math.cos(angle) * radius * 1.05;
-                    const starY = centerY - radius * 1.35 + Math.sin(angle) * radius * 0.08;
-                    ctx.fillStyle = `rgba(255, 235, 120, ${0.75 * intensity})`;
-                    ctx.beginPath();
-                    const starRadius = starSize * (0.8 + 0.2 * Math.sin(gameFrameCount * 0.3 + i));
-                    ctx.moveTo(starX, starY - starRadius);
-                    for (let p = 0; p < 5; p++) {
-                        const a = p * (Math.PI * 2 / 5);
-                        const r = p % 2 === 0 ? starRadius : starRadius * 0.4;
-                        ctx.lineTo(starX + Math.sin(a) * r, starY - Math.cos(a) * r);
-                    }
-                    ctx.closePath();
-                    ctx.fill();
-                }
-            }
+            ctx.fillStyle = 'rgba(255,255,255,0.95)';
+            ctx.beginPath();
+            ctx.arc(radius * 0.56, -radius * 0.82, radius * 0.03, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(-radius * 0.44, -radius * 0.82, radius * 0.03, 0, Math.PI * 2);
+            ctx.fill();
 
             if (this.simpleDashWarningTimer > 0) {
                 const progress = 1 - (this.simpleDashWarningTimer / this.simpleDashWarningDuration);
@@ -3498,103 +3870,140 @@ class Monster {
             ctx.restore();
         } else if (this.type === 'simple') {
             const bodyRadius = radius * 0.95;
-            ctx.fillStyle = '#ffd8e8';
-            ctx.strokeStyle = '#ff8fb8';
-            ctx.lineWidth = 4;
+            const bodyX = centerX;
+            const bodyY = centerY + radius * 0.05;
+            const headRadius = radius * 0.55;
+            const earHeight = headRadius * 0.75;
+            const earWidth = headRadius * 0.42;
+            const bodyColor = '#ffb3d7';
+            const accentColor = '#ff6ab8';
+            const earInner = '#ffd5f0';
+
+            // Tail
+            ctx.save();
+            ctx.strokeStyle = accentColor;
+            ctx.lineWidth = radius * 0.16;
+            ctx.lineCap = 'round';
             ctx.beginPath();
-            ctx.ellipse(centerX, centerY + radius * 0.05, bodyRadius, bodyRadius * 0.75, 0, 0, Math.PI * 2);
+            ctx.moveTo(bodyX + bodyRadius * 0.68, bodyY + bodyRadius * 0.05);
+            ctx.quadraticCurveTo(bodyX + bodyRadius * 1.28, bodyY - bodyRadius * 0.16, bodyX + bodyRadius * 0.72, bodyY - bodyRadius * 0.76);
+            ctx.stroke();
+            ctx.restore();
+
+            // Body
+            ctx.fillStyle = bodyColor;
+            ctx.strokeStyle = accentColor;
+            ctx.lineWidth = radius * 0.08;
+            ctx.beginPath();
+            ctx.ellipse(bodyX, bodyY, bodyRadius, bodyRadius * 0.76, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // Body stripes
+            ctx.strokeStyle = 'rgba(255, 120, 180, 0.6)';
+            ctx.lineWidth = radius * 0.08;
+            for (let i = -1; i <= 1; i++) {
+                const stripeY = bodyY - bodyRadius * 0.12 + i * bodyRadius * 0.24;
+                ctx.beginPath();
+                ctx.moveTo(bodyX - bodyRadius * 0.5, stripeY);
+                ctx.quadraticCurveTo(bodyX - bodyRadius * 0.15, stripeY - bodyRadius * 0.08, bodyX + bodyRadius * 0.25, stripeY - bodyRadius * 0.04);
+                ctx.stroke();
+            }
+
+            // Head
+            const headX = bodyX;
+            const headY = bodyY - bodyRadius * 0.82;
+            ctx.fillStyle = bodyColor;
+            ctx.beginPath();
+            ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
             ctx.fill();
             ctx.stroke();
 
             // Ears
-            ctx.fillStyle = '#ffe5ee';
+            ctx.fillStyle = earInner;
             ctx.beginPath();
-            ctx.moveTo(centerX - radius * 0.58, centerY - radius * 0.45);
-            ctx.lineTo(centerX - radius * 0.30, centerY - radius * 0.95);
-            ctx.lineTo(centerX - radius * 0.08, centerY - radius * 0.44);
+            ctx.moveTo(headX - earWidth * 1.1, headY - headRadius * 0.12);
+            ctx.lineTo(headX - earWidth * 0.35, headY - earHeight * 1.12);
+            ctx.lineTo(headX - earWidth * 0.05, headY - headRadius * 0.28);
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
             ctx.beginPath();
-            ctx.moveTo(centerX + radius * 0.58, centerY - radius * 0.45);
-            ctx.lineTo(centerX + radius * 0.30, centerY - radius * 0.95);
-            ctx.lineTo(centerX + radius * 0.08, centerY - radius * 0.44);
+            ctx.moveTo(headX + earWidth * 1.1, headY - headRadius * 0.12);
+            ctx.lineTo(headX + earWidth * 0.35, headY - earHeight * 1.12);
+            ctx.lineTo(headX + earWidth * 0.05, headY - headRadius * 0.28);
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
 
-            // Face patch
-            ctx.fillStyle = '#fff4fb';
+            // Inner ears
+            ctx.fillStyle = '#ffd9f4';
             ctx.beginPath();
-            ctx.ellipse(centerX, centerY - radius * 0.08, bodyRadius * 0.55, bodyRadius * 0.44, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-
-            // Eyes
-            ctx.fillStyle = '#ffffff';
-            ctx.beginPath();
-            ctx.arc(centerX - radius * 0.18, centerY - radius * 0.12, radius * 0.12, 0, Math.PI * 2);
-            ctx.arc(centerX + radius * 0.18, centerY - radius * 0.12, radius * 0.12, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#3d2334';
-            ctx.beginPath();
-            ctx.arc(centerX - radius * 0.18, centerY - radius * 0.12, radius * 0.05, 0, Math.PI * 2);
-            ctx.arc(centerX + radius * 0.18, centerY - radius * 0.12, radius * 0.05, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Nose and mouth
-            ctx.fillStyle = '#ff5a95';
-            ctx.beginPath();
-            ctx.moveTo(centerX, centerY + radius * 0.02);
-            ctx.lineTo(centerX - radius * 0.05, centerY + radius * 0.10);
-            ctx.lineTo(centerX + radius * 0.05, centerY + radius * 0.10);
+            ctx.moveTo(headX - earWidth * 0.68, headY - headRadius * 0.34);
+            ctx.lineTo(headX - earWidth * 0.36, headY - earHeight * 0.78);
+            ctx.lineTo(headX - earWidth * 0.14, headY - headRadius * 0.32);
             ctx.closePath();
             ctx.fill();
-            ctx.strokeStyle = 'rgba(61, 35, 52, 0.7)';
-            ctx.lineWidth = 1.8;
             ctx.beginPath();
-            ctx.moveTo(centerX - radius * 0.03, centerY + radius * 0.14);
-            ctx.quadraticCurveTo(centerX, centerY + radius * 0.18, centerX + radius * 0.03, centerY + radius * 0.14);
-            ctx.stroke();
-
-            // Paws
-            ctx.fillStyle = '#ffd8e8';
-            ctx.beginPath();
-            ctx.ellipse(centerX - radius * 0.45, centerY + radius * 0.40, radius * 0.18, radius * 0.10, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.ellipse(centerX + radius * 0.45, centerY + radius * 0.40, radius * 0.18, radius * 0.10, 0, 0, Math.PI * 2);
+            ctx.moveTo(headX + earWidth * 0.68, headY - headRadius * 0.34);
+            ctx.lineTo(headX + earWidth * 0.36, headY - earHeight * 0.78);
+            ctx.lineTo(headX + earWidth * 0.14, headY - headRadius * 0.32);
+            ctx.closePath();
             ctx.fill();
 
+            // Front paws
+            ctx.fillStyle = bodyColor;
+            ctx.beginPath();
+            ctx.ellipse(bodyX - headRadius * 0.7, bodyY + headRadius * 0.8, headRadius * 0.28, headRadius * 0.18, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(bodyX + headRadius * 0.7, bodyY + headRadius * 0.8, headRadius * 0.28, headRadius * 0.18, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ffd2e3';
+            ctx.beginPath();
+            ctx.arc(bodyX - headRadius * 0.7, bodyY + headRadius * 0.78, headRadius * 0.08, 0, Math.PI * 2);
+            ctx.arc(bodyX - headRadius * 0.55, bodyY + headRadius * 0.78, headRadius * 0.08, 0, Math.PI * 2);
+            ctx.arc(bodyX - headRadius * 0.85, bodyY + headRadius * 0.78, headRadius * 0.08, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(bodyX + headRadius * 0.7, bodyY + headRadius * 0.78, headRadius * 0.08, 0, Math.PI * 2);
+            ctx.arc(bodyX + headRadius * 0.55, bodyY + headRadius * 0.78, headRadius * 0.08, 0, Math.PI * 2);
+            ctx.arc(bodyX + headRadius * 0.85, bodyY + headRadius * 0.78, headRadius * 0.08, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Attack scratch effect aligned to claw direction
             if (this.attackEffectTimer > 0) {
-                const attackAlpha = Math.max(0.2, this.attackEffectTimer / 16);
-                ctx.strokeStyle = `rgba(255, 110, 150, ${attackAlpha})`;
-                ctx.lineWidth = 6;
-                const swipeLength = radius * 1.7;
-                for (let i = 0; i < 3; i++) {
-                    const startX = centerX - swipeLength * 0.8 + i * 18;
-                    const startY = centerY + radius * 0.06 + i * 6;
-                    const endX = centerX + swipeLength * 0.8 - i * 16;
-                    const endY = centerY - radius * 0.5 - i * 8;
+                const attackAlpha = Math.max(0.18, this.attackEffectTimer / 18);
+                const slashAngle = this.simpleClawDirection !== undefined
+                    ? this.simpleClawDirection
+                    : Math.atan2(player.y + player.height / 2 - bodyY, player.x + player.width / 2 - bodyX);
+                const slashLength = radius * 1.7;
+                const slashOriginX = bodyX + Math.cos(slashAngle) * bodyRadius * 0.55;
+                const slashOriginY = bodyY + Math.sin(slashAngle) * bodyRadius * 0.55;
+
+                ctx.save();
+                ctx.translate(slashOriginX, slashOriginY);
+                ctx.rotate(slashAngle);
+                ctx.lineCap = 'round';
+
+                ctx.strokeStyle = `rgba(255, 120, 170, ${attackAlpha})`;
+                ctx.lineWidth = radius * 0.16;
+                for (let i = -1; i <= 1; i++) {
+                    const offsetY = i * radius * 0.14;
                     ctx.beginPath();
-                    ctx.moveTo(startX, startY);
-                    ctx.quadraticCurveTo(
-                        centerX + swipeLength * 0.1,
-                        centerY - radius * 0.8 - i * 4,
-                        endX,
-                        endY
-                    );
+                    ctx.moveTo(radius * 0.12, offsetY);
+                    ctx.lineTo(slashLength, offsetY - radius * 0.14);
                     ctx.stroke();
                 }
 
-                ctx.fillStyle = `rgba(255, 145, 200, ${attackAlpha * 0.7})`;
-                for (let i = 0; i < 2; i++) {
-                    ctx.beginPath();
-                    const pawX = centerX + (i === 0 ? -radius * 0.4 : radius * 0.3);
-                    const pawY = centerY - radius * 0.3;
-                    ctx.arc(pawX, pawY, radius * 0.12, 0, Math.PI * 2);
-                    ctx.fill();
-                }
+                ctx.strokeStyle = `rgba(255, 225, 235, ${attackAlpha * 0.8})`;
+                ctx.lineWidth = radius * 0.08;
+                ctx.beginPath();
+                ctx.moveTo(radius * 0.12, 0);
+                ctx.quadraticCurveTo(radius * 0.85, -radius * 0.32, slashLength, -radius * 0.06);
+                ctx.stroke();
+
+                ctx.restore();
             }
         } else if (this.type === 'smart') {
             const outerRadius = radius * 0.95;
@@ -3689,6 +4098,39 @@ class Monster {
 
         ctx.restore();
 
+        if (this.confusedTimer > 0) {
+            const starCount = 4;
+            const orbitRadius = radius * 1.05;
+            const baseRotation = performance.now() * 0.0009;
+            const starBaseY = centerY - radius * 1.3;
+            const opacity = 0.75 + 0.18 * Math.sin(performance.now() * 0.0025);
+
+            ctx.save();
+            ctx.translate(centerX, starBaseY);
+            for (let i = 0; i < starCount; i++) {
+                const angle = (Math.PI * 2 / starCount) * i + baseRotation;
+                const starX = Math.cos(angle) * orbitRadius;
+                const starY = Math.sin(angle) * orbitRadius * 0.35;
+                const starSize = radius * 0.14 * (0.9 + 0.1 * Math.sin(performance.now() * 0.003 + i));
+                const innerRadius = starSize * 0.45;
+
+                ctx.save();
+                ctx.translate(starX, starY);
+                ctx.rotate(angle + baseRotation * 1.4);
+                ctx.fillStyle = `rgba(255, 240, 140, ${opacity})`;
+                ctx.beginPath();
+                for (let p = 0; p < 10; p++) {
+                    const pointAngle = p * (Math.PI / 5);
+                    const r = (p % 2 === 0) ? starSize : innerRadius;
+                    ctx.lineTo(Math.cos(pointAngle) * r, Math.sin(pointAngle) * r);
+                }
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            }
+            ctx.restore();
+        }
+
         if (this.type === 'tank') {
             const tankRadius = Math.max(this.width, this.height) * 0.45;
             ctx.fillStyle = '#ffffcc';
@@ -3720,10 +4162,6 @@ class Monster {
             ctx.lineTo(centerX + radius * 0.46, centerY + radius * 0.42);
             ctx.closePath();
             ctx.fill();
-        } else {
-            ctx.fillStyle = '#ffff88';
-            ctx.fillRect(this.x + 14, this.y + 18, 12, 12);
-            ctx.fillRect(this.x + this.width - 26, this.y + 18, 12, 12);
         }
 
         if (this.type === 'shooter') {
@@ -3843,48 +4281,37 @@ class Monster {
 
         if (this.attackEffectTimer > 0) {
             if (this.type === 'simple') {
-                const coneDir = this.simpleClawDirection !== undefined
+                const slashDir = this.simpleClawDirection !== undefined
                     ? this.simpleClawDirection
                     : Math.atan2(player.y + player.height / 2 - centerY, player.x + player.width / 2 - centerX);
-                const coneAngle = this.simpleClawAngle || Math.PI * 0.5;
-                const coneRange = this.simpleClawRange || this.attackRange * 0.75;
-                const halfAngle = coneAngle / 2;
-                const leftAngle = coneDir - halfAngle;
-                const rightAngle = coneDir + halfAngle;
-                const leftX = centerX + Math.cos(leftAngle) * coneRange;
-                const leftY = centerY + Math.sin(leftAngle) * coneRange;
-                const rightX = centerX + Math.cos(rightAngle) * coneRange;
-                const rightY = centerY + Math.sin(rightAngle) * coneRange;
+                const originX = centerX + Math.cos(slashDir) * radius * 0.45;
+                const originY = centerY + Math.sin(slashDir) * radius * 0.45;
+                const slashLength = radius * 1.8;
+                const alpha = Math.max(0.24, this.attackEffectTimer / 18);
 
                 ctx.save();
-                ctx.globalAlpha = 0.24;
-                ctx.fillStyle = 'rgba(255, 145, 170, 0.55)';
-                ctx.beginPath();
-                ctx.moveTo(centerX, centerY);
-                ctx.lineTo(leftX, leftY);
-                ctx.arc(centerX, centerY, coneRange, leftAngle, rightAngle);
-                ctx.closePath();
-                ctx.fill();
-                ctx.restore();
-
-                ctx.strokeStyle = 'rgba(255, 180, 200, 0.95)';
-                ctx.lineWidth = 8;
+                ctx.translate(originX, originY);
+                ctx.rotate(slashDir);
                 ctx.lineCap = 'round';
-                for (let i = -1; i <= 1; i++) {
-                    const slashAngle = coneDir + (i * coneAngle * 0.18);
-                    const startRadius = coneRange * 0.22;
-                    const endRadius = coneRange * 0.95;
-                    const startX = centerX + Math.cos(slashAngle) * startRadius;
-                    const startY = centerY + Math.sin(slashAngle) * startRadius;
-                    const endX = centerX + Math.cos(slashAngle) * endRadius;
-                    const endY = centerY + Math.sin(slashAngle) * endRadius;
 
+                ctx.strokeStyle = `rgba(255, 170, 200, ${alpha})`;
+                ctx.lineWidth = radius * 0.16;
+                for (let i = -1; i <= 1; i++) {
+                    const offsetY = i * radius * 0.14;
                     ctx.beginPath();
-                    ctx.moveTo(startX, startY);
-                    ctx.lineTo(endX, endY);
+                    ctx.moveTo(radius * 0.12, offsetY);
+                    ctx.lineTo(slashLength, offsetY - radius * 0.12);
                     ctx.stroke();
                 }
-                ctx.lineCap = 'butt';
+
+                ctx.strokeStyle = `rgba(255, 235, 245, ${alpha * 0.8})`;
+                ctx.lineWidth = radius * 0.08;
+                ctx.beginPath();
+                ctx.moveTo(radius * 0.12, 0);
+                ctx.quadraticCurveTo(radius * 0.85, -radius * 0.3, slashLength, -radius * 0.06);
+                ctx.stroke();
+
+                ctx.restore();
             } else {
                 ctx.strokeStyle = '#ffff88';
                 ctx.lineWidth = 2;
@@ -4462,9 +4889,9 @@ function registerPlayerHit() {
         player.autoAttackEnabled = true;
         player.currentMonsterHitCount = 3;
     }
-    if (player.parryChargePerHit > 0 && player.parryCooldown > 0) {
-        const chargeAmount = (player.parryMax || 1) * (player.parryChargePerHit / 100);
-        player.parryCooldown = Math.max(0, player.parryCooldown - chargeAmount);
+    // Acumular carga para reduzir o próximo cooldown de parry
+    if (player.parryChargePerHit > 0 && player.parryCooldown === 0) {
+        player.parryChargeAccumulator += player.parryChargePerHit;
     }
 }
 
@@ -4771,7 +5198,7 @@ function updateProjectiles() {
         if (projectilesToRemove.has(i) || projectiles[i].owner !== 'player' || projectiles[i].ignoreCollision) continue;
         
         for (let j = i + 1; j < projectiles.length; j++) {
-            if (projectilesToRemove.has(j) || projectiles[j].owner !== 'monster') continue;
+            if (projectilesToRemove.has(j) || projectiles[j].owner !== 'monster' || projectiles[j].ignoreCollision || projectiles[j].pendingRicochetDestroy) continue;
             
             const p1 = projectiles[i];
             const p2 = projectiles[j];
@@ -4788,8 +5215,17 @@ function updateProjectiles() {
                     continue;
                 }
                 if (p1.style === 'bowArrow' && p1.ricochetActive && p1.ricochetCount > 0) {
-                    // Destruir o projétil inimigo
-                    projectilesToRemove.add(j);
+                    // Destruir o projétil inimigo com atraso visível
+                    const victim = projectiles[j];
+                    victim.ignoreCollision = true;
+                    victim.canDealDamage = false;
+                    victim.delayTimer = 16;
+                    victim.delayDuration = 0;
+                    victim.vx = 0;
+                    victim.vy = 0;
+                    victim.pendingRicochetDestroy = true;
+                    victim.shakeTimer = 14;
+                    victim.shakeIntensity = 2.2;
                     p1.ricochetCount = Math.max(0, p1.ricochetCount - 1);
                     p1.afterImageTrail = true;
                     p1.afterImageInterval = 1;
@@ -4856,6 +5292,15 @@ function updateProjectiles() {
         }
         projectiles.splice(index, 1);
     });
+    
+    // Remover projéteis marcados para destruição atrasada pelo ricochete
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+        const proj = projectiles[i];
+        if (proj.pendingRicochetDestroy && proj.delayTimer <= 0) {
+            spawnEvaporationForProjectile(proj);
+            projectiles.splice(i, 1);
+        }
+    }
     
     // Verificar colisões com marcas do swarm
     for (let i = projectiles.length - 1; i >= 0; i--) {
@@ -4931,6 +5376,7 @@ function updateProjectiles() {
 
     for (let i = projectiles.length - 1; i >= 0; i--) {
         projectiles[i].update();
+        if (projectiles[i].pendingRicochetDestroy) continue;
         // If this projectile was parried and can destroy others on touch, check collisions
         if (player.dashTimer > 0 && projectiles[i].owner === 'monster') {
             const playerCenterX = player.x + player.width / 2;
@@ -5061,14 +5507,21 @@ function updateProjectiles() {
             for (let j = projectiles.length - 1; j >= 0; j--) {
                 if (j === i) continue;
                 const other = projectiles[j];
-                if (!other || other.owner !== 'monster') continue;
+                if (!other || other.owner !== 'monster' || other.pendingRicochetDestroy) continue;
                 const dx = p.x - other.x;
                 const dy = p.y - other.y;
                 const dist = Math.sqrt(dx * dx + dy * dy);
                 const radius = (p.destroyRadius || 28) + other.size;
                 if (dist <= radius) {
-                    spawnEvaporationForProjectile(other);
-                    projectiles.splice(j, 1);
+                    other.ignoreCollision = true;
+                    other.canDealDamage = false;
+                    other.delayTimer = 16;
+                    other.delayDuration = 0;
+                    other.vx = 0;
+                    other.vy = 0;
+                    other.pendingRicochetDestroy = true;
+                    other.shakeTimer = 14;
+                    other.shakeIntensity = 2.2;
                     if (j < i) i--;
                 }
             }
@@ -5226,7 +5679,14 @@ function updateProjectiles() {
                     handleParryProjectile(p);
                     if (currentMonster) currentMonster.stunTimer = 30;
                     if (!canParryWithoutCooldown) {
-                        player.parryCooldown = 240;
+                        // Aplicar redução de cooldown baseado na carga acumulada
+                        let cooldown = player.parryMax || 240;
+                        if (player.parryChargeAccumulator > 0) {
+                            const reductionAmount = (cooldown * player.parryChargeAccumulator / 100);
+                            cooldown = Math.floor(Math.max(60, cooldown - reductionAmount)); // mínimo de 60 frames
+                            player.parryChargeAccumulator = 0; // resetar após usar
+                        }
+                        player.parryCooldown = cooldown;
                     }
                     player.slashTimer = 12;
                     player.slashAlpha = 1;
@@ -5292,7 +5752,7 @@ function updateProjectiles() {
                         p.damage,
                         p.color,
                         p.speed,
-                        { monsterType: currentMonster ? currentMonster.type : '', size: p.size || 8 }
+                        { monsterType: currentMonster ? currentMonster.type : '', size: p.size || 8, style: p.style }
                     );
                 }
                 delayedProjectileSpawns.splice(i, 1);
@@ -5308,7 +5768,7 @@ function updateProjectiles() {
                     req.damage,
                     req.color,
                     req.speed,
-                    { monsterType: req.monsterType || (currentMonster ? currentMonster.type : ''), size: req.size || 9 }
+                    { monsterType: req.monsterType || (currentMonster ? currentMonster.type : ''), size: req.size || 9, style: req.style }
                 );
                 delayedProjectileSpawns.splice(i, 1);
                 continue;
@@ -5985,6 +6445,14 @@ function getProjectileDefaultSize(style) {
             return 12;
         case 'casterBurst':
             return 14;
+        case 'casterFlameCircle':
+            return 16;
+        case 'casterFlameSpiral':
+            return 16;
+        case 'casterFlameRing':
+            return 16;
+        case 'casterFlameVolley':
+            return 16;
         case 'basicFire':
             return 11;
         case 'crowBolt':
