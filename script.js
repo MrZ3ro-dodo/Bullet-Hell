@@ -21,6 +21,10 @@ let viewportWidth;
 let viewportHeight;
 let gameWidth;
 let gameHeight;
+let mapWalls = [];
+let spawnZoneEndX;
+let upgradeZoneEndX;
+let wildZoneEndX;
 let cameraX = 0;
 let cameraY = 0;
 let gameFrameCount = 0;
@@ -40,8 +44,14 @@ function resizeGameCanvas() {
 
     viewportWidth = width;
     viewportHeight = height;
-    gameWidth = viewportWidth * 4;
+    gameWidth = viewportWidth * 10;
     gameHeight = viewportHeight * 4;
+
+    spawnZoneEndX = viewportWidth * 6;
+    upgradeZoneEndX = spawnZoneEndX + viewportWidth * 3;
+    wildZoneEndX = gameWidth;
+
+    generateMapWalls();
 
     canvas.width = viewportWidth;
     canvas.height = viewportHeight;
@@ -1368,6 +1378,8 @@ class Player {
 
     update(keys) {
         const ts = timeScale || 1;
+        const prevX = this.x;
+        const prevY = this.y;
         if (this.dashTimer > 0) {
             this.x += this.dashVectorX * this.dashSpeed * ts;
             this.y += this.dashVectorY * this.dashSpeed * ts;
@@ -1425,6 +1437,8 @@ class Player {
                 }
             }
         } else {
+            const prevX = this.x;
+            const prevY = this.y;
             const isReloadingGun = this.weapon && this.weapon.type === 'gun' && this.gunReloadCooldown > 0;
             const moveX = (keys['d'] || keys['arrowright'] ? 1 : 0) - (keys['a'] || keys['arrowleft'] ? 1 : 0);
             const moveY = (keys['s'] || keys['arrowdown'] ? 1 : 0) - (keys['w'] || keys['arrowup'] ? 1 : 0);
@@ -1465,6 +1479,13 @@ class Player {
             if (moveY > 0) this.y += movementSpeed;
             if (moveX < 0) this.x -= movementSpeed;
             if (moveX > 0) this.x += movementSpeed;
+        }
+
+        this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
+        this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+
+        if (resolveEntityWallCollision(this, prevX, prevY) && this.dashTimer > 0) {
+            this.dashTimer = 0;
         }
 
         this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
@@ -1944,10 +1965,14 @@ class Monster {
                 x: Math.random() * Math.max(1, gameWidth - 40) + 20,
                 y: Math.random() * Math.max(1, gameHeight - 40) + 20
             };
-            this.teleportTarget = {
-                x: Math.random() * Math.max(1, gameWidth - 40) + 20,
-                y: Math.random() * Math.max(1, gameHeight - 40) + 20
-            };
+            // Teleport target: choose one of the four corners
+            const corners = [
+                { x: 50, y: 50 },
+                { x: gameWidth - 50, y: 50 },
+                { x: 50, y: gameHeight - 50 },
+                { x: gameWidth - 50, y: gameHeight - 50 }
+            ];
+            this.teleportTarget = corners[Math.floor(Math.random() * corners.length)];
             this.reachedPatrol = false;
             this.hasTeleported = false;
         } else if (this.type === 'swarm') {
@@ -2354,7 +2379,13 @@ class Monster {
             if (healthPercent <= 0.35 && !this.hasTeleported) {
                 // guard against missing teleportTarget
                 if (!this.teleportTarget || typeof this.teleportTarget.x !== 'number' || typeof this.teleportTarget.y !== 'number') {
-                    this.teleportTarget = { x: Math.random() * Math.max(1, gameWidth - 40) + 20, y: Math.random() * Math.max(1, gameHeight - 40) + 20 };
+                    const corners = [
+                        { x: 50, y: 50 },
+                        { x: Math.max(1, gameWidth - 50), y: 50 },
+                        { x: 50, y: Math.max(1, gameHeight - 50) },
+                        { x: Math.max(1, gameWidth - 50), y: Math.max(1, gameHeight - 50) }
+                    ];
+                    this.teleportTarget = corners[Math.floor(Math.random() * corners.length)];
                 }
                 try {
                     try { spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#ffffff', 18, 18); } catch (e) {}
@@ -3041,10 +3072,10 @@ class Monster {
         const startX = this.x + this.width / 2;
         const startY = this.y + this.height / 2;
         const angle = Math.atan2(targetY - startY, targetX - startX);
-        const distance = 480;
+        const distance = Math.max(gameWidth, gameHeight) * 1.5;
         const hitX = startX + Math.cos(angle) * distance;
         const hitY = startY + Math.sin(angle) * distance;
-        const hitscanColor = this.confusedTimer > 0 ? 'rgba(255,210,110,0.95)' : 'rgba(120,220,255,0.9)';
+        const hitscanColor = this.confusedTimer > 0 ? 'rgba(255,210,110,0.95)' : 'rgba(255,80,80,0.95)';
         spawnMonsterHitscan(startX, startY, hitX, hitY, Math.max(8, this.getAttackDamage()), hitscanColor, 20, 30);
     }
 
@@ -4347,9 +4378,13 @@ class Monster {
             // draw a preview beam shaped like the final hitscan
             const startX = this.x + this.width / 2;
             const startY = this.y + this.height / 2;
-            const targetX = this.hitscanTargetX;
-            const targetY = this.hitscanTargetY;
-            const color = 'rgba(120,220,255,0.9)';
+            const predictedX = this.hitscanTargetX;
+            const predictedY = this.hitscanTargetY;
+            const angle = Math.atan2(predictedY - startY, predictedX - startX);
+            const distance = Math.max(gameWidth, gameHeight) * 1.5;
+            const hitX = startX + Math.cos(angle) * distance;
+            const hitY = startY + Math.sin(angle) * distance;
+            const color = 'rgba(255,80,80,0.95)';
             const thickness = 20;
 
             ctx.save();
@@ -4365,7 +4400,6 @@ class Monster {
             ctx.shadowColor = color;
             ctx.shadowBlur = 28;
 
-            const angle = Math.atan2(targetY - startY, targetX - startX);
             const perp = thickness * 0.6;
             const dx = Math.cos(angle);
             const dy = Math.sin(angle);
@@ -4374,8 +4408,8 @@ class Monster {
 
             ctx.beginPath();
             ctx.moveTo(startX + ox, startY + oy);
-            ctx.lineTo(targetX + ox, targetY + oy);
-            ctx.lineTo(targetX - ox, targetY - oy);
+            ctx.lineTo(hitX + ox, hitY + oy);
+            ctx.lineTo(hitX - ox, hitY - oy);
             ctx.lineTo(startX - ox, startY - oy);
             ctx.closePath();
             ctx.fill();
@@ -4385,17 +4419,17 @@ class Monster {
             ctx.lineWidth = 4;
             ctx.beginPath();
             ctx.moveTo(startX, startY);
-            ctx.lineTo(targetX, targetY);
+            ctx.lineTo(hitX, hitY);
             ctx.stroke();
 
             ctx.restore();
 
-            // small countdown at target
+            // small countdown at predicted target
             ctx.fillStyle = 'rgba(255,255,255,0.95)';
             ctx.font = 'bold 14px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText((this.hitscanWarningTimer / 60).toFixed(1), targetX, targetY);
+            ctx.fillText((this.hitscanWarningTimer / 60).toFixed(1), predictedX, predictedY);
         }
 
         if (this.flashTimer > 0 && !isFlashOverlay) {
@@ -4493,6 +4527,16 @@ let critEffects = [];
 let sweatEffects = [];
 let evaporationEffects = [];
 let swarmMarks = [];
+let ambientAnimals = [];
+let ambientAnimalSpawnTimer = 0;
+const ambientAnimalMaxCount = 20;
+const ambientAnimalSpawnIntervalMin = 30;
+const ambientAnimalSpawnIntervalMax = 120;
+let ambientCritters = [];
+let ambientCritterSpawnTimer = 0;
+const ambientCritterMaxCount = 12;
+const ambientCritterSpawnIntervalMin = 90;
+const ambientCritterSpawnIntervalMax = 180;
 let monsterHitscans = [];
 let monsterTypeKills = {
     shooter: false,
@@ -4603,6 +4647,201 @@ function drawAfterImages() {
         } else if (effect.kind === 'projectile') {
             drawProjectileAfterImage(effect);
         }
+        ctx.restore();
+    }
+}
+
+function getRandomAmbientAnimalSpecies() {
+    const species = [
+        { name: 'vaca', bodyColor: '#8b7b58', accentColor: '#d8c4a0' },
+        { name: 'raposa', bodyColor: '#d66b3d', accentColor: '#f4c79f' },
+        { name: 'coelho', bodyColor: '#dde1e8', accentColor: '#ffffff' },
+        { name: 'gambá', bodyColor: '#6a6f7d', accentColor: '#b8bac5' },
+        { name: 'veado', bodyColor: '#a57a4e', accentColor: '#e0c5a2' }
+    ];
+    return species[Math.floor(Math.random() * species.length)];
+}
+
+function spawnAmbientAnimal() {
+    if (ambientAnimals.length >= ambientAnimalMaxCount) return;
+
+    const type = getRandomAmbientAnimalSpecies();
+    const size = player.width;
+    const x = upgradeZoneEndX + 20 + Math.random() * Math.max(0, (wildZoneEndX - upgradeZoneEndX - 40 - size));
+    const y = 20 + Math.random() * Math.max(0, gameHeight - 40 - size);
+
+    ambientAnimals.push({
+        x,
+        y,
+        width: size,
+        height: size,
+        bodyColor: type.bodyColor,
+        accentColor: type.accentColor,
+        idleOffset: Math.random() * Math.PI * 2,
+        driftX: (Math.random() - 0.5) * 0.12,
+        driftY: (Math.random() - 0.5) * 0.12,
+        appearTimer: 18 + Math.floor(Math.random() * 18)
+    });
+}
+
+function updateAmbientAnimals() {
+    if (ambientAnimalSpawnTimer <= 0) {
+        spawnAmbientAnimal();
+        ambientAnimalSpawnTimer = ambientAnimalSpawnIntervalMin + Math.floor(Math.random() * (ambientAnimalSpawnIntervalMax - ambientAnimalSpawnIntervalMin + 1));
+    } else {
+        ambientAnimalSpawnTimer -= 1;
+    }
+
+    for (let animal of ambientAnimals) {
+        animal.idleOffset += 0.01;
+        animal.x += animal.driftX;
+        animal.y += animal.driftY;
+        animal.x = Math.max(upgradeZoneEndX + 10, Math.min(animal.x, wildZoneEndX - animal.width - 10));
+        animal.y = Math.max(10, Math.min(animal.y, gameHeight - animal.height - 10));
+
+        if (Math.random() < 0.002) {
+            animal.driftX = (Math.random() - 0.5) * 0.12;
+            animal.driftY = (Math.random() - 0.5) * 0.12;
+        }
+        if (animal.appearTimer > 0) {
+            animal.appearTimer -= 1;
+        }
+    }
+}
+
+function drawAmbientAnimals() {
+    for (let animal of ambientAnimals) {
+        const alpha = animal.appearTimer > 0 ? 0.12 + 0.88 * (1 - animal.appearTimer / 18) : 1;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        const centerX = animal.x + animal.width / 2;
+        const centerY = animal.y + animal.height / 2;
+        const pulse = 1 + 0.05 * Math.sin(animal.idleOffset * 4);
+        ctx.translate(centerX, centerY);
+        ctx.scale(pulse, pulse);
+
+        ctx.fillStyle = animal.bodyColor;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, animal.width * 0.55, animal.height * 0.45, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = animal.accentColor;
+        ctx.beginPath();
+        ctx.ellipse(-animal.width * 0.18, -animal.height * 0.12, animal.width * 0.16, animal.height * 0.12, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#333333';
+        ctx.beginPath();
+        ctx.arc(animal.width * 0.18, -animal.height * 0.06, animal.width * 0.08, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+    }
+}
+
+function getRandomAmbientCritterStyle() {
+    const species = [
+        { bodyColor: '#7b9f78', accentColor: '#c7d8b8', eyeColor: '#2a2a2a' },
+        { bodyColor: '#8d7fb5', accentColor: '#d7c7f0', eyeColor: '#271c34' },
+        { bodyColor: '#d88f59', accentColor: '#f1d3b0', eyeColor: '#2e1f0f' },
+        { bodyColor: '#6e8ca2', accentColor: '#c2d6e6', eyeColor: '#1e2a34' }
+    ];
+    return species[Math.floor(Math.random() * species.length)];
+}
+
+function spawnAmbientCritter() {
+    if (ambientCritters.length >= ambientCritterMaxCount) return;
+
+    const style = getRandomAmbientCritterStyle();
+    const size = player.width * 1.35;
+    const x = upgradeZoneEndX + 20 + Math.random() * Math.max(0, (wildZoneEndX - upgradeZoneEndX - size - 40));
+    const y = 20 + Math.random() * Math.max(0, gameHeight - size - 40);
+
+    ambientCritters.push({
+        x,
+        y,
+        width: size,
+        height: size,
+        bodyColor: style.bodyColor,
+        accentColor: style.accentColor,
+        eyeColor: style.eyeColor,
+        idleOffset: Math.random() * Math.PI * 2,
+        driftX: (Math.random() - 0.5) * 0.14,
+        driftY: (Math.random() - 0.5) * 0.14,
+        appearTimer: 24
+    });
+}
+
+function updateAmbientCritters() {
+    if (ambientCritterSpawnTimer <= 0) {
+        spawnAmbientCritter();
+        ambientCritterSpawnTimer = ambientCritterSpawnIntervalMin + Math.floor(Math.random() * (ambientCritterSpawnIntervalMax - ambientCritterSpawnIntervalMin + 1));
+    } else {
+        ambientCritterSpawnTimer -= 1;
+    }
+
+    for (let critter of ambientCritters) {
+        critter.idleOffset += 0.015;
+        critter.x += critter.driftX;
+        critter.y += critter.driftY;
+
+        if (critter.x < upgradeZoneEndX + 12) critter.x = upgradeZoneEndX + 12;
+        if (critter.x > wildZoneEndX - critter.width - 12) critter.x = wildZoneEndX - critter.width - 12;
+        if (critter.y < 12) critter.y = 12;
+        if (critter.y > gameHeight - critter.height - 12) critter.y = gameHeight - critter.height - 12;
+
+        if (Math.random() < 0.004) {
+            critter.driftX = (Math.random() - 0.5) * 0.14;
+            critter.driftY = (Math.random() - 0.5) * 0.14;
+        }
+        if (critter.appearTimer > 0) {
+            critter.appearTimer -= 1;
+        }
+    }
+}
+
+function drawAmbientCritters() {
+    for (let critter of ambientCritters) {
+        const alpha = critter.appearTimer > 0 ? 0.08 + 0.92 * (1 - critter.appearTimer / 24) : 1;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        const centerX = critter.x + critter.width / 2;
+        const centerY = critter.y + critter.height / 2;
+        const pulse = 1 + 0.05 * Math.sin(critter.idleOffset * 4);
+        ctx.translate(centerX, centerY);
+        ctx.scale(pulse, pulse);
+
+        ctx.fillStyle = critter.bodyColor;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, critter.width * 0.6, critter.height * 0.55, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = critter.accentColor;
+        ctx.beginPath();
+        ctx.moveTo(-critter.width * 0.32, -critter.height * 0.28);
+        ctx.lineTo(-critter.width * 0.16, -critter.height * 0.48);
+        ctx.lineTo(0, -critter.height * 0.30);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.moveTo(critter.width * 0.32, -critter.height * 0.28);
+        ctx.lineTo(critter.width * 0.16, -critter.height * 0.48);
+        ctx.lineTo(0, -critter.height * 0.30);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#222222';
+        ctx.beginPath();
+        ctx.arc(-critter.width * 0.14, -critter.height * 0.04, critter.width * 0.08, 0, Math.PI * 2);
+        ctx.arc(critter.width * 0.14, -critter.height * 0.04, critter.width * 0.08, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#1d1d1d';
+        ctx.beginPath();
+        ctx.arc(0, critter.height * 0.08, critter.width * 0.08, 0, Math.PI);
+        ctx.fill();
+
         ctx.restore();
     }
 }
@@ -5271,6 +5510,15 @@ function updateProjectiles() {
     // Verificar colisões entre projéteis do jogador e do monstro
     const projectilesToRemove = new Set();
     const hurricaneRemovals = new Set();
+    // Remover projéteis que colidem com paredes
+    for (let i = 0; i < projectiles.length; i++) {
+        const proj = projectiles[i];
+        if (proj.ignoreCollision || projectilesToRemove.has(i)) continue;
+        const projRectSize = proj.size * 2;
+        if (mapWalls.some(wall => isRectOverlap(proj.x - proj.size, proj.y - proj.size, projRectSize, projRectSize, wall.x, wall.y, wall.width, wall.height))) {
+            projectilesToRemove.add(i);
+        }
+    }
     // Reset pulled flags and ensure projectiles can deal damage by default; hurricane will set pulled state per-frame
     for (let proj of projectiles) {
         proj.pulledByHurricane = false;
@@ -6317,6 +6565,41 @@ function drawBackground() {
     }
     ctx.restore();
 
+    drawMapWalls();
+
+    const spawnZoneEndX = viewportWidth * 6;
+    const upgradeZoneEndX = spawnZoneEndX + viewportWidth * 3;
+    const wildZoneEndX = gameWidth;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.fillStyle = 'rgba(65, 130, 255, 0.10)';
+    ctx.fillRect(0, 0, spawnZoneEndX, gameHeight);
+    ctx.fillStyle = 'rgba(255, 195, 35, 0.10)';
+    ctx.fillRect(spawnZoneEndX, 0, upgradeZoneEndX - spawnZoneEndX, gameHeight);
+    ctx.fillStyle = 'rgba(220, 60, 60, 0.10)';
+    ctx.fillRect(upgradeZoneEndX, 0, wildZoneEndX - upgradeZoneEndX, gameHeight);
+    ctx.globalCompositeOperation = 'source-over';
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.lineWidth = 4;
+    ctx.setLineDash([16, 14]);
+    ctx.beginPath();
+    ctx.moveTo(spawnZoneEndX, 0);
+    ctx.lineTo(spawnZoneEndX, gameHeight);
+    ctx.moveTo(upgradeZoneEndX, 0);
+    ctx.lineTo(upgradeZoneEndX, gameHeight);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.font = '22px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('SPAWN', spawnZoneEndX / 2, 40);
+    ctx.fillText('MELHORIAS', (spawnZoneEndX + upgradeZoneEndX) / 2, 40);
+    ctx.fillText('SELVAGEM', (upgradeZoneEndX + wildZoneEndX) / 2, 40);
+    ctx.restore();
+
     ctx.save();
     ctx.fillStyle = 'rgba(255,255,255,0.08)';
     for (let i = 0; i < 25; i++) {
@@ -6324,6 +6607,71 @@ function drawBackground() {
         ctx.fillRect(Math.random() * gameWidth, Math.random() * gameHeight, size, size);
     }
     ctx.restore();
+}
+
+function drawMapWalls() {
+    if (!mapWalls.length) return;
+    ctx.save();
+    ctx.fillStyle = 'rgba(48, 58, 72, 0.95)';
+    ctx.strokeStyle = 'rgba(180, 200, 255, 0.28)';
+    ctx.lineWidth = 2;
+    for (let wall of mapWalls) {
+        ctx.beginPath();
+        ctx.rect(wall.x, wall.y, wall.width, wall.height);
+        ctx.fill();
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function generateMapWalls() {
+    const spawnWidth = spawnZoneEndX;
+    const upgradeWidth = upgradeZoneEndX - spawnZoneEndX;
+    const wildWidth = wildZoneEndX - upgradeZoneEndX;
+
+    mapWalls = [
+        { x: spawnWidth * 0.10, y: gameHeight * 0.10, width: spawnWidth * 0.14, height: gameHeight * 0.12 },
+        { x: spawnWidth * 0.40, y: gameHeight * 0.16, width: spawnWidth * 0.12, height: gameHeight * 0.10 },
+        { x: spawnWidth * 0.65, y: gameHeight * 0.24, width: spawnWidth * 0.10, height: gameHeight * 0.14 },
+        { x: spawnWidth * 0.18, y: gameHeight * 0.58, width: spawnWidth * 0.12, height: gameHeight * 0.10 },
+        { x: spawnWidth * 0.48, y: gameHeight * 0.60, width: spawnWidth * 0.10, height: gameHeight * 0.08 },
+        { x: spawnZoneEndX + upgradeWidth * 0.08, y: gameHeight * 0.14, width: upgradeWidth * 0.12, height: gameHeight * 0.10 },
+        { x: spawnZoneEndX + upgradeWidth * 0.32, y: gameHeight * 0.22, width: upgradeWidth * 0.10, height: gameHeight * 0.12 },
+        { x: spawnZoneEndX + upgradeWidth * 0.62, y: gameHeight * 0.40, width: upgradeWidth * 0.14, height: gameHeight * 0.10 },
+        { x: upgradeZoneEndX + wildWidth * 0.10, y: gameHeight * 0.18, width: wildWidth * 0.12, height: gameHeight * 0.12 },
+        { x: upgradeZoneEndX + wildWidth * 0.38, y: gameHeight * 0.28, width: wildWidth * 0.10, height: gameHeight * 0.08 },
+        { x: upgradeZoneEndX + wildWidth * 0.66, y: gameHeight * 0.50, width: wildWidth * 0.14, height: gameHeight * 0.14 }
+    ];
+}
+
+function resolveEntityWallCollision(entity, prevX, prevY) {
+    let collided = false;
+
+    const targetX = entity.x;
+    const targetY = entity.y;
+    let resolvedX = targetX;
+    let resolvedY = targetY;
+
+    // Primeiro resolver movimento em X mantendo o Y antigo, para permitir deslizamento.
+    entity.x = targetX;
+    entity.y = prevY;
+    if (mapWalls.some(wall => isRectOverlap(entity.x, entity.y, entity.width, entity.height, wall.x, wall.y, wall.width, wall.height))) {
+        resolvedX = prevX;
+        collided = true;
+    }
+
+    // Depois resolver movimento em Y usando a posição X já ajustada.
+    entity.x = resolvedX;
+    entity.y = targetY;
+    if (mapWalls.some(wall => isRectOverlap(entity.x, entity.y, entity.width, entity.height, wall.x, wall.y, wall.width, wall.height))) {
+        resolvedY = prevY;
+        collided = true;
+    }
+
+    entity.x = resolvedX;
+    entity.y = resolvedY;
+
+    return collided;
 }
 
 function drawProjectiles() {
@@ -7501,7 +7849,7 @@ function positionMonsterAwayFromPlayer(monster) {
                 if (tries > 500) break;
                 const dx = tx - (monster.x + monster.width / 2);
                 const dy = ty - (monster.y + monster.height / 2);
-                if (Math.hypot(dx, dy) < 300) continue; // patrol should be well away from spawn
+                if (Math.hypot(dx, dy) < 1200) continue; // patrol should be extremely far from spawn
             } while (tx >= cameraX && tx <= cameraX + viewportWidth && ty >= cameraY && ty <= cameraY + viewportHeight);
             monster.patrolTarget = { x: tx, y: ty };
             return;
@@ -8107,6 +8455,8 @@ function gameLoop() {
         if (roundStartTimer > 0) {
             beginCamera();
             drawBackground();
+            drawAmbientAnimals();
+            drawAmbientCritters();
             player.draw();
             currentMonster.draw();
             drawProjectiles();
@@ -8130,6 +8480,8 @@ function gameLoop() {
             frameFreeze--;
             beginCamera();
             drawBackground();
+            drawAmbientAnimals();
+            drawAmbientCritters();
             player.draw();
             currentMonster.draw();
             drawProjectiles();
@@ -8171,7 +8523,14 @@ function gameLoop() {
 
         // Atualizar
         player.update(keys);
+        const monsterPrevX = currentMonster.x;
+        const monsterPrevY = currentMonster.y;
         currentMonster.update(player.x + player.width / 2, player.y + player.height / 2);
+        resolveEntityWallCollision(currentMonster, monsterPrevX, monsterPrevY);
+        currentMonster.x = Math.max(0, Math.min(currentMonster.x, gameWidth - currentMonster.width));
+        currentMonster.y = Math.max(0, Math.min(currentMonster.y, gameHeight - currentMonster.height));
+        updateAmbientAnimals();
+        updateAmbientCritters();
         updateProjectiles();
         updateProjectiles();
         updateMonsterHitscans();
@@ -8290,6 +8649,8 @@ function gameLoop() {
         // Desenhar
         beginCamera();
         drawBackground();
+        drawAmbientAnimals();
+        drawAmbientCritters();
         player.draw();
         currentMonster.draw();
         drawProjectiles();
