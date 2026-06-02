@@ -9,14 +9,20 @@ canvas.addEventListener('mousemove', (e) => {
     mouseX = e.clientX - rect.left;
     mouseY = e.clientY - rect.top;
     if (typeof player !== 'undefined' && player) {
+        const worldMouseX = mouseX + cameraX;
+        const worldMouseY = mouseY + cameraY;
         const px = player.x + player.width / 2;
         const py = player.y + player.height / 2;
-        player.swordAimAngle = Math.atan2(mouseY - py, mouseX - px);
+        player.swordAimAngle = Math.atan2(worldMouseY - py, worldMouseX - px);
     }
 });
 
+let viewportWidth;
+let viewportHeight;
 let gameWidth;
 let gameHeight;
+let cameraX = 0;
+let cameraY = 0;
 let gameFrameCount = 0;
 
 // fila de spawns atrasados (timer em frames)
@@ -24,20 +30,41 @@ const delayedProjectileSpawns = [];
 const DEBUG_TORNADO_COPY = true;
 
 function resizeGameCanvas() {
-    const maxGameWidth = 1600;
-    const maxGameHeight = 1000;
-    const availableWidth = Math.min(window.innerWidth - 40, maxGameWidth);
-    const availableHeight = Math.min(window.innerHeight - 220, maxGameHeight);
+    const maxViewportWidth = 1600;
+    const maxViewportHeight = 1000;
+    const availableWidth = Math.min(window.innerWidth - 40, maxViewportWidth);
+    const availableHeight = Math.min(window.innerHeight - 220, maxViewportHeight);
 
     const width = Math.max(320, availableWidth);
     const height = Math.max(240, availableHeight);
 
-    gameWidth = width;
-    gameHeight = height;
-    canvas.width = gameWidth;
-    canvas.height = gameHeight;
-    canvas.style.width = `${gameWidth}px`;
-    canvas.style.height = `${gameHeight}px`;
+    viewportWidth = width;
+    viewportHeight = height;
+    gameWidth = viewportWidth * 4;
+    gameHeight = viewportHeight * 4;
+
+    canvas.width = viewportWidth;
+    canvas.height = viewportHeight;
+    canvas.style.width = `${viewportWidth}px`;
+    canvas.style.height = `${viewportHeight}px`;
+}
+
+function updateCamera() {
+    if (!player) return;
+    const targetX = player.x + player.width / 2 - viewportWidth / 2;
+    const targetY = player.y + player.height / 2 - viewportHeight / 2;
+    cameraX = Math.max(0, Math.min(targetX, gameWidth - viewportWidth));
+    cameraY = Math.max(0, Math.min(targetY, gameHeight - viewportHeight));
+}
+
+function beginCamera() {
+    updateCamera();
+    ctx.save();
+    ctx.translate(-cameraX, -cameraY);
+}
+
+function endCamera() {
+    ctx.restore();
 }
 
 // retorna a distância mínima do ponto (px,py) ao segmento (x1,y1)-(x2,y2)
@@ -135,6 +162,9 @@ class Projectile {
         this.shakeTimer = 0;
         this.shakeIntensity = 0;
         this.pendingRicochetDestroy = false;
+        // contador de frames fora da viewport antes de remover (1s = ~60 frames)
+        this.offscreenTimer = 0;
+        this.offscreenLimit = typeof opts.offscreenLimit === 'number' ? opts.offscreenLimit : 60;
     }
 
     update() {
@@ -276,6 +306,18 @@ class Projectile {
         this.y += this.vy * projectileTs;
         this.traveled += Math.sqrt(this.vx * this.vx + this.vy * this.vy) * projectileTs;
         this.rotation += this.rotationSpeed * ts;
+
+        // Rastrear se o projétil está fora da viewport visível; só remover após offscreenLimit
+        try {
+            const onScreen = this.x >= cameraX && this.x <= cameraX + viewportWidth && this.y >= cameraY && this.y <= cameraY + viewportHeight;
+            if (onScreen) {
+                this.offscreenTimer = 0;
+            } else {
+                this.offscreenTimer++;
+            }
+        } catch (e) {
+            // variáveis de viewport podem não estar definidas durante inicialização; ignore
+        }
 
         if (this.afterImageTrail) {
             this.afterImageTimer--;
@@ -1147,7 +1189,10 @@ class Projectile {
         if (this.style === 'tornadoHurricane') {
             return this.lifetime === null || this.lifetime > 0;
         }
-        return this.traveled < this.maxDistance && this.x > 0 && this.x < gameWidth && this.y > 0 && this.y < gameHeight;
+        // Se saiu dos limites do mapa, remover imediatamente
+        const withinMap = this.x > 0 && this.x < gameWidth && this.y > 0 && this.y < gameHeight;
+        const offscreenOk = (typeof this.offscreenTimer === 'undefined') || (this.offscreenTimer <= (this.offscreenLimit || 60));
+        return this.traveled < this.maxDistance && withinMap && offscreenOk;
     }
 }
 
@@ -1877,7 +1922,7 @@ class Monster {
             this.health = 37.5 + phase * 11;
             this.speed = 0.75 + phase * 0.075;
             this.maxHealth = this.health;
-            this.desiredDistance = 250;
+            this.desiredDistance = 1200; // aumentado drasticamente
             this.projectileSpeed = 4.5 + phase * 0.25;
         } else if (this.type === 'tank') {
             this.health = 101.25 + phase * 30;
@@ -1894,6 +1939,17 @@ class Monster {
             this.chargeMissilesWarningTimer = 0;
             this.burstAttackWarningTimer = 0;
             this.shockwaveAttackWarningTimer = 0;
+            // Caster movement/teleport targets
+            this.patrolTarget = {
+                x: Math.random() * Math.max(1, gameWidth - 40) + 20,
+                y: Math.random() * Math.max(1, gameHeight - 40) + 20
+            };
+            this.teleportTarget = {
+                x: Math.random() * Math.max(1, gameWidth - 40) + 20,
+                y: Math.random() * Math.max(1, gameHeight - 40) + 20
+            };
+            this.reachedPatrol = false;
+            this.hasTeleported = false;
         } else if (this.type === 'swarm') {
             this.health = 41.25 + phase * 10;
             this.speed = 1.35 + phase * 0.175;
@@ -1904,6 +1960,7 @@ class Monster {
         } else if (this.type === 'caster') {
             this.health = 52.5 + phase * 12.5;
             this.speed = 0.375 + phase * 0.05;
+            this.speed *= 3; // aumentar velocidade do caster em 3x (base)
             this.maxHealth = this.health;
             this.portalCooldown = 0;
             this.portalWarningTimer = 0;
@@ -1916,6 +1973,11 @@ class Monster {
             this.nextPortalActiveDuration = null; // custom duration for specific attack modes
             this.remoteAttackCooldown = Math.round(1.5 * 60); // frames (~1.5s)
             this.remoteAttackTimer = Math.round(Math.random() * this.remoteAttackCooldown);
+            // Patrol / on-fire mechanics
+            this.patrolTimer = 0; // frames gastas indo ao patrolTarget
+            this.patrolTimeout = 8 * 60; // 8 segundos em frames
+            this.onFire = false; // estado ativado se demorar muito
+            this.fireAttackBoost = 1.5; // 50% mais poder de ataque quando em chamas
         } else if (this.type === 'smart') {
             this.health = 54 + phase * 14;
             this.speed = 1.2375 + phase * 0.11;
@@ -2286,10 +2348,54 @@ class Monster {
                 this.markSpawnCooldown--;
             }
         } else if (this.type === 'caster') {
-            // Caster: se move lentamente e spawna portais que disparam projéteis
-            if (dist > 180) {
-                this.x += (dx / dist) * this.speed * ts;
-                this.y += (dy / dist) * this.speed * ts;
+            // Caster: patrulha até um ponto aleatório e pode teletransportar quando ferido
+            // Teleporte quando ficar abaixo de 35% de vida (uma única vez)
+            const healthPercent = this.health / this.maxHealth;
+            if (healthPercent <= 0.35 && !this.hasTeleported) {
+                // guard against missing teleportTarget
+                if (!this.teleportTarget || typeof this.teleportTarget.x !== 'number' || typeof this.teleportTarget.y !== 'number') {
+                    this.teleportTarget = { x: Math.random() * Math.max(1, gameWidth - 40) + 20, y: Math.random() * Math.max(1, gameHeight - 40) + 20 };
+                }
+                try {
+                    try { spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#ffffff', 18, 18); } catch (e) {}
+                    // Teleportar para o teleportTarget
+                    this.x = Math.max(0, Math.min(gameWidth - this.width, this.teleportTarget.x - this.width / 2));
+                    this.y = Math.max(0, Math.min(gameHeight - this.height, this.teleportTarget.y - this.height / 2));
+                    try { spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#ffffff', 18, 18); } catch (e) {}
+                    this.hasTeleported = true;
+                    // depois do teleporte, considere que alcançou patrulha para ficar parado
+                    this.reachedPatrol = true;
+                } catch (e) {
+                    console.error('Caster teleport failed', e && e.stack ? e.stack : e, { teleportTarget: this.teleportTarget });
+                }
+            }
+
+            // Movimento: ir até patrolTarget e ficar parado quando alcançado
+            if (!this.reachedPatrol && this.patrolTarget) {
+                const patrolCenterX = this.x + this.width / 2;
+                const patrolCenterY = this.y + this.height / 2;
+                const pdx = this.patrolTarget.x - patrolCenterX;
+                const pdy = this.patrolTarget.y - patrolCenterY;
+                const pDist = Math.hypot(pdx, pdy) || 0.0001;
+                const patrolSpeed = this.speed * 1.0;
+
+                // Incrementar timer de patrulha para casters
+                if (this.type === 'caster') {
+                    this.patrolTimer = (this.patrolTimer || 0) + 1;
+                    if (!this.onFire && this.patrolTimer >= (this.patrolTimeout || 480)) {
+                        this.onFire = true;
+                        // Aumentar muito a velocidade quando em chamas
+                        this.speed = (this.speed || 0.5) * 6.0;
+                        this.fireAttackCooldown = 0;
+                    }
+                }
+
+                if (pDist > 18) {
+                    this.x += (pdx / pDist) * patrolSpeed * ts;
+                    this.y += (pdy / pDist) * patrolSpeed * ts;
+                } else {
+                    this.reachedPatrol = true;
+                }
             }
             
             const portalWarningDuration = 30; // 0.5 segundos
@@ -2310,10 +2416,14 @@ class Monster {
                 this.spiralProjectileCount = 0;
             }
 
+            // determine screen center (fallback para player se camera não definido)
+            const screenCenterX = (typeof cameraX !== 'undefined' && typeof viewportWidth !== 'undefined') ? cameraX + viewportWidth / 2 : playerX;
+            const screenCenterY = (typeof cameraY !== 'undefined' && typeof viewportHeight !== 'undefined') ? cameraY + viewportHeight / 2 : playerY;
+
             if (this.portalTimer <= 0 && this.portalWarningTimer <= 0 && this.portalCooldown <= 0) {
-                // Inicia aviso antes de aparecer o portal
-                this.portalX = playerX + (Math.random() - 0.5) * 300;
-                this.portalY = playerY + (Math.random() - 0.5) * 300;
+                // Inicia aviso antes de aparecer o portal — spawnar próximo/visível na tela do jogador
+                this.portalX = screenCenterX + (Math.random() - 0.5) * (viewportWidth || 800);
+                this.portalY = screenCenterY + (Math.random() - 0.5) * (viewportHeight || 600);
                 this.portalWarningTimer = portalWarningDuration;
                 this.portalTimer = 0;
             }
@@ -2321,41 +2431,50 @@ class Monster {
             // Remote periodic caster attacks (independent of the original caster state)
             if (typeof this.remoteAttackTimer === 'number') {
                 if (this.remoteAttackTimer <= 0) {
-                    this.spawnRemoteCasterAttack(playerX, playerY);
+                    this.spawnRemoteCasterAttack(screenCenterX, screenCenterY);
                     this.remoteAttackTimer = this.remoteAttackCooldown;
                 } else {
                     this.remoteAttackTimer--;
                 }
             }
 
-                if (this.portalWarningTimer > 0) {
+            if (this.portalWarningTimer > 0) {
                 this.portalWarningTimer--;
                 if (this.portalWarningTimer === 0) {
-                    // Use custom portal duration if set (e.g., for aim16)
-                    const effectivePortalDuration = this.nextPortalActiveDuration || portalActiveDuration;
-                    this.portalTimer = effectivePortalDuration;
-                    this.nextPortalActiveDuration = null; // reset for next use
-                    this.spiralProjectileCount = 0; // Reset spiral counter
-                    // Execute single-shot portal attacks immediately when the portal becomes active
-                    if (this.portalAttackMode === 'ring') {
-                        this.casterRingWaveAttack();
-                    } else if (this.portalAttackMode === 'aim16') {
-                        this.casterAimedVolley(playerX, playerY);
+                    try {
+                        // Use custom portal duration if set (e.g., for aim16)
+                        const effectivePortalDuration = this.nextPortalActiveDuration || portalActiveDuration;
+                        this.portalTimer = effectivePortalDuration;
+                        this.nextPortalActiveDuration = null; // reset for next use
+                        this.spiralProjectileCount = 0; // Reset spiral counter
+                        // Execute single-shot portal attacks immediately when the portal becomes active
+                        if (this.portalAttackMode === 'ring') {
+                            this.casterRingWaveAttack();
+                        } else if (this.portalAttackMode === 'aim16') {
+                            this.casterAimedVolley(screenCenterX, screenCenterY);
+                        }
+                    } catch (e) {
+                        console.error('Error activating caster portal attack', { err: e && e.stack ? e.stack : e, portalAttackMode: this.portalAttackMode, portalX: this.portalX, portalY: this.portalY, playerX, playerY });
+                        // Fail-safe: disable portal timers to avoid repeated crashes
+                        this.portalTimer = 0;
+                        this.portalWarningTimer = 0;
+                        this.portalCooldown = Math.max(portalInterval - portalActiveDuration - portalWarningDuration, 0);
                     }
                 }
             } else if (this.portalTimer > 0) {
+                const fireBoost = this.onFire ? this.fireAttackBoost : 1;
                 if (this.portalTimer % 12 === 0) {
                     if (this.portalAttackMode === 'circular') {
                         // Ataque circular com chamas breves
                         const rayCount = 5 + this.phase;
                         for (let i = 0; i < rayCount; i++) {
                             const angle = (Math.PI * 2 * i) / rayCount;
-                            const targetX = this.portalX + Math.cos(angle) * 300;
-                            const targetY = this.portalY + Math.sin(angle) * 300;
+                            const targetX = this.portalX + Math.cos(angle) * 1200;
+                            const targetY = this.portalY + Math.sin(angle) * 1200;
                             spawnMonsterProjectile(
                                 this.portalX, this.portalY,
                                 targetX, targetY,
-                                this.getAttackDamage() * 0.7,
+                                Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)),
                                 '#ff9e3c',
                                 4.5 + this.phase * 0.2,
                                 { monsterType: this.type, size: 16, style: 'casterFlameCircle' }
@@ -2363,17 +2482,17 @@ class Monster {
                         }
                     } else if (this.portalAttackMode === 'spiral') {
                         // Ataque em espiral de chamas
+                        const fireBoost = this.onFire ? this.fireAttackBoost : 1;
                         const spiralCount = 5 + this.phase;
                         const spiralSpacing = 0.25; // Ângulo entre cada projétil na espiral
                         for (let i = 0; i < spiralCount; i++) {
-                            // Ângulo que vai incrementando a cada volta
                             const angle = (Math.PI * 2 * i) / spiralCount + this.spiralProjectileCount * spiralSpacing;
-                            const targetX = this.portalX + Math.cos(angle) * 300;
-                            const targetY = this.portalY + Math.sin(angle) * 300;
+                            const targetX = this.portalX + Math.cos(angle) * 1200;
+                            const targetY = this.portalY + Math.sin(angle) * 1200;
                             spawnMonsterProjectile(
                                 this.portalX, this.portalY,
                                 targetX, targetY,
-                                this.getAttackDamage() * 0.7,
+                                Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)),
                                 '#ff6a2d',
                                 4.5 + this.phase * 0.2,
                                 { monsterType: this.type, size: 16, style: 'casterFlameSpiral' }
@@ -2383,11 +2502,11 @@ class Monster {
                     } else if (this.portalAttackMode === 'ring' && this.portalTimer === portalActiveDuration) {
                         this.casterRingWaveAttack();
                     } else if (this.portalAttackMode === 'aim16' && this.portalTimer === portalActiveDuration) {
-                        this.casterAimedVolley(playerX, playerY);
+                        this.casterAimedVolley(screenCenterX, screenCenterY);
                     }
                 }
                 this.portalTimer--;
-                if (this.portalTimer === 0) {
+                    if (this.portalTimer === 0) {
                     this.portalCooldown = portalIdleAfterActive;
                 }
             } else if (this.portalCooldown > 0) {
@@ -2725,6 +2844,7 @@ class Monster {
 
     casterRingWaveAttack() {
         this.attackEffectTimer = 14;
+        const fireBoost = this.onFire ? this.fireAttackBoost : 1;
         const waveCount = 1 + Math.floor(Math.random() * 3);
         const baseSpeed = 3.4 + this.phase * 0.14;
         const framesBetweenWaves = Math.round(0.35 * 60); // ~21 frames
@@ -2732,10 +2852,10 @@ class Monster {
         // Schedule each wave with a delay so they appear separated in time
         for (let wave = 0; wave < waveCount; wave++) {
             const delay = wave * framesBetweenWaves;
-            const ringCount = 18; // fixed 18 projectiles per ring
-            const radius = 240 + wave * 48;
+            const ringCount = 18;
+            const radius = 960 + wave * 192;
             const speed = Math.max(1.6, baseSpeed - wave * 0.22);
-            const damage = Math.max(2, Math.round(this.getAttackDamage() * 0.6));
+            const damage = Math.max(2, Math.round(this.getAttackDamage() * 0.6 * fireBoost));
             const color = '#ffb95d';
 
             const projectilesForWave = [];
@@ -2762,6 +2882,7 @@ class Monster {
             playerY = this.y + this.height / 2 - (playerY - (this.y + this.height / 2));
         }
         this.attackEffectTimer = 14;
+        const fireBoost = this.onFire ? this.fireAttackBoost : 1;
         const shots = 16;
         const speed = (2.2 + this.phase * 0.08) * 1.8; // increased by ~1.8x
         const baseX = playerX; // capture player position at spawn time
@@ -2781,7 +2902,7 @@ class Monster {
                 srcY: this.portalY,
                 targetX,
                 targetY,
-                damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64)),
+                damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64 * fireBoost)),
                 color: this.confusedTimer > 0 ? '#ffd880' : '#ffb14a',
                 speed,
                 monsterType: this.type,
@@ -2799,7 +2920,9 @@ class Monster {
         const margin = 60;
         const srcX = (playerX < gameWidth / 2) ? (gameWidth - margin) : margin;
         const srcY = Math.max(40, Math.min(gameHeight - 40, Math.random() * (gameHeight - 80) + 40));
+        const fireBoost = this.onFire ? this.fireAttackBoost : 1;
 
+        // choose attack mode
         const modes = ['circular', 'spiral', 'ring', 'aim16'];
         const mode = modes[Math.floor(Math.random() * modes.length)];
 
@@ -2808,9 +2931,9 @@ class Monster {
             const speed = 4.0 + this.phase * 0.2;
             for (let i = 0; i < rayCount; i++) {
                 const angle = (Math.PI * 2 / rayCount) * i;
-                const targetX = srcX + Math.cos(angle) * 300;
-                const targetY = srcY + Math.sin(angle) * 300;
-                spawnMonsterProjectile(srcX, srcY, targetX, targetY, this.getAttackDamage() * 0.7, '#ff9c46', speed, { monsterType: this.type, size: 16, style: 'casterFlameCircle' });
+                const targetX = srcX + Math.cos(angle) * 1200;
+                const targetY = srcY + Math.sin(angle) * 1200;
+                spawnMonsterProjectile(srcX, srcY, targetX, targetY, Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)), '#ff9c46', speed, { monsterType: this.type, size: 16, style: 'casterFlameCircle' });
             }
         } else if (mode === 'spiral') {
             const spiralCount = 5 + this.phase;
@@ -2818,9 +2941,9 @@ class Monster {
             const speed = 4.0 + this.phase * 0.2;
             for (let i = 0; i < spiralCount; i++) {
                 const angle = (Math.PI * 2 * i) / spiralCount + Math.random() * spiralSpacing;
-                const targetX = srcX + Math.cos(angle) * 300;
-                const targetY = srcY + Math.sin(angle) * 300;
-                spawnMonsterProjectile(srcX, srcY, targetX, targetY, this.getAttackDamage() * 0.7, '#ff7430', speed, { monsterType: this.type, size: 16, style: 'casterFlameSpiral' });
+                const targetX = srcX + Math.cos(angle) * 1200;
+                const targetY = srcY + Math.sin(angle) * 1200;
+                spawnMonsterProjectile(srcX, srcY, targetX, targetY, Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)), '#ff7430', speed, { monsterType: this.type, size: 16, style: 'casterFlameSpiral' });
             }
         } else if (mode === 'ring') {
             // schedule 1-3 waves like casterRingWaveAttack did
@@ -2830,9 +2953,9 @@ class Monster {
             for (let wave = 0; wave < waveCount; wave++) {
                 const delay = wave * framesBetweenWaves;
                 const ringCount = 18;
-                const radius = 240 + wave * 48;
+                const radius = 960 + wave * 192;
                 const speed = Math.max(1.6, baseSpeed - wave * 0.22);
-                const damage = Math.max(2, Math.round(this.getAttackDamage() * 0.6));
+                const damage = Math.max(2, Math.round(this.getAttackDamage() * 0.6 * fireBoost));
                 const color = '#ffb95d';
                 const projectilesForWave = [];
                 for (let i = 0; i < ringCount; i++) {
@@ -2852,7 +2975,7 @@ class Monster {
                 const targetX = playerX + Math.cos(offset) * 27;
                 const targetY = playerY + Math.sin(offset) * 27;
                 const delay = i * framesPerShot;
-                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterAimed', srcX, srcY, targetX, targetY, damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64)), color: this.confusedTimer > 0 ? '#ffd880' : '#ffb14a', speed, monsterType: this.type, size: 16, style: 'casterFlameVolley' });
+                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterAimed', srcX, srcY, targetX, targetY, damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64 * fireBoost)), color: this.confusedTimer > 0 ? '#ffd880' : '#ffb14a', speed, monsterType: this.type, size: 16, style: 'casterFlameVolley' });
             }
         }
     }
@@ -4560,8 +4683,8 @@ function drawSlowdownInsects() {
 }
 
 const selectionBackgroundParticles = Array.from({ length: 24 }, () => ({
-    x: Math.random() * (gameWidth || 800),
-    y: Math.random() * (gameHeight || 600),
+    x: Math.random() * (canvas.width || 800),
+    y: Math.random() * (canvas.height || 600),
     size: Math.random() * 8 + 4,
     speed: Math.random() * 0.2 + 0.18,
     hue: 190 + Math.random() * 40,
@@ -4837,14 +4960,16 @@ canvas.addEventListener('click', (e) => {
         const clickX = e.clientX - rect.left;
         const clickY = e.clientY - rect.top;
 
+        const screenWidth = canvas.width;
+        const screenHeight = canvas.height;
         const buttonWidth = 220;
         const buttonHeight = 86;
         const verticalSpacing = 20;
-        const leftX = Math.max(72, gameWidth * 0.12);
-        const centerX = (gameWidth - buttonWidth) / 2;
-        const rightX = Math.min(gameWidth - buttonWidth - 72, gameWidth * 0.88 - buttonWidth);
-        const topY = gameHeight / 2 - buttonHeight - verticalSpacing / 2;
-        const bottomY = gameHeight / 2 + verticalSpacing / 2;
+        const leftX = Math.max(72, screenWidth * 0.12);
+        const centerX = (screenWidth - buttonWidth) / 2;
+        const rightX = Math.min(screenWidth - buttonWidth - 72, screenWidth * 0.88 - buttonWidth);
+        const topY = screenHeight / 2 - buttonHeight - verticalSpacing / 2;
+        const bottomY = screenHeight / 2 + verticalSpacing / 2;
         const positions = [
             { x: leftX, y: topY },
             { x: leftX, y: bottomY },
@@ -4997,8 +5122,14 @@ function attemptAttack() {
                 return;
             }
         }
-        const targetX = currentMonster.x + currentMonster.width / 2;
-        const targetY = currentMonster.y + currentMonster.height / 2;
+        const worldMouseX = mouseX + cameraX;
+        const worldMouseY = mouseY + cameraY;
+        const monsterVisible = currentMonster.x + currentMonster.width >= cameraX &&
+                       currentMonster.x <= cameraX + viewportWidth &&
+                       currentMonster.y + currentMonster.height >= cameraY &&
+                       currentMonster.y <= cameraY + viewportHeight;
+        const targetX = monsterVisible ? currentMonster.x + currentMonster.width / 2 : worldMouseX;
+        const targetY = monsterVisible ? currentMonster.y + currentMonster.height / 2 : worldMouseY;
         
         const baseWeaponDamage = weapon.damage + player.weaponDamage + player.baseDamage;
         const totalCritChance = player.critChance + ((weapon.type === 'bow') ? (player.bowCritChance || 0) : 0);
@@ -6645,6 +6776,8 @@ function spawnPlayerProjectile(x, y, targetX, targetY, damage, color, speed, opt
 function spawnMonsterProjectile(x, y, targetX, targetY, damage, color, speed, opts = {}) {
     opts.monsterType = opts.monsterType || currentMonster?.type || '';
     opts.style = opts.style || getMonsterProjectileStyle(opts.monsterType);
+    // Garantir que projéteis de monstros usem o timer offscreen (padrão 60 frames)
+    if (typeof opts.offscreenLimit !== 'number') opts.offscreenLimit = 60;
     const size = opts.size || getProjectileDefaultSize(opts.style);
     const proj = new Projectile(x, y, targetX, targetY, damage, color, speed, 'monster', size, opts);
     if (opts.homing) {
@@ -6839,22 +6972,24 @@ function drawSelectionBackground() {
     const pulse = 0.9 + Math.sin(selectionBackgroundTick * 0.045) * 0.18;
     const depth = 0.16 + Math.sin(selectionBackgroundTick * 0.035) * 0.06;
     const glow = 0.5 + Math.sin(selectionBackgroundTick * 0.08) * 0.08;
+    const screenWidth = canvas.width;
+    const screenHeight = canvas.height;
 
-    const gradient = ctx.createRadialGradient(gameWidth * 0.5, gameHeight * 0.36, 20, gameWidth * 0.5, gameHeight * 0.36, gameWidth);
+    const gradient = ctx.createRadialGradient(screenWidth * 0.5, screenHeight * 0.36, 20, screenWidth * 0.5, screenHeight * 0.36, screenWidth);
     gradient.addColorStop(0, `rgba(${12 * pulse}, ${28 * pulse}, ${44 * pulse}, ${0.98 * glow})`);
     gradient.addColorStop(0.4, `rgba(${8 * pulse}, ${20 * pulse}, ${34 * pulse}, 0.8)`);
     gradient.addColorStop(1, `rgba(${2 * pulse}, ${6 * pulse}, ${12 * pulse}, 0.95)`);
     ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, gameWidth, gameHeight);
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
 
     ctx.save();
     for (let i = 0; i < selectionBackgroundParticles.length; i++) {
         const p = selectionBackgroundParticles[i];
         p.y += p.speed * (0.95 + Math.sin(selectionBackgroundTick * 0.026 + i) * 0.04);
         p.x += Math.sin((selectionBackgroundTick + i * 20) * 0.02) * 0.4;
-        if (p.y > gameHeight + 30) p.y = -20;
-        if (p.x < -20) p.x = gameWidth + 20;
-        if (p.x > gameWidth + 20) p.x = -20;
+        if (p.y > screenHeight + 30) p.y = -20;
+        if (p.x < -20) p.x = screenWidth + 20;
+        if (p.x > screenWidth + 20) p.x = -20;
 
         const bloom = 0.35 + Math.sin((selectionBackgroundTick * 0.08 + i) * 1.5) * 0.1;
         ctx.fillStyle = `hsla(${p.hue}, 78%, 72%, ${Math.max(0.02, p.alpha * bloom)})`;
@@ -6868,37 +7003,39 @@ function drawSelectionBackground() {
     ctx.strokeStyle = `rgba(96, 170, 255, ${0.06 + depth})`;
     ctx.lineWidth = 1;
     const spacing = 100;
-    for (let x = -spacing; x <= gameWidth + spacing; x += spacing) {
+    for (let x = -spacing; x <= screenWidth + spacing; x += spacing) {
         const offset = Math.sin((selectionBackgroundTick + x) * 0.018) * 10;
         ctx.beginPath();
         ctx.moveTo(x + offset, 0);
-        ctx.lineTo(x - offset, gameHeight);
+        ctx.lineTo(x - offset, screenHeight);
         ctx.stroke();
     }
-    for (let y = -spacing; y <= gameHeight + spacing; y += spacing) {
+    for (let y = -spacing; y <= screenHeight + spacing; y += spacing) {
         const offset = Math.cos((selectionBackgroundTick + y) * 0.018) * 10;
         ctx.beginPath();
         ctx.moveTo(0, y + offset);
-        ctx.lineTo(gameWidth, y - offset);
+        ctx.lineTo(screenWidth, y - offset);
         ctx.stroke();
     }
     ctx.restore();
 
     ctx.save();
     ctx.fillStyle = `rgba(0, 0, 0, ${depth * 1.1})`;
-    ctx.fillRect(0, 0, gameWidth, gameHeight);
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
     ctx.restore();
 
     selectionBackgroundTick += 1;
 }
 
 function getWeaponSelectionLayout() {
+    const screenWidth = canvas.width;
+    const screenHeight = canvas.height;
     const buttonWidth = 200;
     const buttonHeight = 120;
     const spacing = 22;
     const totalWidth = weapons.length * buttonWidth + (weapons.length - 1) * spacing;
-    const startX = (gameWidth - totalWidth) / 2;
-    const startY = gameHeight / 2 - buttonHeight / 2 + 40;
+    const startX = (screenWidth - totalWidth) / 2;
+    const startY = screenHeight / 2 - buttonHeight / 2 + 40;
     const radius = 20;
     return { buttonWidth, buttonHeight, spacing, startX, startY, radius };
 }
@@ -6906,27 +7043,29 @@ function getWeaponSelectionLayout() {
 function drawWeaponSelection() {
     drawSelectionBackground();
     ctx.globalAlpha = 1;
+    const screenWidth = canvas.width;
+    const screenHeight = canvas.height;
     ctx.fillStyle = 'rgba(4, 8, 16, 0.96)';
-    ctx.fillRect(0, 0, gameWidth, gameHeight);
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
 
     ctx.save();
-    const centerX = gameWidth / 2;
-    const centerY = gameHeight / 2;
+    const centerX = screenWidth / 2;
+    const centerY = screenHeight / 2;
     const ring = ctx.createRadialGradient(centerX, centerY, 100, centerX, centerY, 580);
     ring.addColorStop(0, 'rgba(0, 220, 255, 0.12)');
     ring.addColorStop(0.4, 'rgba(0, 200, 255, 0.04)');
     ring.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = ring;
-    ctx.fillRect(0, 0, gameWidth, gameHeight);
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
     ctx.restore();
 
     // Painel decorativo do título
     ctx.save();
     ctx.fillStyle = 'rgba(0, 150, 200, 0.08)';
-    ctx.fillRect(gameWidth / 2 - 220, 32, 440, 70);
+    ctx.fillRect(screenWidth / 2 - 220, 32, 440, 70);
     ctx.strokeStyle = 'rgba(0, 220, 255, 0.22)';
     ctx.lineWidth = 1.5;
-    ctx.strokeRect(gameWidth / 2 - 220.5, 32.5, 439, 69);
+    ctx.strokeRect(screenWidth / 2 - 220.5, 32.5, 439, 69);
     ctx.restore();
 
     ctx.fillStyle = '#8ffbff';
@@ -6935,7 +7074,7 @@ function drawWeaponSelection() {
     ctx.textBaseline = 'middle';
     ctx.shadowColor = 'rgba(0, 242, 255, 0.7)';
     ctx.shadowBlur = 24;
-    ctx.fillText('Escolha sua Arma', gameWidth / 2, 67);
+    ctx.fillText('Escolha sua Arma', screenWidth / 2, 67);
     ctx.shadowBlur = 0;
 
     const layout = getWeaponSelectionLayout();
@@ -7062,10 +7201,10 @@ function drawWeaponSelection() {
     // Painel de informações e instruções
     ctx.save();
     ctx.fillStyle = 'rgba(8, 22, 50, 0.92)';
-    ctx.fillRect(52, gameHeight - 108, gameWidth - 104, 88);
+    ctx.fillRect(52, screenHeight - 108, screenWidth - 104, 88);
     ctx.strokeStyle = 'rgba(56, 200, 255, 0.18)';
     ctx.lineWidth = 1.5;
-    ctx.strokeRect(52.5, gameHeight - 108.5, gameWidth - 105, 87);
+    ctx.strokeRect(52.5, screenHeight - 108.5, screenWidth - 105, 87);
     ctx.restore();
 
     // Informações do arma selecionada
@@ -7074,18 +7213,18 @@ function drawWeaponSelection() {
         ctx.fillStyle = '#e0ffff';
         ctx.font = 'bold 14px Arial';
         ctx.textAlign = 'center';
-        ctx.fillText(`${selectedWeapon.name} - Dano: ${selectedWeapon.damage || 10}`, gameWidth / 2, gameHeight - 88);
+        ctx.fillText(`${selectedWeapon.name} - Dano: ${selectedWeapon.damage || 10}`, screenWidth / 2, screenHeight - 88);
     }
 
     // Instruções
     ctx.fillStyle = '#a8f0ff';
     ctx.font = 'bold 14px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('Use as Setas ou Clique para Escolher', gameWidth / 2, gameHeight - 62);
+    ctx.fillText('Use as Setas ou Clique para Escolher', screenWidth / 2, screenHeight - 62);
     
     ctx.fillStyle = '#b6f5d4';
     ctx.font = '13px Arial';
-    ctx.fillText('Pressione Espaço ou Enter para Confirmar', gameWidth / 2, gameHeight - 38);
+    ctx.fillText('Pressione Espaço ou Enter para Confirmar', screenWidth / 2, screenHeight - 38);
 }
 
 function wrapText(text, x, y, maxWidth, lineHeight) {
@@ -7218,41 +7357,194 @@ function isRectOverlap(x1, y1, w1, h1, x2, y2, w2, h2) {
            y1 + h1 > y2;
 }
 
+function getRandomCrocIndicatorTarget() {
+    return {
+        x: Math.random() * Math.max(1, gameWidth - 40) + 20,
+        y: Math.random() * Math.max(1, gameHeight - 40) + 20
+    };
+}
+
+function ensureCrocFakeIndicatorTarget(monster) {
+    if (!monster.fakeIndicatorTarget) {
+        monster.fakeIndicatorTarget = getRandomCrocIndicatorTarget();
+    }
+
+    const target = monster.fakeIndicatorTarget;
+    const isTargetVisible = target.x >= cameraX && target.x <= cameraX + viewportWidth &&
+                            target.y >= cameraY && target.y <= cameraY + viewportHeight;
+    if (isTargetVisible) {
+        monster.fakeIndicatorTarget = getRandomCrocIndicatorTarget();
+    }
+    return monster.fakeIndicatorTarget;
+}
+
+function drawOffscreenMonsterIndicator() {
+    if (!currentMonster || !ctx) return;
+
+    const monsterLeft = currentMonster.x;
+    const monsterTop = currentMonster.y;
+    const monsterRight = currentMonster.x + currentMonster.width;
+    const monsterBottom = currentMonster.y + currentMonster.height;
+    const viewLeft = cameraX;
+    const viewTop = cameraY;
+    const viewRight = cameraX + viewportWidth;
+    const viewBottom = cameraY + viewportHeight;
+
+    const isVisible = monsterRight >= viewLeft && monsterLeft <= viewRight && monsterBottom >= viewTop && monsterTop <= viewBottom;
+    if (isVisible) return;
+
+    const monsterCenterX = currentMonster.x + currentMonster.width / 2;
+    const monsterCenterY = currentMonster.y + currentMonster.height / 2;
+    let targetX = monsterCenterX;
+    let targetY = monsterCenterY;
+    if (currentMonster.type === 'croc') {
+        const fakeTarget = ensureCrocFakeIndicatorTarget(currentMonster);
+        targetX = fakeTarget.x;
+        targetY = fakeTarget.y;
+    }
+
+    const screenCenterX = viewportWidth / 2;
+    const screenCenterY = viewportHeight / 2;
+    const dx = targetX - (viewLeft + viewportWidth / 2);
+    const dy = targetY - (viewTop + viewportHeight / 2);
+    const angle = Math.atan2(dy, dx);
+
+    const edgeMargin = 32;
+    let indicatorX = screenCenterX + Math.cos(angle) * (viewportWidth / 2 - edgeMargin);
+    let indicatorY = screenCenterY + Math.sin(angle) * (viewportHeight / 2 - edgeMargin);
+    indicatorX = Math.max(edgeMargin, Math.min(viewportWidth - edgeMargin, indicatorX));
+    indicatorY = Math.max(edgeMargin, Math.min(viewportHeight - edgeMargin, indicatorY));
+
+    ctx.save();
+    ctx.translate(indicatorX, indicatorY);
+    ctx.rotate(angle);
+
+    ctx.fillStyle = 'rgba(255, 100, 100, 0.95)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(14, 0);
+    ctx.lineTo(-10, -8);
+    ctx.lineTo(-4, 0);
+    ctx.lineTo(-10, 8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    ctx.font = 'bold 12px Arial';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('MONSTRO', indicatorX, indicatorY - 14);
+    ctx.restore();
+}
+
 function positionMonsterAwayFromPlayer(monster) {
     const margin = 20;
     const playerCenterX = player.x + player.width / 2;
     const playerCenterY = player.y + player.height / 2;
-    const minDistance = Math.min(700, Math.max(300, Math.min(gameWidth, gameHeight) * 0.45));
+    // Special-case: simple monsters should spawn o mais perto possível do jogador
+    if (monster.type === 'simple') {
+        const minDist = 8; // muito próximo ao jogador, evitando sobreposição
+        const maxDist = 80; // pequeno raio ao redor do jogador
+        let attempt = 0;
+        while (attempt < 100) {
+            const angle = Math.random() * Math.PI * 2;
+            const r = minDist + Math.random() * (maxDist - minDist);
+            const centerX = playerCenterX + Math.cos(angle) * r;
+            const centerY = playerCenterY + Math.sin(angle) * r;
+            monster.x = Math.max(0, Math.min(gameWidth - monster.width, centerX - monster.width / 2));
+            monster.y = Math.max(0, Math.min(gameHeight - monster.height, centerY - monster.height / 2));
 
-    let attempt = 0;
-    while (attempt < 100) {
-        monster.x = Math.random() * (gameWidth - monster.width);
-        monster.y = Math.random() * (gameHeight - monster.height);
-        const monsterCenterX = monster.x + monster.width / 2;
-        const monsterCenterY = monster.y + monster.height / 2;
-        const dist = Math.hypot(monsterCenterX - playerCenterX, monsterCenterY - playerCenterY);
-        if (dist >= minDistance) {
-            break;
+            // ensure not overlapping player
+            if (!isRectOverlap(monster.x, monster.y, monster.width, monster.height, player.x, player.y, player.width, player.height)) {
+                break;
+            }
+            attempt++;
         }
-        attempt++;
-    }
+        // fallback: place just offset from player
+        if (attempt >= 100) {
+            monster.x = Math.max(0, Math.min(gameWidth - monster.width, player.x + player.width + minDist));
+            monster.y = Math.max(0, Math.min(gameHeight - monster.height, player.y));
+        }
+    } else {
+        // Handle caster and croc specially: spawn VERY far across the whole map
+        if (monster.type === 'caster' || monster.type === 'croc') {
+            const minDistanceFar = Math.max(gameWidth, gameHeight) * 0.9; // muito longe
+            let attempt = 0;
+            while (attempt < 300) {
+                monster.x = Math.random() * (gameWidth - monster.width);
+                monster.y = Math.random() * (gameHeight - monster.height);
+                const monsterCenterX = monster.x + monster.width / 2;
+                const monsterCenterY = monster.y + monster.height / 2;
+                const dist = Math.hypot(monsterCenterX - playerCenterX, monsterCenterY - playerCenterY);
+                if (dist >= minDistanceFar) break;
+                attempt++;
+            }
+            if (attempt >= 300) {
+                if (playerCenterX < gameWidth / 2) monster.x = Math.min(gameWidth - monster.width, playerCenterX + minDistanceFar);
+                else monster.x = Math.max(0, playerCenterX - minDistanceFar - monster.width);
+                if (playerCenterY < gameHeight / 2) monster.y = Math.min(gameHeight - monster.height, playerCenterY + minDistanceFar);
+                else monster.y = Math.max(0, playerCenterY - minDistanceFar - monster.height);
+            }
+            monster.portalX = monster.x + monster.width / 2;
+            monster.portalY = monster.y + monster.height / 2;
 
-    if (attempt >= 100) {
-        if (playerCenterX < gameWidth / 2) {
-            monster.x = Math.min(gameWidth - monster.width, playerCenterX + minDistance);
+            // Ensure patrol target is outside current viewport and reasonably far from spawn
+            let tx, ty, tries = 0;
+            do {
+                tx = Math.random() * Math.max(1, gameWidth - 40) + 20;
+                ty = Math.random() * Math.max(1, gameHeight - 40) + 20;
+                tries++;
+                if (tries > 500) break;
+                const dx = tx - (monster.x + monster.width / 2);
+                const dy = ty - (monster.y + monster.height / 2);
+                if (Math.hypot(dx, dy) < 300) continue; // patrol should be well away from spawn
+            } while (tx >= cameraX && tx <= cameraX + viewportWidth && ty >= cameraY && ty <= cameraY + viewportHeight);
+            monster.patrolTarget = { x: tx, y: ty };
+            return;
+        }
+
+        // Croc spawns far; other monsters follow previous behaviour (spawn within viewport but away)
+        let minDistance;
+        if (monster.type === 'croc') {
+            minDistance = Math.max(gameWidth, gameHeight) * 0.85;
         } else {
-            monster.x = Math.max(0, playerCenterX - minDistance - monster.width);
+            minDistance = Math.min(700, Math.max(300, Math.min(gameWidth, gameHeight) * 0.45));
         }
-        if (playerCenterY < gameHeight / 2) {
-            monster.y = Math.min(gameHeight - monster.height, playerCenterY + minDistance);
-        } else {
-            monster.y = Math.max(0, playerCenterY - minDistance - monster.height);
-        }
-    }
 
-    if (monster.type === 'caster') {
-        monster.portalX = monster.x + monster.width / 2;
-        monster.portalY = monster.y + monster.height / 2;
+        const spawnMinX = cameraX;
+        const spawnMaxX = cameraX + viewportWidth;
+        const spawnMinY = cameraY;
+        const spawnMaxY = cameraY + viewportHeight;
+
+        let attempt = 0;
+        while (attempt < 100) {
+            monster.x = spawnMinX + Math.random() * (spawnMaxX - spawnMinX - monster.width);
+            monster.y = spawnMinY + Math.random() * (spawnMaxY - spawnMinY - monster.height);
+            const monsterCenterX = monster.x + monster.width / 2;
+            const monsterCenterY = monster.y + monster.height / 2;
+            const dist = Math.hypot(monsterCenterX - playerCenterX, monsterCenterY - playerCenterY);
+            if (dist >= minDistance) {
+                break;
+            }
+            attempt++;
+        }
+
+        if (attempt >= 100) {
+            if (playerCenterX < gameWidth / 2) {
+                monster.x = Math.min(spawnMaxX - monster.width, playerCenterX + minDistance);
+            } else {
+                monster.x = Math.max(spawnMinX, playerCenterX - minDistance - monster.width);
+            }
+            if (playerCenterY < gameHeight / 2) {
+                monster.y = Math.min(spawnMaxY - monster.height, playerCenterY + minDistance);
+            } else {
+                monster.y = Math.max(spawnMinY, playerCenterY - minDistance - monster.height);
+            }
+        }
     }
 }
 
@@ -7271,6 +7563,9 @@ function spawnNewMonster() {
     currentMonster = new Monster(phase, chooseMonsterType());
     crocConsecutiveHits = 0;
     positionMonsterAwayFromPlayer(currentMonster);
+    if (currentMonster.type === 'croc') {
+        currentMonster.fakeIndicatorTarget = getRandomCrocIndicatorTarget();
+    }
     player.spinAttack = player.spinAttackLevel > 0;
     player.spinAttackCharges = Math.max(0, player.spinAttackLevel - 1);
     player.bowFirstShotUsed = false;
@@ -7282,7 +7577,7 @@ function spawnNewMonster() {
     isUpgrading = false;
     pendingUpgrade = true;
     upgradeDelayTimer = 30;
-    upgradeOverlayY = gameHeight / 2;
+    upgradeOverlayY = viewportHeight / 2;
     upgradeOverlayAlpha = 1;
     upgradeOverlayAnimating = false;
 }
@@ -7483,18 +7778,20 @@ function applyUpgrade(index) {
     roundStartTimer = 60;
 }
 
-function drawCountdownOverlay(text, subtitle = '', y = gameHeight / 2, alpha = 1) {
+function drawCountdownOverlay(text, subtitle = '', y = canvas.height / 2, alpha = 1) {
+    const screenWidth = canvas.width;
+    const screenHeight = canvas.height;
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
-    ctx.fillRect(0, 0, gameWidth, gameHeight);
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
 
-    const glow = ctx.createRadialGradient(gameWidth / 2, y - 20, 0, gameWidth / 2, y - 20, 170);
+    const glow = ctx.createRadialGradient(screenWidth / 2, y - 20, 0, screenWidth / 2, y - 20, 170);
     glow.addColorStop(0, 'rgba(0, 255, 220, 0.36)');
     glow.addColorStop(0.4, 'rgba(0, 255, 220, 0.08)');
     glow.addColorStop(1, 'rgba(0, 255, 220, 0)');
     ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, gameWidth, gameHeight);
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
 
     ctx.fillStyle = '#f9fcff';
     ctx.font = 'bold 88px Arial';
@@ -7502,39 +7799,41 @@ function drawCountdownOverlay(text, subtitle = '', y = gameHeight / 2, alpha = 1
     ctx.textBaseline = 'middle';
     ctx.shadowColor = 'rgba(0, 242, 255, 0.85)';
     ctx.shadowBlur = 26;
-    ctx.fillText(text, gameWidth / 2, y);
+    ctx.fillText(text, screenWidth / 2, y);
 
     if (subtitle) {
         ctx.font = '18px Arial';
         ctx.fillStyle = '#b7eeff';
         ctx.shadowColor = 'rgba(0, 220, 255, 0.4)';
         ctx.shadowBlur = 14;
-        ctx.fillText(subtitle, gameWidth / 2, y + 62);
+        ctx.fillText(subtitle, screenWidth / 2, y + 62);
     }
     ctx.restore();
 }
 
 function drawUpgradeMenu() {
+    const screenWidth = canvas.width;
+    const screenHeight = canvas.height;
     ctx.fillStyle = 'rgba(5, 10, 20, 0.95)';
-    ctx.fillRect(0, 0, gameWidth, gameHeight);
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
 
     ctx.save();
-    const centerX = gameWidth / 2;
-    const centerY = gameHeight / 2;
+    const centerX = screenWidth / 2;
+    const centerY = screenHeight / 2;
     const ring = ctx.createRadialGradient(centerX, centerY, 120, centerX, centerY, 460);
     ring.addColorStop(0, 'rgba(0, 190, 255, 0.08)');
     ring.addColorStop(0.55, 'rgba(0, 190, 255, 0.02)');
     ring.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = ring;
-    ctx.fillRect(0, 0, gameWidth, gameHeight);
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
     ctx.restore();
 
     ctx.save();
     ctx.fillStyle = 'rgba(8, 20, 44, 0.94)';
     ctx.strokeStyle = 'rgba(56, 196, 255, 0.16)';
     ctx.lineWidth = 1.5;
-    ctx.fillRect(48, 36, gameWidth - 96, gameHeight - 80);
-    ctx.strokeRect(48, 36, gameWidth - 96, gameHeight - 80);
+    ctx.fillRect(48, 36, screenWidth - 96, screenHeight - 80);
+    ctx.strokeRect(48, 36, screenWidth - 96, screenHeight - 80);
     ctx.restore();
 
     ctx.fillStyle = '#8ff4ff';
@@ -7542,17 +7841,17 @@ function drawUpgradeMenu() {
     ctx.textAlign = 'center';
     ctx.shadowColor = 'rgba(0, 210, 255, 0.55)';
     ctx.shadowBlur = 10;
-    ctx.fillText('Escolha um Upgrade', gameWidth / 2, 82);
+    ctx.fillText('Escolha um Upgrade', screenWidth / 2, 82);
     ctx.shadowBlur = 0;
 
     const buttonWidth = 220;
     const buttonHeight = 86;
     const verticalSpacing = 20;
-    const leftX = Math.max(72, gameWidth * 0.12);
-    const centerXPos = (gameWidth - buttonWidth) / 2;
-    const rightX = Math.min(gameWidth - buttonWidth - 72, gameWidth * 0.88 - buttonWidth);
-    const topY = gameHeight / 2 - buttonHeight - verticalSpacing / 2;
-    const bottomY = gameHeight / 2 + verticalSpacing / 2;
+    const leftX = Math.max(72, screenWidth * 0.12);
+    const centerXPos = (screenWidth - buttonWidth) / 2;
+    const rightX = Math.min(screenWidth - buttonWidth - 72, screenWidth * 0.88 - buttonWidth);
+    const topY = screenHeight / 2 - buttonHeight - verticalSpacing / 2;
+    const bottomY = screenHeight / 2 + verticalSpacing / 2;
     const positions = [
         { x: leftX, y: topY },
         { x: leftX, y: bottomY },
@@ -7642,23 +7941,23 @@ function drawUpgradeMenu() {
         const infoY = bottomY + buttonHeight + 42;
         ctx.save();
         ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
-        ctx.fillRect(84, infoY - 32, gameWidth - 168, 94);
+        ctx.fillRect(84, infoY - 32, screenWidth - 168, 94);
         ctx.strokeStyle = 'rgba(120, 230, 255, 0.16)';
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(84.5, infoY - 32.5, gameWidth - 169, 94);
+        ctx.strokeRect(84.5, infoY - 32.5, screenWidth - 169, 94);
         ctx.restore();
 
         ctx.fillStyle = '#dcf7ff';
         ctx.font = '14px Arial';
         ctx.textAlign = 'center';
-        wrapText(desc, gameWidth / 2, infoY - 8, gameWidth - 220, 20);
+        wrapText(desc, screenWidth / 2, infoY - 8, screenWidth - 220, 20);
     }
 
     ctx.fillStyle = '#a6eeff';
     ctx.font = '14px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('Use as Setas ou Clique para Selecionar', gameWidth / 2, gameHeight - 58);
-    ctx.fillText('Pressione Espaço ou Enter para Confirmar', gameWidth / 2, gameHeight - 34);
+    ctx.fillText('Use as Setas ou Clique para Selecionar', screenWidth / 2, screenHeight - 58);
+    ctx.fillText('Pressione Espaço ou Enter para Confirmar', screenWidth / 2, screenHeight - 34);
 }
 
 function getUpgradeDescription(upgrade) {
@@ -7749,16 +8048,17 @@ function gameLoop() {
         screenShakeTimer--;
     }
 
-    // Desenhar fundo estilizado
-    drawBackground();
-
     if (isSelectingWeapon) {
         drawWeaponSelection();
     } else if (upgradeDelayTimer > 0) {
+        beginCamera();
+        drawBackground();
         player.draw();
         currentMonster.draw();
         drawProjectiles();
         drawCritEffects();
+        endCamera();
+
         updateHealthBars();
         updateUI();
 
@@ -7770,10 +8070,14 @@ function gameLoop() {
 
         drawCountdownOverlay('Melhorias!', 'Pense bem...', upgradeOverlayY, upgradeOverlayAlpha);
     } else if (upgradeOverlayAnimating) {
+        beginCamera();
+        drawBackground();
         player.draw();
         currentMonster.draw();
         drawProjectiles();
         drawCritEffects();
+        endCamera();
+
         updateHealthBars();
         updateUI();
         drawUpgradeMenu();
@@ -7788,19 +8092,27 @@ function gameLoop() {
         }
         drawCountdownOverlay('Melhorias em breve...', '', upgradeOverlayY, upgradeOverlayAlpha);
     } else if (isUpgrading) {
+        beginCamera();
+        drawBackground();
         player.draw();
         currentMonster.draw();
         drawProjectiles();
         drawCritEffects();
+        endCamera();
+
         updateHealthBars();
         updateUI();
         drawUpgradeMenu();
     } else if (!gameOver) {
         if (roundStartTimer > 0) {
+            beginCamera();
+            drawBackground();
             player.draw();
             currentMonster.draw();
             drawProjectiles();
             drawCritEffects();
+            endCamera();
+
             updateHealthBars();
             updateUI();
 
@@ -7816,18 +8128,22 @@ function gameLoop() {
         // Se frameFreeze ativo, pular atualizações por 1 frame (apenas desenhar)
         if (frameFreeze > 0) {
             frameFreeze--;
+            beginCamera();
+            drawBackground();
             player.draw();
             currentMonster.draw();
             drawProjectiles();
             drawMonsterHitscans();
             drawCritEffects();
             drawAfterImages();
+            endCamera();
+
             updateHealthBars();
             updateUI();
             // overlay esbranquiçado durante o freeze (20% branco)
             ctx.save();
             ctx.fillStyle = 'rgba(255,255,255,0.20)';
-            ctx.fillRect(0, 0, gameWidth, gameHeight);
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.restore();
             if (screenShakeActive) ctx.restore();
             requestAnimationFrame(gameLoop);
@@ -7951,8 +8267,6 @@ function gameLoop() {
             attemptAttack();
         }
 
-        drawAfterImages();
-
         // Verificar morte do monstro
         if (currentMonster.health <= 0) {
             monstersDefeated++;
@@ -7974,6 +8288,8 @@ function gameLoop() {
         }
 
         // Desenhar
+        beginCamera();
+        drawBackground();
         player.draw();
         currentMonster.draw();
         drawProjectiles();
@@ -7981,6 +8297,10 @@ function gameLoop() {
         drawSlowdownInsects();
         drawCritEffects();
         drawSweatEffects();
+        drawAfterImages();
+        endCamera();
+
+        drawOffscreenMonsterIndicator();
         updateHealthBars();
         updateUI();
 
@@ -7996,12 +8316,12 @@ function gameLoop() {
             if (flashAlpha > 0) {
                 ctx.save();
                 ctx.fillStyle = `rgba(255,255,255,${flashAlpha})`;
-                ctx.fillRect(0, 0, gameWidth, gameHeight);
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
                 ctx.restore();
             }
             ctx.save();
             ctx.fillStyle = 'rgba(96, 96, 96, 0.225)';
-            ctx.fillRect(0, 0, gameWidth, gameHeight);
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.restore();
         }
     }
@@ -8009,14 +8329,14 @@ function gameLoop() {
     // Game Over
     if (gameOver) {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        ctx.fillRect(0, 0, gameWidth, gameHeight);
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = '#ff0000';
         ctx.font = 'bold 40px Arial';
         ctx.textAlign = 'center';
-        ctx.fillText('DERROTA!', gameWidth / 2, gameHeight / 2);
+        ctx.fillText('DERROTA!', canvas.width / 2, canvas.height / 2);
         ctx.font = '20px Arial';
         ctx.fillStyle = '#ffffff';
-        ctx.fillText('Recarregue a página para tentar novamente', gameWidth / 2, gameHeight / 2 + 50);
+        ctx.fillText('Recarregue a página para tentar novamente', canvas.width / 2, canvas.height / 2 + 50);
     }
 
     if (screenShakeActive) ctx.restore();
