@@ -22,6 +22,7 @@ let viewportHeight;
 let gameWidth;
 let gameHeight;
 let mapWalls = [];
+let mapDecor = [];
 let spawnZoneEndX;
 let upgradeZoneEndX;
 let wildZoneEndX;
@@ -44,19 +45,131 @@ function resizeGameCanvas() {
 
     viewportWidth = width;
     viewportHeight = height;
-    gameWidth = viewportWidth * 10;
-    gameHeight = viewportHeight * 4;
+    gameWidth = viewportWidth * 30;
+    gameHeight = viewportHeight * 12;
 
-    spawnZoneEndX = viewportWidth * 6;
-    upgradeZoneEndX = spawnZoneEndX + viewportWidth * 3;
+    spawnZoneEndX = viewportWidth * 18;
+    upgradeZoneEndX = spawnZoneEndX + viewportWidth * 9;
     wildZoneEndX = gameWidth;
 
     generateMapWalls();
+    createMapDecor();
 
     canvas.width = viewportWidth;
     canvas.height = viewportHeight;
     canvas.style.width = `${viewportWidth}px`;
     canvas.style.height = `${viewportHeight}px`;
+}
+
+function getMapCircle() {
+    const centerX = gameWidth / 2;
+    const centerY = gameHeight / 2;
+    const radius = Math.min(gameWidth, gameHeight) * 0.5 - 10;
+    return {
+        centerX,
+        centerY,
+        radius,
+        spawnRadius: radius * 0.30,
+        upgradeRadius: radius * 0.60,
+        wildRadius: radius
+    };
+}
+
+function getRandomPointInRing(centerX, centerY, minRadius, maxRadius) {
+    const angle = Math.random() * Math.PI * 2;
+    const t = Math.random();
+    const radius = Math.sqrt(t * (maxRadius * maxRadius - minRadius * minRadius) + minRadius * minRadius);
+    return {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius
+    };
+}
+
+function createMapDecor() {
+    const { centerX, centerY, spawnRadius, upgradeRadius, wildRadius } = getMapCircle();
+    mapDecor = [];
+
+    const createDecorEntry = (x, y, scale, alpha, zone) => {
+        const extras = [];
+        const extraCount = 5 + Math.floor(Math.random() * 4);
+        for (let j = 0; j < extraCount; j++) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = (8 + Math.random() * 10) * scale * 0.5;
+            extras.push({
+                x: Math.cos(angle) * dist,
+                y: Math.sin(angle) * dist,
+                radius: 12 + Math.random() * 10,
+                alpha: 0.20 + Math.random() * 0.18
+            });
+        }
+        return { x, y, scale, alpha, zone, extras };
+    };
+
+    for (let i = 0; i < 5; i++) {
+        const pos = getRandomPointInRing(centerX, centerY, 0, spawnRadius * 0.94);
+        mapDecor.push(createDecorEntry(pos.x, pos.y, 6 + Math.random() * 2, 0.98, 'spawn'));
+    }
+    for (let i = 0; i < 5; i++) {
+        const pos = getRandomPointInRing(centerX, centerY, spawnRadius * 1.02, upgradeRadius * 0.88);
+        mapDecor.push(createDecorEntry(pos.x, pos.y, 6 + Math.random() * 2, 0.94, 'upgrade'));
+    }
+    for (let i = 0; i < 60; i++) {
+        const pos = getRandomPointInRing(centerX, centerY, upgradeRadius * 1.02, wildRadius * 0.94);
+        mapDecor.push(createDecorEntry(pos.x, pos.y, 6 + Math.random() * 2, 0.82, 'wild'));
+    }
+}
+
+function drawMapTree(ctx, x, y, scale, alpha = 1, extras = []) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.globalAlpha = alpha;
+
+    for (const extra of extras) {
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(94, 190, 94, ${extra.alpha})`;
+        ctx.arc(extra.x, extra.y, extra.radius, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    const radius = 40 * scale;
+    ctx.beginPath();
+    ctx.fillStyle = 'rgba(62, 154, 63, 0.92)';
+    ctx.arc(0, 0, radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(34, 95, 34, 0.85)';
+    ctx.beginPath();
+    ctx.arc(0, 0, radius * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+}
+
+function drawMapDecor() {
+    for (const decor of mapDecor) {
+        drawMapTree(ctx, decor.x, decor.y, decor.scale, decor.alpha, decor.extras);
+    }
+}
+
+function initializeMapDecor() {
+    createMapDecor();
+}
+
+function clampEntityToMapCircle(entity) {
+    const { centerX, centerY, radius } = getMapCircle();
+    const halfW = entity.width / 2;
+    const halfH = entity.height / 2;
+    const posX = entity.x + halfW;
+    const posY = entity.y + halfH;
+    const dx = posX - centerX;
+    const dy = posY - centerY;
+    const dist = Math.hypot(dx, dy);
+    const maxDist = Math.max(0, radius - Math.max(halfW, halfH) - 1);
+    if (dist <= maxDist) return false;
+    const scale = maxDist / (dist || 1);
+    entity.x = centerX + dx * scale - halfW;
+    entity.y = centerY + dy * scale - halfH;
+    return true;
 }
 
 function updateCamera() {
@@ -96,12 +209,10 @@ function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
 window.addEventListener('resize', () => {
     resizeGameCanvas();
     if (typeof player !== 'undefined') {
-        player.x = Math.max(0, Math.min(player.x, gameWidth - player.width));
-        player.y = Math.max(0, Math.min(player.y, gameHeight - player.height));
+        clampEntityToMapCircle(player);
     }
     if (typeof currentMonster !== 'undefined') {
-        currentMonster.x = Math.max(0, Math.min(currentMonster.x, gameWidth - currentMonster.width));
-        currentMonster.y = Math.max(0, Math.min(currentMonster.y, gameHeight - currentMonster.height));
+        clampEntityToMapCircle(currentMonster);
     }
 });
 
@@ -1481,15 +1592,13 @@ class Player {
             if (moveX > 0) this.x += movementSpeed;
         }
 
-        this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
-        this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+        clampEntityToMapCircle(this);
 
         if (resolveEntityWallCollision(this, prevX, prevY) && this.dashTimer > 0) {
             this.dashTimer = 0;
         }
 
-        this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
-        this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+        clampEntityToMapCircle(this);
 
         if (this.postDashInvulnTimer > 0) {
             this.postDashInvulnTimer--;
@@ -5244,6 +5353,7 @@ function selectWeapon(index) {
     isSelectingWeapon = false;
     gameStarted = true;
     roundStartTimer = 60;
+    initializeMapDecor();
 }
 
 function registerPlayerHit() {
@@ -6567,37 +6677,62 @@ function drawBackground() {
 
     drawMapWalls();
 
-    const spawnZoneEndX = viewportWidth * 6;
-    const upgradeZoneEndX = spawnZoneEndX + viewportWidth * 3;
-    const wildZoneEndX = gameWidth;
+    const { centerX, centerY, radius, spawnRadius, upgradeRadius } = getMapCircle();
 
     ctx.save();
     ctx.globalCompositeOperation = 'overlay';
-    ctx.fillStyle = 'rgba(65, 130, 255, 0.10)';
-    ctx.fillRect(0, 0, spawnZoneEndX, gameHeight);
-    ctx.fillStyle = 'rgba(255, 195, 35, 0.10)';
-    ctx.fillRect(spawnZoneEndX, 0, upgradeZoneEndX - spawnZoneEndX, gameHeight);
-    ctx.fillStyle = 'rgba(220, 60, 60, 0.10)';
-    ctx.fillRect(upgradeZoneEndX, 0, wildZoneEndX - upgradeZoneEndX, gameHeight);
-    ctx.globalCompositeOperation = 'source-over';
 
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(220, 80, 70, 0.16)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, upgradeRadius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(245, 205, 65, 0.18)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, spawnRadius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(70, 150, 245, 0.22)';
+    ctx.fill();
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+
+    ctx.save();
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
     ctx.lineWidth = 4;
     ctx.setLineDash([16, 14]);
     ctx.beginPath();
-    ctx.moveTo(spawnZoneEndX, 0);
-    ctx.lineTo(spawnZoneEndX, gameHeight);
-    ctx.moveTo(upgradeZoneEndX, 0);
-    ctx.lineTo(upgradeZoneEndX, gameHeight);
+    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, upgradeRadius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, spawnRadius, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
+    ctx.restore();
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-    ctx.font = '22px sans-serif';
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, gameWidth, gameHeight);
+    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2, true);
+    ctx.fillStyle = 'rgba(3, 6, 12, 0.72)';
+    ctx.fill('evenodd');
+    ctx.restore();
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+    ctx.font = '24px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('SPAWN', spawnZoneEndX / 2, 40);
-    ctx.fillText('MELHORIAS', (spawnZoneEndX + upgradeZoneEndX) / 2, 40);
-    ctx.fillText('SELVAGEM', (upgradeZoneEndX + wildZoneEndX) / 2, 40);
+    ctx.textBaseline = 'middle';
+    ctx.fillText('zona de spawn', centerX, centerY);
+    ctx.font = '20px sans-serif';
+    ctx.fillText('zona de melhorias', centerX, centerY - upgradeRadius * 0.62);
+    ctx.fillText('zona selvagem', centerX, centerY - radius * 0.82);
     ctx.restore();
 
     ctx.save();
@@ -6625,23 +6760,7 @@ function drawMapWalls() {
 }
 
 function generateMapWalls() {
-    const spawnWidth = spawnZoneEndX;
-    const upgradeWidth = upgradeZoneEndX - spawnZoneEndX;
-    const wildWidth = wildZoneEndX - upgradeZoneEndX;
-
-    mapWalls = [
-        { x: spawnWidth * 0.10, y: gameHeight * 0.10, width: spawnWidth * 0.14, height: gameHeight * 0.12 },
-        { x: spawnWidth * 0.40, y: gameHeight * 0.16, width: spawnWidth * 0.12, height: gameHeight * 0.10 },
-        { x: spawnWidth * 0.65, y: gameHeight * 0.24, width: spawnWidth * 0.10, height: gameHeight * 0.14 },
-        { x: spawnWidth * 0.18, y: gameHeight * 0.58, width: spawnWidth * 0.12, height: gameHeight * 0.10 },
-        { x: spawnWidth * 0.48, y: gameHeight * 0.60, width: spawnWidth * 0.10, height: gameHeight * 0.08 },
-        { x: spawnZoneEndX + upgradeWidth * 0.08, y: gameHeight * 0.14, width: upgradeWidth * 0.12, height: gameHeight * 0.10 },
-        { x: spawnZoneEndX + upgradeWidth * 0.32, y: gameHeight * 0.22, width: upgradeWidth * 0.10, height: gameHeight * 0.12 },
-        { x: spawnZoneEndX + upgradeWidth * 0.62, y: gameHeight * 0.40, width: upgradeWidth * 0.14, height: gameHeight * 0.10 },
-        { x: upgradeZoneEndX + wildWidth * 0.10, y: gameHeight * 0.18, width: wildWidth * 0.12, height: gameHeight * 0.12 },
-        { x: upgradeZoneEndX + wildWidth * 0.38, y: gameHeight * 0.28, width: wildWidth * 0.10, height: gameHeight * 0.08 },
-        { x: upgradeZoneEndX + wildWidth * 0.66, y: gameHeight * 0.50, width: wildWidth * 0.14, height: gameHeight * 0.14 }
-    ];
+    mapWalls = [];
 }
 
 function resolveEntityWallCollision(entity, prevX, prevY) {
@@ -8405,6 +8524,7 @@ function gameLoop() {
         currentMonster.draw();
         drawProjectiles();
         drawCritEffects();
+        drawMapDecor();
         endCamera();
 
         updateHealthBars();
@@ -8424,6 +8544,7 @@ function gameLoop() {
         currentMonster.draw();
         drawProjectiles();
         drawCritEffects();
+        drawMapDecor();
         endCamera();
 
         updateHealthBars();
@@ -8446,6 +8567,7 @@ function gameLoop() {
         currentMonster.draw();
         drawProjectiles();
         drawCritEffects();
+        drawMapDecor();
         endCamera();
 
         updateHealthBars();
@@ -8461,11 +8583,11 @@ function gameLoop() {
             currentMonster.draw();
             drawProjectiles();
             drawCritEffects();
+            drawMapDecor();
             endCamera();
 
             updateHealthBars();
             updateUI();
-
             const countdownNumber = Math.max(1, Math.ceil(roundStartTimer / 20));
             const subtitle = countdownNumber === 1 ? 'Vai!' : '';
             drawCountdownOverlay(countdownNumber.toString(), subtitle);
@@ -8488,6 +8610,7 @@ function gameLoop() {
             drawMonsterHitscans();
             drawCritEffects();
             drawAfterImages();
+            drawMapDecor();
             endCamera();
 
             updateHealthBars();
@@ -8527,8 +8650,7 @@ function gameLoop() {
         const monsterPrevY = currentMonster.y;
         currentMonster.update(player.x + player.width / 2, player.y + player.height / 2);
         resolveEntityWallCollision(currentMonster, monsterPrevX, monsterPrevY);
-        currentMonster.x = Math.max(0, Math.min(currentMonster.x, gameWidth - currentMonster.width));
-        currentMonster.y = Math.max(0, Math.min(currentMonster.y, gameHeight - currentMonster.height));
+        clampEntityToMapCircle(currentMonster);
         updateAmbientAnimals();
         updateAmbientCritters();
         updateProjectiles();
@@ -8659,6 +8781,7 @@ function gameLoop() {
         drawCritEffects();
         drawSweatEffects();
         drawAfterImages();
+        drawMapDecor();
         endCamera();
 
         drawOffscreenMonsterIndicator();
