@@ -1,5 +1,14 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
+let overlayCanvas;
+let overlayCtx;
+
+function initializeDebugOverlay() {
+    createDebugOverlay();
+    resizeDebugOverlay();
+}
+
+initializeDebugOverlay();
 
 let mouseX = 0;
 let mouseY = 0;
@@ -30,9 +39,87 @@ let cameraX = 0;
 let cameraY = 0;
 let gameFrameCount = 0;
 
+// Sistema de construções
+let constructions = [];
+let playerInsideConstruction = false;
+let currentConstructionId = -1;
+let constructionExitZone = null;
+let constructionEntrancePortals = [];
+
 // fila de spawns atrasados (timer em frames)
 const delayedProjectileSpawns = [];
 const DEBUG_TORNADO_COPY = true;
+
+function createDebugOverlay() {
+    if (overlayCanvas) return;
+    overlayCanvas = document.createElement('canvas');
+    overlayCanvas.id = 'debugOverlayCanvas';
+    overlayCanvas.style.position = 'fixed';
+    overlayCanvas.style.top = '0';
+    overlayCanvas.style.left = '0';
+    overlayCanvas.style.right = '0';
+    overlayCanvas.style.bottom = '0';
+    overlayCanvas.style.width = '100%';
+    overlayCanvas.style.height = '100%';
+    overlayCanvas.style.pointerEvents = 'none';
+    overlayCanvas.style.zIndex = '9999';
+    overlayCanvas.style.display = 'none';
+    overlayCanvas.style.background = 'transparent';
+    document.body.appendChild(overlayCanvas);
+    overlayCtx = overlayCanvas.getContext('2d');
+
+    overlayCanvas.addEventListener('click', (event) => {
+        if (!isDebugMenuOpen) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = overlayCanvas.getBoundingClientRect();
+        const clickX = event.clientX - rect.left;
+        const clickY = event.clientY - rect.top;
+
+        if (debugMenuTabGeom.tabRects) {
+            for (const tabRect of debugMenuTabGeom.tabRects) {
+                if (clickX >= tabRect.x && clickX <= tabRect.x + tabRect.w && clickY >= tabRect.y && clickY <= tabRect.y + tabRect.h) {
+                    const tabIndex = debugMenuTabs.findIndex(tab => tab.id === tabRect.id);
+                    if (tabIndex >= 0) {
+                        debugMenuTabIndex = tabIndex;
+                        selectedDebugUpgradeIndex = 0;
+                        selectedDebugActionIndex = 0;
+                    }
+                    return;
+                }
+            }
+        }
+
+        const choices = getDebugMenuChoices();
+        const geom = debugMenuListGeom;
+        const listX = geom.x;
+        const listY = geom.y;
+        const listWidth = geom.width;
+        const itemHeight = geom.itemHeight;
+        const gap = geom.gap;
+        const visibleCount = geom.visibleCount;
+        const startIndex = geom.startIndex;
+        for (let i = 0; i < visibleCount; i++) {
+            const index = startIndex + i;
+            const itemY = listY + i * (itemHeight + gap);
+            if (clickX >= listX && clickX <= listX + listWidth && clickY >= itemY && clickY <= itemY + itemHeight) {
+                if (debugMenuTabs[debugMenuTabIndex].id === 'invocar') {
+                    selectedDebugActionIndex = index;
+                } else {
+                    selectedDebugUpgradeIndex = index;
+                }
+                applyDebugUpgrade();
+                break;
+            }
+        }
+    });
+}
+
+function resizeDebugOverlay() {
+    if (!overlayCanvas) return;
+    overlayCanvas.width = window.innerWidth;
+    overlayCanvas.height = window.innerHeight;
+}
 
 function resizeGameCanvas() {
     const maxViewportWidth = 1600;
@@ -45,11 +132,11 @@ function resizeGameCanvas() {
 
     viewportWidth = width;
     viewportHeight = height;
-    gameWidth = viewportWidth * 30;
-    gameHeight = viewportHeight * 12;
+    gameWidth = viewportWidth * 60;
+    gameHeight = viewportHeight * 24;
 
-    spawnZoneEndX = viewportWidth * 18;
-    upgradeZoneEndX = spawnZoneEndX + viewportWidth * 9;
+    spawnZoneEndX = viewportWidth * 36;
+    upgradeZoneEndX = spawnZoneEndX + viewportWidth * 18;
     wildZoneEndX = gameWidth;
 
     generateMapWalls();
@@ -59,6 +146,7 @@ function resizeGameCanvas() {
     canvas.height = viewportHeight;
     canvas.style.width = `${viewportWidth}px`;
     canvas.style.height = `${viewportHeight}px`;
+    resizeDebugOverlay();
 }
 
 function getMapCircle() {
@@ -85,37 +173,204 @@ function getRandomPointInRing(centerX, centerY, minRadius, maxRadius) {
     };
 }
 
-function createMapDecor() {
-    const { centerX, centerY, spawnRadius, upgradeRadius, wildRadius } = getMapCircle();
-    mapDecor = [];
+function getZoneBounds(zone) {
+    const padding = 20;
+    const spawnEndX = typeof spawnZoneEndX === 'number' ? spawnZoneEndX : gameWidth * 0.6;
+    const upgradeEndX = typeof upgradeZoneEndX === 'number' ? upgradeZoneEndX : gameWidth * 0.9;
+    const minX = padding;
+    const minY = padding;
+    const maxX = Math.max(minX, gameWidth - padding);
+    const maxY = Math.max(minY, gameHeight - padding);
 
-    const createDecorEntry = (x, y, scale, alpha, zone) => {
-        const extras = [];
-        const extraCount = 5 + Math.floor(Math.random() * 4);
-        for (let j = 0; j < extraCount; j++) {
-            const angle = Math.random() * Math.PI * 2;
-            const dist = (8 + Math.random() * 10) * scale * 0.5;
-            extras.push({
-                x: Math.cos(angle) * dist,
-                y: Math.sin(angle) * dist,
-                radius: 12 + Math.random() * 10,
-                alpha: 0.20 + Math.random() * 0.18
-            });
+    switch (zone) {
+        case 'spawn':
+            return {
+                minX,
+                maxX: Math.max(minX, spawnEndX - padding),
+                minY,
+                maxY
+            };
+        case 'construction':
+        case 'upgrade':
+            return {
+                minX: Math.max(minX, spawnEndX + padding),
+                maxX: Math.max(minX, upgradeEndX - padding),
+                minY,
+                maxY
+            };
+        case 'wild':
+            return {
+                minX: Math.max(minX, upgradeEndX + padding),
+                maxX,
+                minY,
+                maxY
+            };
+        default:
+            return { minX, maxX, minY, maxY };
+    }
+}
+
+function isPointInsideMapCircle(x, y, size = 0) {
+    const { centerX, centerY, radius } = getMapCircle();
+    const halfSize = Math.max(0, size / 2);
+    const posX = x + halfSize;
+    const posY = y + halfSize;
+    const dx = posX - centerX;
+    const dy = posY - centerY;
+    const dist = Math.hypot(dx, dy);
+    const maxDist = Math.max(0, radius - halfSize - 1);
+    return dist <= maxDist;
+}
+
+function getRandomPointInZone(zone, size = 0) {
+    const bounds = getZoneBounds(zone);
+    const safeMinX = Math.max(bounds.minX, 0);
+    const safeMaxX = Math.max(safeMinX, Math.min(bounds.maxX, gameWidth - size));
+    const safeMinY = Math.max(bounds.minY, 0);
+    const safeMaxY = Math.max(safeMinY, Math.min(bounds.maxY, gameHeight - size));
+
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+        const point = {
+            x: safeMinX + Math.random() * Math.max(1, safeMaxX - safeMinX),
+            y: safeMinY + Math.random() * Math.max(1, safeMaxY - safeMinY)
+        };
+
+        if (isPointInsideMapCircle(point.x, point.y, size)) {
+            return point;
         }
-        return { x, y, scale, alpha, zone, extras };
+    }
+
+    const { centerX, centerY } = getMapCircle();
+    return {
+        x: Math.max(safeMinX, Math.min(safeMaxX, centerX - size / 2)),
+        y: Math.max(safeMinY, Math.min(safeMaxY, centerY - size / 2))
+    };
+}
+
+function getRandomPointInUpgradeRing(size = 0) {
+    const { centerX, centerY, spawnRadius, upgradeRadius } = getMapCircle();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+        const point = getRandomPointInRing(centerX, centerY, spawnRadius + 20, upgradeRadius - 20);
+        if (isPointInsideMapCircle(point.x, point.y, size)) {
+            return point;
+        }
+    }
+    return {
+        x: centerX - size / 2,
+        y: centerY - size / 2
+    };
+}
+
+function getPlayerInteriorScale() {
+    if (!playerInsideConstruction || currentConstructionId < 0) return 1;
+    const construction = constructions.find(c => c.id === currentConstructionId);
+    return construction && construction.type === 'castle' ? 0.5 : 1;
+}
+
+function tryApplyPlayerConfusionFromAttack(sourceType, options = {}) {
+    if (!player) return false;
+
+    const chance = typeof options.chance === 'number' ? options.chance : 0;
+    const guaranteed = !!options.guaranteed;
+    const durationFrames = typeof options.durationFrames === 'number' ? options.durationFrames : 6 * 60;
+    const shouldApply = guaranteed || (chance > 0 && Math.random() * 100 < chance);
+
+    if (!shouldApply) return false;
+
+    player.confusedLevel = Math.max(player.confusedLevel || 0, options.level || 3);
+    player.confusedTimer = Math.max(player.confusedTimer || 0, durationFrames);
+    return true;
+}
+
+function createMapDecor() {
+    mapDecor = [];
+    constructions = [];
+
+    const createDecorEntry = (x, y, scale, alpha, zone, kind = 'tree', extras = []) => {
+        const entry = { x, y, scale, alpha, zone, kind, extras };
+        if (kind === 'construction') {
+            entry.width = 110 * scale;
+            entry.height = 96 * scale;
+        }
+        return entry;
     };
 
+    // Árvores na zona de spawn
     for (let i = 0; i < 5; i++) {
-        const pos = getRandomPointInRing(centerX, centerY, 0, spawnRadius * 0.94);
-        mapDecor.push(createDecorEntry(pos.x, pos.y, 6 + Math.random() * 2, 0.98, 'spawn'));
+        const pos = getRandomPointInZone('spawn', 70);
+        mapDecor.push(createDecorEntry(pos.x, pos.y, 2.2 + Math.random() * 0.9, 0.98, 'spawn'));
     }
-    for (let i = 0; i < 5; i++) {
-        const pos = getRandomPointInRing(centerX, centerY, spawnRadius * 1.02, upgradeRadius * 0.88);
-        mapDecor.push(createDecorEntry(pos.x, pos.y, 6 + Math.random() * 2, 0.94, 'upgrade'));
+
+    // 3 CONSTRUÇÕES PRINCIPAIS no mapa
+    const constructionPositions = [];
+    const constructionTypes = ['castle', 'mansion', 'mine'];
+
+    for (let i = 0; i < 3; i++) {
+        let pos;
+        let isValidPosition = false;
+        let attempts = 0;
+        const isCastleOrMansion = constructionTypes[i] === 'castle' || constructionTypes[i] === 'mansion';
+        const constructionZone = isCastleOrMansion ? 'upgrade' : 'construction';
+
+        // Tentar encontrar uma posição válida que não colida com outras construções
+        while (!isValidPosition && attempts < 120) {
+            if (isCastleOrMansion) {
+                pos = getRandomPointInUpgradeRing(90);
+            } else {
+                pos = getRandomPointInZone('construction', 90);
+            }
+            isValidPosition = true;
+
+            // Verificar distância mínima entre construções
+            for (const existing of constructionPositions) {
+                const dist = Math.hypot(pos.x - existing.x, pos.y - existing.y);
+                if (dist < 220) {
+                    isValidPosition = false;
+                    break;
+                }
+            }
+            attempts++;
+        }
+
+        if (!isValidPosition) {
+            const { centerX, centerY } = getMapCircle();
+            pos = {
+                x: centerX + (Math.random() - 0.5) * 1800,
+                y: centerY + (Math.random() - 0.5) * 1200
+            };
+        }
+
+        if (pos) {
+            const scale = 2.8 + Math.random() * 1.2;
+            const constructionData = {
+                id: i,
+                x: pos.x,
+                y: pos.y,
+                scale: scale,
+                width: 120 * scale,
+                height: 100 * scale,
+                type: constructionTypes[i],
+                interiorX: gameWidth + (i * 400),
+                interiorY: 200 + (i * Math.random() * 100),
+                zone: constructionZone,
+                locked: false
+            };
+
+            constructions.push(constructionData);
+            constructionPositions.push(pos);
+
+            // Adicionar ao mapa visual
+            const decorEntry = createDecorEntry(pos.x, pos.y, scale, 0.95, constructionZone, 'construction');
+            decorEntry.constructionId = i;
+            decorEntry.hasEntranceMarker = constructionTypes[i] === 'castle' || constructionTypes[i] === 'mansion';
+            mapDecor.push(decorEntry);
+        }
     }
+
+    // Árvores na zona selvagem
     for (let i = 0; i < 60; i++) {
-        const pos = getRandomPointInRing(centerX, centerY, upgradeRadius * 1.02, wildRadius * 0.94);
-        mapDecor.push(createDecorEntry(pos.x, pos.y, 6 + Math.random() * 2, 0.82, 'wild'));
+        const pos = getRandomPointInZone('wild', 40);
+        mapDecor.push(createDecorEntry(pos.x, pos.y, 1.6 + Math.random() * 0.8, 0.82, 'wild'));
     }
 }
 
@@ -145,14 +400,981 @@ function drawMapTree(ctx, x, y, scale, alpha = 1, extras = []) {
     ctx.restore();
 }
 
+function drawMapConstruction(ctx, decor, x, y, scale, alpha = 1) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.globalAlpha = alpha;
+
+    const construction = constructions.find(c => c.id === decor.constructionId);
+    const type = construction ? construction.type : 'castle';
+
+    const baseWidth = 120 * scale;
+    const baseHeight = 92 * scale;
+    const roofHeight = 44 * scale;
+    const doorWidth = 22 * scale;
+    const doorHeight = 32 * scale;
+    const towerSize = 34 * scale;
+
+    // foundation
+    ctx.fillStyle = 'rgba(44, 34, 24, 0.98)';
+    ctx.fillRect(-baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
+
+    // base detail
+    ctx.fillStyle = 'rgba(90, 70, 48, 0.95)';
+    ctx.fillRect(-baseWidth / 2 + 10 * scale, -baseHeight / 2 + 10 * scale, baseWidth - 20 * scale, baseHeight - 20 * scale);
+
+    if (type === 'castle') {
+        const wallThickness = 10 * scale;
+        const wallHeight = 24 * scale;
+        const towerHeight = 46 * scale;
+        const keepWidth = baseWidth * 0.58;
+        const keepHeight = baseHeight * 0.6;
+
+        const drawTower = (x, y, width, height) => {
+            ctx.fillStyle = 'rgba(98, 106, 120, 0.98)';
+            ctx.fillRect(x, y, width, height);
+
+            ctx.fillStyle = 'rgba(72, 80, 94, 0.95)';
+            ctx.fillRect(x + 6 * scale, y + 6 * scale, width - 12 * scale, height - 12 * scale);
+
+            ctx.fillStyle = 'rgba(244, 214, 120, 0.86)';
+            ctx.beginPath();
+            ctx.moveTo(x - 2 * scale, y);
+            ctx.lineTo(x + width / 2, y - 12 * scale);
+            ctx.lineTo(x + width + 2 * scale, y);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+            ctx.fillRect(x + 8 * scale, y + 10 * scale, width * 0.26, 8 * scale);
+            ctx.fillRect(x + width * 0.55, y + 10 * scale, width * 0.2, 8 * scale);
+        };
+
+        ctx.fillStyle = 'rgba(70, 58, 40, 0.98)';
+        ctx.fillRect(-baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
+
+        ctx.fillStyle = 'rgba(108, 102, 86, 0.98)';
+        ctx.fillRect(-baseWidth / 2 + 12 * scale, -baseHeight / 2 + 12 * scale, baseWidth - 24 * scale, baseHeight - 24 * scale);
+
+        ctx.fillStyle = 'rgba(128, 122, 108, 0.98)';
+        ctx.fillRect(-baseWidth / 2 + 18 * scale, -baseHeight / 2 + 18 * scale, baseWidth - 36 * scale, baseHeight - 36 * scale);
+
+        ctx.fillStyle = 'rgba(118, 120, 134, 0.95)';
+        ctx.fillRect(-baseWidth / 2 + 8 * scale, -baseHeight / 2 + 8 * scale, baseWidth - 16 * scale, wallHeight);
+        ctx.fillRect(-baseWidth / 2 + 8 * scale, baseHeight / 2 - wallHeight - 8 * scale, baseWidth - 16 * scale, wallHeight);
+        ctx.fillRect(-baseWidth / 2 + 8 * scale, -baseHeight / 2 + 8 * scale, wallThickness, baseHeight - 16 * scale);
+        ctx.fillRect(baseWidth / 2 - wallThickness - 8 * scale, -baseHeight / 2 + 8 * scale, wallThickness, baseHeight - 16 * scale);
+
+        ctx.fillStyle = 'rgba(86, 92, 108, 0.96)';
+        for (let i = -baseWidth / 2 + 16 * scale; i < baseWidth / 2 - 16 * scale; i += 20 * scale) {
+            ctx.fillRect(i, -baseHeight / 2 + 8 * scale - 6 * scale, 10 * scale, 6 * scale);
+            ctx.fillRect(i, baseHeight / 2 - 8 * scale, 10 * scale, 6 * scale);
+        }
+
+        drawTower(-baseWidth / 2 + 6 * scale, -baseHeight / 2 + 6 * scale, towerSize, towerHeight);
+        drawTower(baseWidth / 2 - towerSize - 6 * scale, -baseHeight / 2 + 6 * scale, towerSize, towerHeight);
+        drawTower(-baseWidth / 2 + 6 * scale, baseHeight / 2 - towerHeight - 6 * scale, towerSize, towerHeight);
+        drawTower(baseWidth / 2 - towerSize - 6 * scale, baseHeight / 2 - towerHeight - 6 * scale, towerSize, towerHeight);
+
+        ctx.fillStyle = 'rgba(136, 132, 146, 0.97)';
+        ctx.fillRect(-keepWidth / 2, -keepHeight / 2 + 8 * scale, keepWidth, keepHeight);
+
+        ctx.fillStyle = 'rgba(160, 176, 204, 0.93)';
+        ctx.beginPath();
+        ctx.moveTo(-keepWidth / 2 - 4 * scale, -keepHeight / 2 + 8 * scale);
+        ctx.lineTo(0, -keepHeight / 2 - 20 * scale);
+        ctx.lineTo(keepWidth / 2 + 4 * scale, -keepHeight / 2 + 8 * scale);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(28, 28, 34, 0.95)';
+        ctx.fillRect(-doorWidth / 2, baseHeight / 2 - doorHeight - 6 * scale, doorWidth, doorHeight + 6 * scale);
+
+        ctx.fillStyle = 'rgba(255, 230, 160, 0.28)';
+        ctx.fillRect(-baseWidth / 2 + 22 * scale, -baseHeight / 2 + 28 * scale, 20 * scale, 16 * scale);
+        ctx.fillRect(baseWidth / 2 - 42 * scale, -baseHeight / 2 + 28 * scale, 20 * scale, 16 * scale);
+        ctx.fillRect(-8 * scale, -baseHeight / 2 + 8 * scale, 16 * scale, 12 * scale);
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+        ctx.fillRect(-baseWidth / 2 + 28 * scale, -baseHeight / 2 + 50 * scale, 12 * scale, 8 * scale);
+        ctx.fillRect(baseWidth / 2 - 40 * scale, -baseHeight / 2 + 50 * scale, 12 * scale, 8 * scale);
+
+        if (decor.hasEntranceMarker) {
+            ctx.save();
+            const markerBaseY = baseHeight / 2 + 8 * scale;
+            const markerWidth = 30 * scale;
+            const markerHeight = 26 * scale;
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(0, markerBaseY + markerHeight * 0.25);
+            ctx.lineTo(0, markerBaseY + markerHeight * 0.8);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(-markerWidth * 0.45, markerBaseY + markerHeight * 0.3);
+            ctx.lineTo(0, markerBaseY + markerHeight * 0.05);
+            ctx.lineTo(markerWidth * 0.45, markerBaseY + markerHeight * 0.3);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(255, 220, 120, 0.95)';
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+            ctx.font = `${10 * scale}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText('ENTRADA', 0, markerBaseY + markerHeight * 0.25);
+            ctx.fillStyle = 'rgba(255, 200, 60, 0.95)';
+            const doorMarkerW = doorWidth + 12 * scale;
+            const doorMarkerH = Math.max(6, 6 * scale);
+            ctx.fillRect(-doorMarkerW / 2, baseHeight / 2 - doorMarkerH - 2 * scale, doorMarkerW, doorMarkerH);
+            ctx.restore();
+        }
+
+        if (construction && construction.locked && type === 'castle') {
+            ctx.save();
+            const lockY = -baseHeight / 2 + 24 * scale;
+            const lockWidth = 24 * scale;
+            const lockHeight = 18 * scale;
+
+            ctx.fillStyle = 'rgba(60, 60, 80, 0.95)';
+            ctx.fillRect(-lockWidth / 2, lockY, lockWidth, lockHeight);
+
+            ctx.strokeStyle = 'rgba(200, 200, 220, 0.95)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(-lockWidth / 2, lockY, lockWidth, lockHeight);
+
+            ctx.beginPath();
+            ctx.arc(0, lockY, lockWidth * 0.4, Math.PI, 0, false);
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(200, 200, 220, 0.95)';
+            ctx.beginPath();
+            ctx.arc(0, lockY + lockHeight * 0.35, lockWidth * 0.12, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+    } else if (type === 'mansion') {
+        const wingWidth = baseWidth * 0.34;
+        const wingHeight = baseHeight * 0.44;
+        const keepWidth = baseWidth * 0.42;
+        const keepHeight = baseHeight * 0.56;
+
+        ctx.fillStyle = 'rgba(132, 98, 66, 0.98)';
+        ctx.fillRect(-baseWidth / 2 + 16 * scale, -baseHeight / 2 + 16 * scale, baseWidth - 32 * scale, baseHeight - 32 * scale);
+
+        ctx.fillStyle = 'rgba(92, 68, 44, 0.96)';
+        ctx.fillRect(-baseWidth / 2 + 22 * scale, -baseHeight / 2 + 22 * scale, baseWidth - 44 * scale, baseHeight - 44 * scale);
+
+        ctx.fillStyle = 'rgba(118, 104, 88, 0.98)';
+        ctx.fillRect(-keepWidth / 2, -keepHeight / 2 + 8 * scale, keepWidth, keepHeight);
+        ctx.fillRect(-baseWidth / 2 + 10 * scale, -baseHeight / 2 + 16 * scale, wingWidth, wingHeight);
+        ctx.fillRect(baseWidth / 2 - wingWidth - 10 * scale, -baseHeight / 2 + 16 * scale, wingWidth, wingHeight);
+
+        ctx.fillStyle = 'rgba(180, 148, 92, 0.95)';
+        ctx.beginPath();
+        ctx.moveTo(-keepWidth / 2 - 4 * scale, -keepHeight / 2 + 8 * scale);
+        ctx.lineTo(0, -keepHeight / 2 - 22 * scale);
+        ctx.lineTo(keepWidth / 2 + 4 * scale, -keepHeight / 2 + 8 * scale);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(76, 48, 24, 0.95)';
+        ctx.fillRect(-doorWidth / 2, baseHeight / 2 - doorHeight - 4 * scale, doorWidth, doorHeight + 4 * scale);
+
+        ctx.fillStyle = 'rgba(255, 214, 128, 0.8)';
+        ctx.fillRect(-baseWidth / 2 + 24 * scale, -baseHeight / 2 + 28 * scale, 20 * scale, 16 * scale);
+        ctx.fillRect(baseWidth / 2 - 44 * scale, -baseHeight / 2 + 28 * scale, 20 * scale, 16 * scale);
+
+        ctx.fillStyle = 'rgba(120, 80, 38, 0.85)';
+        ctx.fillRect(-baseWidth / 2 + 16 * scale, -baseHeight / 2 + 32 * scale, 14 * scale, 18 * scale);
+        ctx.fillRect(baseWidth / 2 - 30 * scale, -baseHeight / 2 + 32 * scale, 14 * scale, 18 * scale);
+
+        ctx.fillStyle = 'rgba(255, 200, 110, 0.45)';
+        ctx.fillRect(-10 * scale, -baseHeight / 2 + 12 * scale, 20 * scale, 14 * scale);
+        ctx.fillRect(-baseWidth / 2 + 32 * scale, baseHeight / 2 - 40 * scale, 20 * scale, 14 * scale);
+        ctx.fillRect(baseWidth / 2 - 52 * scale, baseHeight / 2 - 40 * scale, 20 * scale, 14 * scale);
+
+        if (decor.hasEntranceMarker) {
+            ctx.save();
+            const markerBaseY = baseHeight / 2 + 8 * scale;
+            const markerWidth = 30 * scale;
+            const markerHeight = 26 * scale;
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(0, markerBaseY + markerHeight * 0.25);
+            ctx.lineTo(0, markerBaseY + markerHeight * 0.8);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(-markerWidth * 0.45, markerBaseY + markerHeight * 0.3);
+            ctx.lineTo(0, markerBaseY + markerHeight * 0.05);
+            ctx.lineTo(markerWidth * 0.45, markerBaseY + markerHeight * 0.3);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(255, 220, 120, 0.95)';
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+            ctx.font = `${10 * scale}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText('ENTRADA', 0, markerBaseY + markerHeight * 0.25);
+            ctx.fillStyle = 'rgba(255, 200, 60, 0.95)';
+            const doorMarkerW = doorWidth + 12 * scale;
+            const doorMarkerH = Math.max(6, 6 * scale);
+            ctx.fillRect(-doorMarkerW / 2, baseHeight / 2 - doorMarkerH - 2 * scale, doorMarkerW, doorMarkerH);
+            ctx.restore();
+        }
+    } else if (type === 'mine') {
+        ctx.fillStyle = 'rgba(72, 72, 84, 0.97)';
+        ctx.fillRect(-baseWidth / 2 + 16 * scale, -baseHeight / 2 + 16 * scale, baseWidth - 32 * scale, baseHeight - 32 * scale);
+
+        ctx.fillStyle = 'rgba(40, 40, 48, 0.96)';
+        ctx.fillRect(-baseWidth / 2 + 24 * scale, -baseHeight / 2 + 24 * scale, baseWidth - 48 * scale, 28 * scale);
+
+        ctx.fillStyle = 'rgba(255, 150, 0, 0.92)';
+        ctx.beginPath();
+        ctx.moveTo(-baseWidth / 2 - 6 * scale, -baseHeight / 2 + 4 * scale);
+        ctx.lineTo(0, -baseHeight / 2 - roofHeight);
+        ctx.lineTo(baseWidth / 2 + 6 * scale, -baseHeight / 2 + 4 * scale);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(255, 90, 0, 0.55)';
+        ctx.fillRect(-baseWidth / 2 + 18 * scale, -baseHeight / 2 + 22 * scale, 24 * scale, 20 * scale);
+        ctx.fillRect(baseWidth / 2 - 42 * scale, -baseHeight / 2 + 22 * scale, 24 * scale, 20 * scale);
+
+        ctx.fillStyle = 'rgba(20, 20, 30, 0.96)';
+        ctx.fillRect(-doorWidth / 2, baseHeight / 2 - doorHeight, doorWidth, doorHeight);
+
+        ctx.fillStyle = 'rgba(255, 220, 120, 0.35)';
+        ctx.fillRect(-baseWidth / 2 + 26 * scale, -baseHeight / 2 + 42 * scale, 16 * scale, 10 * scale);
+        ctx.fillRect(baseWidth / 2 - 42 * scale, -baseHeight / 2 + 42 * scale, 16 * scale, 10 * scale);
+
+        ctx.fillStyle = 'rgba(255, 140, 0, 0.28)';
+        ctx.fillRect(-10 * scale, -baseHeight / 2 + 10 * scale, 20 * scale, 12 * scale);
+        ctx.fillRect(-baseWidth / 2 + 34 * scale, baseHeight / 2 - 42 * scale, 18 * scale, 10 * scale);
+        ctx.fillRect(baseWidth / 2 - 52 * scale, baseHeight / 2 - 42 * scale, 18 * scale, 10 * scale);
+    }
+
+    ctx.restore();
+}
+
 function drawMapDecor() {
     for (const decor of mapDecor) {
-        drawMapTree(ctx, decor.x, decor.y, decor.scale, decor.alpha, decor.extras);
+        if (decor.kind === 'construction') {
+            drawMapConstruction(ctx, decor, decor.x, decor.y, decor.scale, decor.alpha);
+        } else {
+            drawMapTree(ctx, decor.x, decor.y, decor.scale, decor.alpha, decor.extras);
+        }
     }
 }
 
 function initializeMapDecor() {
     createMapDecor();
+}
+
+// Função para desenhar o background quando o jogador está dentro de uma construção
+function drawConstructionInterior() {
+    const construction = constructions.find(c => c.id === currentConstructionId);
+    const type = construction ? construction.type : 'castle';
+
+    if (type === 'castle') {
+        drawCastleInterior();
+    } else if (type === 'mansion') {
+        drawMansionInterior();
+    } else if (type === 'mine') {
+        drawMineInterior();
+    } else {
+        drawCastleInterior();
+    }
+}
+
+function drawCastleInterior() {
+    // Piso de pedra cinzenta
+    ctx.fillStyle = 'rgba(120, 120, 135, 1)';
+    ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+    
+    // Parede de pedra texturizada cinzenta
+    ctx.fillStyle = 'rgba(100, 100, 120, 0.9)';
+    for (let i = 0; i < viewportWidth; i += 40) {
+        for (let j = 0; j < viewportHeight; j += 40) {
+            if ((Math.floor(i / 40) + Math.floor(j / 40)) % 2 === 0) {
+                ctx.fillRect(i, j, 40, 40);
+            }
+        }
+    }
+    
+    // Bordas mais escuras
+    ctx.fillStyle = 'rgba(70, 70, 85, 0.8)';
+    ctx.fillRect(0, 0, viewportWidth, 20);
+    ctx.fillRect(0, viewportHeight - 20, viewportWidth, 20);
+    ctx.fillRect(0, 0, 20, viewportHeight);
+    ctx.fillRect(viewportWidth - 20, 0, 20, viewportHeight);
+    
+    // Iluminação azulada (lâmpadas mágicas do castelo)
+    const gradient = ctx.createRadialGradient(viewportWidth / 2, viewportHeight / 2, 0, viewportWidth / 2, viewportHeight / 2, Math.max(viewportWidth, viewportHeight));
+    gradient.addColorStop(0, 'rgba(150, 180, 220, 0.15)');
+    gradient.addColorStop(1, 'rgba(80, 110, 180, 0.2)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+
+    // Tochas nas paredes
+    ctx.fillStyle = 'rgba(255, 150, 50, 0.6)';
+    ctx.beginPath();
+    ctx.arc(30, 50, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(viewportWidth - 30, 50, 12, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Símbolo de teleporte do castelo
+    drawCastleTeleportArea();
+}
+
+function drawCastleTeleportArea() {
+    const centerX = viewportWidth / 2;
+    const centerY = viewportHeight - 120;
+    
+    // Círculo base (plataforma mágica)
+    ctx.fillStyle = 'rgba(100, 150, 255, 0.3)';
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, 60, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.strokeStyle = 'rgba(150, 200, 255, 0.8)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, 60, 0, Math.PI * 2);
+    ctx.stroke();
+    
+    // Efeito de brilho pulsante
+    const pulse = 0.5 + 0.3 * Math.sin(performance.now() * 0.004);
+    ctx.strokeStyle = `rgba(200, 230, 255, ${pulse * 0.6})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, 70, 0, Math.PI * 2);
+    ctx.stroke();
+    
+    // Brasão dentro do círculo
+    ctx.fillStyle = 'rgba(218, 165, 32, 0.9)';
+    ctx.beginPath();
+    ctx.arc(centerX, centerY - 5, 15, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.fillStyle = 'rgba(139, 69, 19, 0.8)';
+    ctx.beginPath();
+    ctx.arc(centerX, centerY - 5, 10, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+function drawMansionInterior() {
+    // Piso de madeira clara
+    ctx.fillStyle = 'rgba(160, 130, 100, 1)';
+    ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+    
+    // Tábuas de madeira
+    ctx.fillStyle = 'rgba(140, 110, 80, 0.85)';
+    for (let i = 0; i < viewportWidth; i += 50) {
+        ctx.fillRect(i, 0, 2, viewportHeight);
+    }
+    for (let i = 0; i < viewportHeight; i += 30) {
+        ctx.fillRect(0, i, viewportWidth, 1);
+    }
+    
+    // Parede de papel/pintura clara
+    ctx.fillStyle = 'rgba(200, 180, 160, 0.95)';
+    ctx.fillRect(0, 0, viewportWidth, 100);
+    ctx.fillRect(0, 0, 100, viewportHeight);
+    ctx.fillRect(viewportWidth - 100, 0, 100, viewportHeight);
+    
+    // Moldura decorativa
+    ctx.strokeStyle = 'rgba(160, 140, 110, 0.8)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(15, 15, viewportWidth - 30, viewportHeight - 30);
+    
+    // Iluminação quente
+    const gradient = ctx.createRadialGradient(viewportWidth / 2, viewportHeight / 2, 0, viewportWidth / 2, viewportHeight / 2, Math.max(viewportWidth, viewportHeight));
+    gradient.addColorStop(0, 'rgba(220, 200, 160, 0.1)');
+    gradient.addColorStop(1, 'rgba(160, 120, 80, 0.15)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+
+    // Chandeliers (lustres)
+    for (let x = 200; x < viewportWidth; x += 400) {
+        ctx.fillStyle = 'rgba(255, 200, 100, 0.7)';
+        ctx.beginPath();
+        ctx.arc(x, 50, 15, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(200, 150, 50, 0.8)';
+        ctx.beginPath();
+        ctx.arc(x, 55, 8, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // Área de teleporte da mansão
+    drawMansionTeleportArea();
+
+    if (!mansionExitOpen) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(40, 10, 60, 0.92)';
+        ctx.font = 'bold 32px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('SAÍDA TRANCADA', viewportWidth / 2, 110);
+        ctx.font = '18px Arial';
+        ctx.fillText('Mate todos os fantasmas para abrir a saída', viewportWidth / 2, 140);
+        ctx.restore();
+    }
+}
+
+function drawMansionTeleportArea() {
+    const centerX = viewportWidth / 2;
+    const centerY = viewportHeight - 120;
+    
+    // Tapete decorativo
+    ctx.fillStyle = 'rgba(200, 50, 50, 0.6)';
+    ctx.fillRect(centerX - 70, centerY - 40, 140, 80);
+    
+    // Borda dourada do tapete
+    ctx.strokeStyle = 'rgba(218, 165, 32, 0.9)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(centerX - 70, centerY - 40, 140, 80);
+    
+    // Padrão geométrico no tapete
+    ctx.strokeStyle = 'rgba(218, 165, 32, 0.6)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 6; i++) {
+        ctx.beginPath();
+        ctx.moveTo(centerX - 60 + i * 25, centerY - 35);
+        ctx.lineTo(centerX - 60 + i * 25, centerY + 35);
+        ctx.stroke();
+    }
+    
+    // Aura mágica pulsante no tapete
+    const pulse = 0.4 + 0.3 * Math.sin(performance.now() * 0.003);
+    ctx.fillStyle = `rgba(255, 200, 100, ${pulse * 0.3})`;
+    ctx.fillRect(centerX - 65, centerY - 35, 130, 70);
+}
+
+function drawMineInterior() {
+    // Piso de rocha/minério escuro
+    ctx.fillStyle = 'rgba(60, 60, 70, 1)';
+    ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+    
+    // Parede de rocha texturizada
+    ctx.fillStyle = 'rgba(80, 80, 95, 0.9)';
+    for (let i = 0; i < viewportWidth; i += 50) {
+        for (let j = 0; j < viewportHeight; j += 50) {
+            if ((Math.floor(i / 50) + Math.floor(j / 50)) % 2 === 0) {
+                ctx.fillRect(i, j, 50, 50);
+            }
+        }
+    }
+    
+    // Brilho de minério/cristais
+    ctx.fillStyle = 'rgba(255, 180, 0, 0.4)';
+    for (let i = 0; i < 5; i++) {
+        const x = Math.random() * viewportWidth;
+        const y = Math.random() * viewportHeight;
+        ctx.fillRect(x, y, 20 + Math.random() * 20, 3);
+    }
+    
+    // Bordas mais escuras
+    ctx.fillStyle = 'rgba(40, 40, 50, 0.8)';
+    ctx.fillRect(0, 0, viewportWidth, 25);
+    ctx.fillRect(0, viewportHeight - 25, viewportWidth, 25);
+    ctx.fillRect(0, 0, 25, viewportHeight);
+    ctx.fillRect(viewportWidth - 25, 0, 25, viewportHeight);
+    
+    // Iluminação alaranjada
+    const gradient = ctx.createRadialGradient(viewportWidth / 2, viewportHeight / 2, 0, viewportWidth / 2, viewportHeight / 2, Math.max(viewportWidth, viewportHeight));
+    gradient.addColorStop(0, 'rgba(255, 150, 50, 0.1)');
+    gradient.addColorStop(1, 'rgba(120, 60, 20, 0.25)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+
+    // Tochas de fogo na mina
+    ctx.fillStyle = 'rgba(255, 100, 30, 0.7)';
+    ctx.beginPath();
+    ctx.arc(50, 60, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(viewportWidth - 50, 60, 10, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Plataforma de teleporte da mina
+    drawMineTeleportArea();
+}
+
+function drawMineTeleportArea() {
+    const centerX = viewportWidth / 2;
+    const centerY = viewportHeight - 120;
+    
+    // Plataforma de minério brilhante (hexágono)
+    ctx.fillStyle = 'rgba(255, 150, 0, 0.4)';
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI * 2 / 6) * i;
+        const x = centerX + Math.cos(angle) * 60;
+        const y = centerY + Math.sin(angle) * 60;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    
+    // Borda do hexágono
+    ctx.strokeStyle = 'rgba(255, 180, 0, 0.9)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    
+    // Cristais brilhando no hexágono
+    ctx.fillStyle = 'rgba(255, 200, 100, 0.8)';
+    for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI * 2 / 6) * i;
+        const x = centerX + Math.cos(angle) * 40;
+        const y = centerY + Math.sin(angle) * 40;
+        
+        ctx.beginPath();
+        ctx.moveTo(x, y - 8);
+        ctx.lineTo(x + 8, y + 8);
+        ctx.lineTo(x - 8, y + 8);
+        ctx.closePath();
+        ctx.fill();
+    }
+    
+    // Aura de perigo pulsante
+    const pulse = 0.5 + 0.3 * Math.sin(performance.now() * 0.005);
+    ctx.strokeStyle = `rgba(255, 100, 0, ${pulse * 0.7})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI * 2 / 6) * i;
+        const x = centerX + Math.cos(angle) * 75;
+        const y = centerY + Math.sin(angle) * 75;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+}
+
+// Função para desenhar a zona de saída da construção
+function drawConstructionExitZone() {
+    if (!constructionExitZone) return;
+    
+    const construction = constructions.find(c => c.id === currentConstructionId);
+    const type = construction ? construction.type : 'castle';
+
+    if (type === 'castle') {
+        if (!castleExitOpen) return;
+        drawCastleExitGate();
+    } else if (type === 'mansion') {
+        if (!mansionExitOpen) return;
+        drawMansionExitGate();
+    } else if (type === 'mine') {
+        drawMineExitGate();
+    } else {
+        drawCastleExitGate();
+    }
+}
+
+function drawCastleExitGate() {
+    if (!constructionExitZone) return;
+    
+    ctx.save();
+    ctx.translate(constructionExitZone.x + constructionExitZone.width / 2, 
+                  constructionExitZone.y + constructionExitZone.height / 2);
+    
+    // Portão de ferro medieval do castelo
+    ctx.fillStyle = '#4a4a5a';
+    ctx.fillRect(-constructionExitZone.width / 2, -constructionExitZone.height / 2, 
+                 constructionExitZone.width, constructionExitZone.height);
+    
+    // Borda de ferro forjado
+    ctx.strokeStyle = '#6a6a7a';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(-constructionExitZone.width / 2, -constructionExitZone.height / 2, 
+                   constructionExitZone.width, constructionExitZone.height);
+    
+    // Grades de ferro (vertical)
+    ctx.strokeStyle = '#8a8a9a';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 8; i++) {
+        const x = -constructionExitZone.width / 2 + (constructionExitZone.width / 7) * i;
+        ctx.beginPath();
+        ctx.moveTo(x, -constructionExitZone.height / 2);
+        ctx.lineTo(x, constructionExitZone.height / 2);
+        ctx.stroke();
+    }
+    
+    // Brasão (escudo dourado no topo)
+    ctx.fillStyle = 'rgba(218, 165, 32, 0.9)';
+    ctx.beginPath();
+    ctx.arc(0, -constructionExitZone.height / 2 - 15, 12, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.fillStyle = 'rgba(139, 69, 19, 0.8)';
+    ctx.beginPath();
+    ctx.arc(0, -constructionExitZone.height / 2 - 15, 8, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.restore();
+    
+    // Texto de instrução
+    ctx.save();
+    ctx.fillStyle = '#6effff';
+    ctx.font = 'bold 14px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('PORTÃO DO CASTELO', 
+        constructionExitZone.x + constructionExitZone.width / 2,
+        constructionExitZone.y - 35);
+    ctx.fillText('(Subir para sair)', 
+        constructionExitZone.x + constructionExitZone.width / 2,
+        constructionExitZone.y - 15);
+    ctx.restore();
+}
+
+function drawMansionExitGate() {
+    if (!constructionExitZone) return;
+    
+    ctx.save();
+    ctx.translate(constructionExitZone.x + constructionExitZone.width / 2, 
+                  constructionExitZone.y + constructionExitZone.height / 2);
+    
+    // Porta ornamentada da mansão
+    ctx.fillStyle = '#6b4423';
+    ctx.fillRect(-constructionExitZone.width / 2, -constructionExitZone.height / 2, 
+                 constructionExitZone.width, constructionExitZone.height);
+    
+    // Borda decorativa dourada
+    ctx.strokeStyle = '#d4af37';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(-constructionExitZone.width / 2 + 3, -constructionExitZone.height / 2 + 3, 
+                   constructionExitZone.width - 6, constructionExitZone.height - 6);
+    
+    // Painel esquerdo da porta
+    ctx.fillStyle = '#7a5a3a';
+    ctx.fillRect(-constructionExitZone.width / 2 + 5, -constructionExitZone.height / 2 + 5, 
+                 constructionExitZone.width / 2 - 5, constructionExitZone.height - 10);
+    
+    // Painel direito da porta
+    ctx.fillStyle = '#6b4a2a';
+    ctx.fillRect(-constructionExitZone.width / 2 + constructionExitZone.width / 2, 
+                 -constructionExitZone.height / 2 + 5, 
+                 constructionExitZone.width / 2 - 5, constructionExitZone.height - 10);
+    
+    // Divisória central
+    ctx.strokeStyle = '#a0860d';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, -constructionExitZone.height / 2 + 5);
+    ctx.lineTo(0, constructionExitZone.height / 2 - 5);
+    ctx.stroke();
+    
+    // Maçanetas ornamentadas
+    ctx.fillStyle = '#ffd700';
+    ctx.beginPath();
+    ctx.arc(-constructionExitZone.width / 4, 0, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#d4a337';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    ctx.fillStyle = '#ffd700';
+    ctx.beginPath();
+    ctx.arc(constructionExitZone.width / 4, 0, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#d4a337';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Brilho na porta
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(-constructionExitZone.width / 2 + 8, -constructionExitZone.height / 2 + 8, 
+                 constructionExitZone.width / 3, constructionExitZone.height / 4);
+    
+    ctx.restore();
+    
+    // Texto de instrução
+    ctx.save();
+    ctx.fillStyle = '#daa520';
+    ctx.font = 'bold 14px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('PORTA DA MANSÃO', 
+        constructionExitZone.x + constructionExitZone.width / 2,
+        constructionExitZone.y - 35);
+    ctx.fillText('(Subir para sair)', 
+        constructionExitZone.x + constructionExitZone.width / 2,
+        constructionExitZone.y - 15);
+    ctx.restore();
+}
+
+function drawMineExitGate() {
+    if (!constructionExitZone) return;
+    
+    ctx.save();
+    ctx.translate(constructionExitZone.x + constructionExitZone.width / 2, 
+                  constructionExitZone.y + constructionExitZone.height / 2);
+    
+    // Portão reforçado da mina (metal pesado)
+    ctx.fillStyle = '#3a3a4a';
+    ctx.fillRect(-constructionExitZone.width / 2, -constructionExitZone.height / 2, 
+                 constructionExitZone.width, constructionExitZone.height);
+    
+    // Borda de metal
+    ctx.strokeStyle = '#5a5a6a';
+    ctx.lineWidth = 5;
+    ctx.strokeRect(-constructionExitZone.width / 2, -constructionExitZone.height / 2, 
+                   constructionExitZone.width, constructionExitZone.height);
+    
+    // Parafusos de metal
+    ctx.fillStyle = '#7a7a8a';
+    for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 3; j++) {
+            const x = -constructionExitZone.width / 2 + (constructionExitZone.width / 3) * i + 25;
+            const y = -constructionExitZone.height / 2 + (constructionExitZone.height / 2) * j + 20;
+            ctx.beginPath();
+            ctx.arc(x, y, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+    
+    // Símbolo de perigo (listras)
+    ctx.fillStyle = 'rgba(255, 100, 0, 0.8)';
+    for (let i = 0; i < 3; i++) {
+        ctx.fillRect(-constructionExitZone.width / 2 + 10, -constructionExitZone.height / 2 + 30 + i * 15, 
+                     constructionExitZone.width - 20, 8);
+    }
+    
+    // Alavanca de abertura
+    ctx.fillStyle = '#888899';
+    ctx.fillRect(constructionExitZone.width / 2 - 15, -constructionExitZone.height / 2 + 10, 8, 20);
+    ctx.fillStyle = '#aaaaaa';
+    ctx.beginPath();
+    ctx.arc(constructionExitZone.width / 2 - 11, -constructionExitZone.height / 2 + 25, 4, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.restore();
+    
+    // Texto de instrução
+    ctx.save();
+    ctx.fillStyle = '#ff6400';
+    ctx.font = 'bold 14px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('PORTÃO DA MINA', 
+        constructionExitZone.x + constructionExitZone.width / 2,
+        constructionExitZone.y - 35);
+    ctx.fillText('(Subir para sair)', 
+        constructionExitZone.x + constructionExitZone.width / 2,
+        constructionExitZone.y - 15);
+    ctx.restore();
+}
+
+// Função para entrar em uma construção
+function enterConstruction(constructionId) {
+    const construction = constructions.find(c => c.id === constructionId);
+    if (!construction || construction.locked) return;
+    
+    playerInsideConstruction = true;
+    currentConstructionId = constructionId;
+    
+    // Teleportar o jogador para o interior da construção em coordenadas locais da viewport
+    player.x = viewportWidth / 2 - player.width / 2;
+    player.y = viewportHeight / 2 - player.height / 2;
+    
+    // Criar zona de saída local à construção interior
+    const exitZoneX = player.x - 50;
+    const exitZoneY = player.y - 150;
+    
+    constructionExitZone = {
+        x: exitZoneX,
+        y: exitZoneY,
+        width: 200,
+        height: 80
+    };
+    
+    // Desativar monstro temporariamente
+    if (currentMonster) {
+        currentMonster.x = -999999;
+        currentMonster.y = -999999;
+    }
+    
+    // Spawn first wave of enemies if this is a castle interior
+    if (construction.type === 'castle') {
+        clearCastleInterior();
+        spawnCastleInteriorWave();
+    } else if (construction.type === 'mansion') {
+        construction.locked = true;
+        clearMansionInterior();
+    }
+}
+
+// Função para sair de uma construção
+function exitConstruction() {
+    if (!playerInsideConstruction) return;
+    
+    const construction = constructions.find(c => c.id === currentConstructionId);
+    if (!construction) return;
+    
+    playerInsideConstruction = false;
+    currentConstructionId = -1;
+    if (construction.type === 'castle' || construction.type === 'mansion') {
+        construction.locked = true;
+    }
+    if (construction.type === 'mansion') {
+        mansionExitOpen = false;
+    }
+    constructionExitZone = null;
+    clearConstructionEntrancePortals();
+    
+    // Teleportar o jogador para perto da construção (entrada)
+    player.x = construction.x - player.width / 2;
+    player.y = construction.y + construction.height / 2;
+    
+    // Reativar monstro
+    if (currentMonster) {
+        const mapCenter = getMapCircle();
+        currentMonster.x = mapCenter.centerX - currentMonster.width / 2;
+        currentMonster.y = mapCenter.centerY - currentMonster.height / 2;
+    }
+}
+
+function clearConstructionEntrancePortals() {
+    constructionEntrancePortals = [];
+}
+
+function createConstructionEntrancePortalsAroundPlayer() {
+    if (!player || !gameStarted || !Array.isArray(constructions) || constructions.length === 0) return;
+    if (playerInsideConstruction) return;
+
+    constructionEntrancePortals = [];
+
+    const centerX = player.x + player.width / 2;
+    const centerY = player.y + player.height / 2;
+    const portalWidth = 60;
+    const portalHeight = 60;
+    const total = constructions.length;
+
+    for (let i = 0; i < total; i += 1) {
+        const construction = constructions[i];
+        if ((construction.type === 'castle' || construction.type === 'mansion') && construction.locked) continue;
+
+        const angle = (i / total) * Math.PI * 2;
+        const radius = 92;
+        const x = centerX + Math.cos(angle) * radius - portalWidth / 2;
+        const y = centerY + Math.sin(angle) * radius - portalHeight / 2;
+
+        constructionEntrancePortals.push({
+            constructionId: construction.id,
+            x,
+            y,
+            width: portalWidth,
+            height: portalHeight,
+            type: construction.type
+        });
+    }
+}
+
+function checkConstructionEntranceCollision() {
+    if (!player || playerInsideConstruction || !constructionEntrancePortals.length) return;
+    
+    for (const portal of constructionEntrancePortals) {
+        const isColliding =
+            player.x < portal.x + portal.width &&
+            player.x + player.width > portal.x &&
+            player.y < portal.y + portal.height &&
+            player.y + player.height > portal.y;
+
+        if (isColliding) {
+            enterConstruction(portal.constructionId);
+            clearConstructionEntrancePortals();
+            break;
+        }
+    }
+}
+
+function drawConstructionEntrancePortals() {
+    if (!ctx || !constructionEntrancePortals.length) return;
+
+    for (const portal of constructionEntrancePortals) {
+        const color = portal.type === 'mine'
+            ? 'rgba(255, 175, 60, 0.85)'
+            : portal.type === 'mansion'
+                ? 'rgba(180, 120, 255, 0.85)'
+                : 'rgba(110, 215, 255, 0.85)';
+
+        ctx.save();
+        ctx.translate(portal.x + portal.width / 2, portal.y + portal.height / 2);
+        ctx.fillStyle = color;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 18;
+        ctx.beginPath();
+        ctx.arc(0, 0, portal.width / 2 - 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = 'bold 12px Arial';
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const label = portal.type === 'mine' ? 'MINA' : portal.type === 'mansion' ? 'MANSÃO' : 'CASTELO';
+        ctx.fillText(label, portal.x + portal.width / 2, portal.y + portal.height / 2);
+        ctx.restore();
+    }
+}
+
+// Função para verificar colisão com construções
+function checkConstructionCollision() {
+    if (playerInsideConstruction) return;
+    
+    for (const construction of constructions) {
+        if ((construction.type === 'castle' || construction.type === 'mansion') && construction.locked) continue;
+
+        const isColliding = 
+            player.x < construction.x + construction.width &&
+            player.x + player.width > construction.x &&
+            player.y < construction.y + construction.height &&
+            player.y + player.height > construction.y;
+        
+        if (isColliding) {
+            enterConstruction(construction.id);
+            break;
+        }
+    }
+}
+
+// Função para verificar se o jogador está tentando sair da construção
+function checkConstructionExit() {
+    if (!playerInsideConstruction || !constructionExitZone) return;
+    
+    const isInExitZone = 
+        player.x < constructionExitZone.x + constructionExitZone.width &&
+        player.x + player.width > constructionExitZone.x &&
+        player.y < constructionExitZone.y + constructionExitZone.height &&
+        player.y + player.height > constructionExitZone.y;
+    
+    if (isInExitZone) {
+        const construction = constructions.find(c => c.id === currentConstructionId);
+        if (construction) {
+            if (construction.type === 'castle' && !castleExitOpen) {
+                return;
+            }
+            if (construction.type === 'mansion' && !mansionExitOpen) {
+                return;
+            }
+        }
+        exitConstruction();
+    }
 }
 
 function clampEntityToMapCircle(entity) {
@@ -172,10 +1394,71 @@ function clampEntityToMapCircle(entity) {
     return true;
 }
 
+function resolveEntityViewportBounds(entity, prevX, prevY, margin = 16) {
+    let collided = false;
+    const targetX = entity.x;
+    const targetY = entity.y;
+    let resolvedX = targetX;
+    let resolvedY = targetY;
+
+    entity.x = targetX;
+    entity.y = prevY;
+    const maxAllowedX = Math.max(margin, Math.min(viewportWidth - entity.width - margin, prevX));
+    if (entity.x < margin || entity.x > viewportWidth - entity.width - margin) {
+        resolvedX = maxAllowedX;
+        collided = true;
+    }
+
+    entity.x = resolvedX;
+    entity.y = targetY;
+    const maxAllowedY = Math.max(margin, Math.min(viewportHeight - entity.height - margin, prevY));
+    if (entity.y < margin || entity.y > viewportHeight - entity.height - margin) {
+        resolvedY = maxAllowedY;
+        collided = true;
+    }
+
+    entity.x = resolvedX;
+    entity.y = resolvedY;
+    return collided;
+}
+
+function isMonsterTransitionActive() {
+    return !!(
+        (currentMonster && currentMonster.isDying) ||
+        upgradeDelayTimer > 0 ||
+        upgradeOverlayAnimating ||
+        isUpgrading
+    );
+}
+
 function updateCamera() {
     if (!player) return;
-    const targetX = player.x + player.width / 2 - viewportWidth / 2;
-    const targetY = player.y + player.height / 2 - viewportHeight / 2;
+
+    if (playerInsideConstruction) {
+        cameraX = 0;
+        cameraY = 0;
+        return;
+    }
+
+    let targetX = player.x + player.width / 2 - viewportWidth / 2;
+    let targetY = player.y + player.height / 2 - viewportHeight / 2;
+
+    if (currentMonster && currentMonster.isDying) {
+        targetX = currentMonster.x + currentMonster.width / 2 - viewportWidth / 2;
+        targetY = currentMonster.y + currentMonster.height / 2 - viewportHeight / 2;
+    }
+
+    if (roarFreezeTimer > 0 && currentMonster && currentMonster.type === 'croc') {
+        targetX = currentMonster.crocDecoyX - viewportWidth / 2;
+        targetY = currentMonster.crocDecoyY - viewportHeight / 2;
+    } else if (currentMonster && currentMonster.type === 'croc' && currentMonster.roarTimer > 0) {
+        targetX = currentMonster.crocDecoyX - viewportWidth / 2;
+        targetY = currentMonster.crocDecoyY - viewportHeight / 2;
+    } else if (typeof cameraLockTarget === 'object' && cameraLockTarget !== null && cameraLockTarget.timer > 0) {
+        targetX = cameraLockTarget.x - viewportWidth / 2;
+        targetY = cameraLockTarget.y - viewportHeight / 2;
+    }
+
     cameraX = Math.max(0, Math.min(targetX, gameWidth - viewportWidth));
     cameraY = Math.max(0, Math.min(targetY, gameHeight - viewportHeight));
 }
@@ -252,6 +1535,7 @@ class Projectile {
         this.delayDuration = opts.delayDuration || 0;
         this.monsterType = opts.monsterType || null;
         this.style = opts.style || (owner === 'monster' ? getMonsterProjectileStyle(this.monsterType) : '');
+        this.projectileEmoji = opts.projectileEmoji || opts.emoji || null;
         this.hitTarget = opts.hitTarget || false;
         this.ignoreCollision = opts.ignoreCollision || false;
         this.isGunOriginal = opts.isGunOriginal || false;
@@ -319,8 +1603,14 @@ class Projectile {
             // Se chegou ao fim da órbita, preparar o lançamento homing
             if (this.orbitTimer <= 0) {
                 this.orbitingHurricane = false;
-                const targetX = currentMonster ? currentMonster.x + currentMonster.width / 2 : this.x + 300;
-                const targetY = currentMonster ? currentMonster.y + currentMonster.height / 2 : this.y;
+                let target = null;
+                if (playerInsideConstruction) {
+                    target = getCastleOrCurrentTargetCenter();
+                } else if (currentMonster) {
+                    target = { x: currentMonster.x + currentMonster.width / 2, y: currentMonster.y + currentMonster.height / 2 };
+                }
+                const targetX = target ? target.x : this.x + 300;
+                const targetY = target ? target.y : this.y;
                 const dx = targetX - this.x;
                 const dy = targetY - this.y;
                 const dist = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -343,8 +1633,14 @@ class Projectile {
         if (this.preLaunchTimer > 0) {
             this.preLaunchTimer--;
             if (this.preLaunchTimer <= 0) {
-                const targetX = currentMonster ? currentMonster.x + currentMonster.width / 2 : this.preLaunchTargetX || this.x + 300;
-                const targetY = currentMonster ? currentMonster.y + currentMonster.height / 2 : this.preLaunchTargetY || this.y;
+                let target = null;
+                if (playerInsideConstruction) {
+                    target = getCastleOrCurrentTargetCenter();
+                } else if (currentMonster) {
+                    target = { x: currentMonster.x + currentMonster.width / 2, y: currentMonster.y + currentMonster.height / 2 };
+                }
+                const targetX = target ? target.x : this.preLaunchTargetX || this.x + 300;
+                const targetY = target ? target.y : this.preLaunchTargetY || this.y;
                 const dx = targetX - this.x;
                 const dy = targetY - this.y;
                 const dist = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -352,7 +1648,7 @@ class Projectile {
                 this.vx = (dx / dist) * launchSpeed;
                 this.vy = (dy / dist) * launchSpeed;
                 this.homing = true;
-                this.homingTarget = currentMonster || null;
+                this.homingTarget = getCastleOrCurrentHomingTarget();
                 this.homingStrength = 0.14;
                 this.homingDuration = 180;
                 this.targetMonsterX = null;
@@ -474,6 +1770,19 @@ class Projectile {
         const angle = Math.atan2(this.vy, this.vx);
         const style = this.style || '';
 
+        if (this.projectileEmoji) {
+            ctx.translate(this.x, this.y);
+            ctx.font = `${Math.max(14, this.size * 2.6)}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
+            ctx.shadowBlur = 10;
+            ctx.fillText(this.projectileEmoji, 0, 0);
+            ctx.restore();
+            return;
+        }
+
         if (style === 'tankOrbit') {
             ctx.fillStyle = this.color;
             ctx.shadowColor = this.color;
@@ -548,16 +1857,41 @@ class Projectile {
             ctx.rotate(angle);
             ctx.fillStyle = this.color;
             ctx.shadowColor = this.color;
-            ctx.shadowBlur = 16;
+            ctx.shadowBlur = 18;
+
             ctx.beginPath();
-            ctx.moveTo(-this.size * 1.4, -this.size * 0.6);
-            ctx.lineTo(this.size * 1.4, 0);
-            ctx.lineTo(-this.size * 1.4, this.size * 0.6);
+            ctx.moveTo(-this.size * 1.8, -this.size * 0.26);
+            ctx.lineTo(this.size * 1.2, -this.size * 0.26);
+            ctx.lineTo(this.size * 1.2, -this.size * 0.62);
+            ctx.lineTo(this.size * 1.95, 0);
+            ctx.lineTo(this.size * 1.2, this.size * 0.62);
+            ctx.lineTo(this.size * 1.2, this.size * 0.26);
+            ctx.lineTo(-this.size * 1.8, this.size * 0.26);
             ctx.closePath();
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-            ctx.lineWidth = 1.5;
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.moveTo(-this.size * 1.42, -this.size * 0.12);
+            ctx.lineTo(this.size * 0.88, -this.size * 0.12);
+            ctx.moveTo(-this.size * 1.42, this.size * 0.12);
+            ctx.lineTo(this.size * 0.88, this.size * 0.12);
             ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+            ctx.lineWidth = 1.1;
+            ctx.beginPath();
+            ctx.moveTo(-this.size * 1.72, -this.size * 0.7);
+            ctx.lineTo(-this.size * 1.22, -this.size * 0.24);
+            ctx.moveTo(-this.size * 1.72, this.size * 0.7);
+            ctx.lineTo(-this.size * 1.22, this.size * 0.24);
+            ctx.stroke();
+
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.beginPath();
+            ctx.arc(this.size * 0.75, 0, this.size * 0.16, 0, Math.PI * 2);
+            ctx.fill();
             ctx.restore();
             return;
         }
@@ -699,23 +2033,29 @@ class Projectile {
             ctx.translate(this.x, this.y);
             const grad = ctx.createRadialGradient(0, 0, this.size * 0.2, 0, 0, this.size);
             grad.addColorStop(0, '#ffffff');
-            grad.addColorStop(0.25, this.color);
+            grad.addColorStop(0.28, this.color);
             grad.addColorStop(1, 'rgba(255,255,255,0)');
             ctx.fillStyle = grad;
             ctx.shadowColor = this.color;
-            ctx.shadowBlur = 22;
+            ctx.shadowBlur = 24;
             ctx.beginPath();
             ctx.arc(0, 0, this.size, 0, Math.PI * 2);
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-            ctx.lineWidth = 1.5;
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+            ctx.lineWidth = 1.8;
             for (let i = 0; i < 4; i++) {
                 const a = i * Math.PI / 2;
                 ctx.beginPath();
-                ctx.moveTo(Math.cos(a) * this.size * 0.4, Math.sin(a) * this.size * 0.4);
-                ctx.lineTo(Math.cos(a) * this.size * 1.3, Math.sin(a) * this.size * 1.3);
+                ctx.moveTo(Math.cos(a) * this.size * 0.35, Math.sin(a) * this.size * 0.35);
+                ctx.lineTo(Math.cos(a) * this.size * 1.25, Math.sin(a) * this.size * 1.25);
                 ctx.stroke();
             }
+
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.beginPath();
+            ctx.arc(this.size * 0.22, -this.size * 0.12, this.size * 0.16, 0, Math.PI * 2);
+            ctx.fill();
             ctx.restore();
             return;
         }
@@ -1214,81 +2554,16 @@ class Projectile {
             return;
         }
 
-        if (style === 'casterFlameCircle') {
-            ctx.fillStyle = this.color;
-            ctx.shadowColor = this.color;
-            ctx.shadowBlur = 26;
-            ctx.beginPath();
-            ctx.arc(this.x, this.y, this.size * 1.1, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = 'rgba(255,255,255,0.9)';
-            ctx.beginPath();
-            ctx.arc(this.x, this.y - this.size * 0.25, this.size * 0.5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,220,140,0.9)';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(this.x, this.y, this.size * 1.45, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-            return;
-        }
-
-        if (style === 'casterFlameSpiral') {
-            ctx.translate(this.x, this.y);
-            ctx.rotate(angle * 0.8);
-            ctx.fillStyle = this.color;
-            ctx.shadowColor = this.color;
+        if (style === 'casterFlameCircle' || style === 'casterFlameSpiral' || style === 'casterFlameRing' || style === 'casterFlameVolley' || style === 'casterShard' || style === 'casterBurst') {
+            ctx.fillStyle = '#ff9e3c';
+            ctx.shadowColor = '#ff9e3c';
             ctx.shadowBlur = 20;
             ctx.beginPath();
-            ctx.moveTo(0, -this.size * 0.9);
-            ctx.bezierCurveTo(this.size * 0.4, -this.size * 0.85, this.size * 0.55, -this.size * 0.1, this.size * 0.3, this.size * 0.3);
-            ctx.bezierCurveTo(this.size * 0.05, this.size * 0.55, -this.size * 0.25, this.size * 0.45, -this.size * 0.35, this.size * 0.18);
-            ctx.bezierCurveTo(-this.size * 0.55, -this.size * 0.1, -this.size * 0.35, -this.size * 0.75, 0, -this.size * 0.9);
-            ctx.closePath();
+            ctx.arc(this.x, this.y, this.size * 0.9, 0, Math.PI * 2);
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255,230,180,0.85)';
-            ctx.lineWidth = 1.6;
-            ctx.stroke();
-            ctx.restore();
-            return;
-        }
-
-        if (style === 'casterFlameRing') {
-            ctx.fillStyle = this.color;
-            ctx.shadowColor = this.color;
-            ctx.shadowBlur = 24;
+            ctx.fillStyle = 'rgba(255,255,255,0.95)';
             ctx.beginPath();
-            ctx.arc(this.x, this.y, this.size * 0.92, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = 'rgba(255,220,180,0.9)';
-            ctx.beginPath();
-            ctx.arc(this.x, this.y, this.size * 0.5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,190,130,0.75)';
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.arc(this.x, this.y, this.size * 1.25, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-            return;
-        }
-
-        if (style === 'casterFlameVolley') {
-            ctx.translate(this.x, this.y);
-            ctx.rotate(angle);
-            ctx.fillStyle = this.color;
-            ctx.shadowColor = this.color;
-            ctx.shadowBlur = 28;
-            ctx.beginPath();
-            ctx.moveTo(-this.size * 0.6, -this.size * 0.25);
-            ctx.lineTo(this.size * 1.2, 0);
-            ctx.lineTo(-this.size * 0.6, this.size * 0.25);
-            ctx.quadraticCurveTo(-this.size * 0.75, 0, -this.size * 0.6, -this.size * 0.25);
-            ctx.fill();
-            ctx.fillStyle = 'rgba(255,255,255,0.85)';
-            ctx.beginPath();
-            ctx.arc(this.size * 0.1, 0, this.size * 0.5, 0, Math.PI * 2);
+            ctx.arc(this.x - this.size * 0.24, this.y - this.size * 0.26, this.size * 0.28, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
             return;
@@ -1319,10 +2594,11 @@ class Projectile {
 
 class Player {
     constructor() {
-        this.x = gameWidth / 2;
-        this.y = gameHeight - 150;
         this.width = 12.5;
         this.height = 12.5;
+        const mapCenter = getMapCircle();
+        this.x = mapCenter.centerX - this.width / 2;
+        this.y = mapCenter.centerY - this.height / 2;
         this.speed = 3;
         this.health = 100;
         this.maxHealth = 100;
@@ -1355,19 +2631,57 @@ class Player {
         this.parryChargeAccumulator = 0;
         this.parryDefenseBonus = 0;
         this.parryHealOnUse = 0;
+        this.parryHealOverTime = 0;
+        this.parryHealOverTimeTimer = 0;
         this.parryConfusionChance = 0;
         this.parryConfusionDuration = 0;
         this.spinAttackLevel = 0;
         this.spinAttack = false;
-        this.spinAttackCharges = 0;
+        this.spinAttackCharges = false;
         this.attackSpeed = 0;
         this.projectileSpeedBonus = 0;
+        this.bombStunPerHitSeconds = 0;
+        this.bombFragmentConfusionSeconds = 0;
+        this.bombFragmentConfusionLevels = 0;
+        this.bombFragmentCountBonus = 0;
+        this.bombBurnDamagePerSecond = 0;
+        this.bombBurnDurationSeconds = 3;
+        this.bombFragmentSpeedBonus = 0;
+        this.bombFragmentPierce = 0;
+        this.bombThrowSpeedBonus = 0;
+        this.bombFireZoneDurationBonusSeconds = 0;
+        this.bombFireZoneMoveSpeedBonus = 0;
+        this.bombCooldownMoveSpeedBonus = 0;
+        this.bombFireZoneRadiusBonus = 0;
+        this.bombFragmentSizeBonus = 0;
+        this.bombCooldown = 0;
+        this.grenadeCooldown = 0;
         this.gunAmmo = 12;
         this.gunMaxAmmo = 12;
         this.gunReloadCooldown = 0;
         this.gunReloadCooldownMax = 120;
+        this.gunBurstFire = 0;
+        this.gunExplosiveAmmo = 0;
+        this.staffHomingBurst = 0;
         this.gunReloadHitCount = 0;
         this.gunReloadHitMax = 13;
+        // Monster-based passives
+        this.shooterMachineGunUnlocked = false;
+        this.shooterMachineGunCount = 0;
+        this.swarmNubeUnlocked = false;
+        this.swarmNubeCount = 0;
+        this.casterPortalUnlocked = false;
+        this.casterPortalCount = 0;
+        this.avianTrackerUnlocked = false;
+        this.avianTrackerCount = 0;
+        this.smartRicochetUnlocked = false;
+        this.smartRicochetCount = 0;
+        this.simpleExplosiveUnlocked = false;
+        this.simpleExplosiveCount = 0;
+        this.crocFreezerUnlocked = false;
+        this.crocFreezerCount = 0;
+        this.tankImpulseUnlocked = false;
+        this.tankImpulseCount = 0;
         this.gunReloadHitsToTrigger = 12;
         this.gunReloadInvulnCharges = 0;
         this.gunReloadFlashTicker = 0;
@@ -1405,11 +2719,19 @@ class Player {
         this.swordAimAnimationTargetAngle = 0;
         this.swordAlwaysActive = true;
         this.swordThickness = 18;
+        this.swordDashCooldown = 0;
+        this.swordDashCooldownMax = 14;
+
+        this.castleBoneUnlocked = false;
+        this.castleBoneHitCounter = 0;
+        this.castleBoneOrbiters = [];
 
         this.swordAimOffsetTimer = 0;
         this.swordHitCooldown = 0;
         this.swordComboCount = 0;
         this.swordComboTimer = 0;
+        this.staffOrbitAngle = 0;
+        this.staffOrbitSpeed = 0.018;
         this.shakeTimer = 0;
         this.impactShakeTimer = 0;
         this.parryCooldown = 0;
@@ -1434,6 +2756,29 @@ class Player {
         this.poisonTickTimer = 0; // frames until next poison tick
         this.poisonDamagePerTick = 0; // damage applied each tick
         this.damageOutputMultiplier = 1.0;
+        this.stunTimer = 0;
+        this.confusedLevel = 0;
+        this.confusedTimer = 0;
+        this.mansionGhostCopyUnlocked = false;
+        this.mansionGhostCopyChance = 0.33;
+        this.mansionGhostCopyDamageRatio = 0.5;
+        this.mansionGhostCopyStunFrames = 24;
+        
+        // Sistema de aceleração por cooldown de dash
+        this.dashAccelerationTimer = 0; // contador para 0.5s (30 frames)
+        this.dashAccelerationSpeedBonus = 0; // bônus acumulado
+        
+        // Sistema de bônus por alinhamento com espada
+        this.swordAlignmentTimer = 0; // contador para 2s (120 frames)
+        this.swordAlignmentSpeedBonus = 0; // bônus de velocidade (máx 75%)
+        this.lastMoveDirX = 0; // última direção de movimento
+        this.lastMoveDirY = 0;
+        
+        // Sistema de Investida Cortante com múltiplos dashes
+        this.slashDashQueue = 0; // número de dashes pendentes da investida cortante
+        this.slashDashCounter = 0; // contador atual de dashes executados
+        this.slashDashInvulnTimer = 0; // invulnerabilidade durante dash
+        this.slashDashIsNormal = false; // true quando os dashes da investida são dashes normais (1 por nível)
     }
 
     startSwordAimAnimation(targetAngle, duration = 6, returnDuration = null) {
@@ -1487,35 +2832,169 @@ class Player {
         }
     }
 
+    getFireZoneSpeedBonus() {
+        if (!fireZones || !fireZones.length) return 0;
+        const centerX = this.x + this.width / 2;
+        const centerY = this.y + this.height / 2;
+        const insideFireZone = fireZones.some((zone) => Math.hypot(centerX - zone.x, centerY - zone.y) <= zone.radius);
+        return insideFireZone && this.bombFireZoneMoveSpeedBonus > 0 ? this.speed * this.bombFireZoneMoveSpeedBonus : 0;
+    }
+
+    getBombCooldownSpeedBonus() {
+        if (!this || this.bombCooldown <= 0) return 0;
+        return this.speed * this.bombCooldownMoveSpeedBonus;
+    }
+
+    getWeaponMountPoint(aimAngle = null) {
+        const px = this.x + this.width / 2;
+        const py = this.y + this.height / 2;
+        const weapon = this.weapon;
+        if (!weapon) {
+            return { offsetX: 0, offsetY: 0, tipX: px, tipY: py, aimAngle: 0 };
+        }
+
+        const targetAngle = typeof aimAngle === 'number' ? aimAngle : (
+            (typeof this.swordAimAngle === 'number' && isFinite(this.swordAimAngle)) ? this.swordAimAngle : 0
+        );
+
+        if (weapon.type === 'gun') {
+            const offsetX = Math.cos(targetAngle) * 13;
+            const offsetY = Math.sin(targetAngle) * 13;
+            return {
+                offsetX,
+                offsetY,
+                tipX: px + Math.cos(targetAngle) * 22,
+                tipY: py + Math.sin(targetAngle) * 22,
+                aimAngle: targetAngle
+            };
+        }
+
+        if (weapon.type === 'bow') {
+            const offsetX = Math.cos(targetAngle + 0.28) * 10;
+            const offsetY = Math.sin(targetAngle + 0.28) * 10;
+            return {
+                offsetX,
+                offsetY,
+                tipX: px + Math.cos(targetAngle) * 24,
+                tipY: py + Math.sin(targetAngle) * 24,
+                aimAngle: targetAngle
+            };
+        }
+
+        if (weapon.type === 'staff') {
+            const orbitAngle = (this.staffOrbitAngle || 0) + Math.PI / 2;
+            const radius = 16 + Math.sin((this.staffOrbitAngle || 0) * 1.4) * 2;
+            const offsetX = Math.cos(orbitAngle) * radius;
+            const offsetY = Math.sin(orbitAngle) * radius;
+            const tipAngle = orbitAngle + Math.PI / 2;
+            return {
+                offsetX,
+                offsetY,
+                tipX: px + offsetX + Math.cos(tipAngle) * 18,
+                tipY: py + offsetY + Math.sin(tipAngle) * 18,
+                aimAngle: orbitAngle,
+                orbitAngle,
+                tipAngle
+            };
+        }
+
+        if (weapon.type === 'grenade') {
+            const offsetX = Math.cos(targetAngle) * 12;
+            const offsetY = Math.sin(targetAngle) * 12;
+            return {
+                offsetX,
+                offsetY,
+                tipX: px + Math.cos(targetAngle) * 18,
+                tipY: py + Math.sin(targetAngle) * 18,
+                aimAngle: targetAngle
+            };
+        }
+
+        return { offsetX: 0, offsetY: 0, tipX: px, tipY: py, aimAngle: targetAngle };
+    }
+
     update(keys) {
         const ts = timeScale || 1;
         const prevX = this.x;
         const prevY = this.y;
-        if (this.dashTimer > 0) {
-            this.x += this.dashVectorX * this.dashSpeed * ts;
-            this.y += this.dashVectorY * this.dashSpeed * ts;
+        const interiorScale = getPlayerInteriorScale();
+        if (this.swordDashCooldown > 0) this.swordDashCooldown--;
+        
+        // === Sistema de aceleração por cooldown de dash (Espada) ===
+        if (this.weapon && this.weapon.type === 'sword') {
+            if (this.swordDashCooldown > 0) {
+                // Dash está em cooldown, acumula aceleração
+                this.dashAccelerationTimer++;
+                if (this.dashAccelerationTimer >= 30) { // 0.5s em 60fps
+                    this.dashAccelerationSpeedBonus += 0.1; // +10%
+                    this.dashAccelerationTimer = 0;
+                }
+            } else {
+                // Dash está disponível, reseta aceleração
+                this.dashAccelerationTimer = 0;
+                this.dashAccelerationSpeedBonus = 0;
+            }
+        } else {
+            // Não está com espada, reseta
+            this.dashAccelerationTimer = 0;
+            this.dashAccelerationSpeedBonus = 0;
+        }
+        
+        if (this.weapon && this.weapon.type === 'staff') {
+            this.staffOrbitAngle = (this.staffOrbitAngle + this.staffOrbitSpeed * ts) % (Math.PI * 2);
+        }
+
+        if (this.confusedTimer > 0) {
+            this.confusedTimer--;
+        }
+
+        if (this.stunTimer > 0) {
+            this.stunTimer--;
+            this.dashTimer = 0;
+            this.slashDashQueue = 0;
+            this.slashDashCounter = 0;
+            this.attackCooldown = Math.max(this.attackCooldown, 1);
+        } else if (this.dashTimer > 0) {
+            this.x += this.dashVectorX * this.dashSpeed * ts * interiorScale;
+            this.y += this.dashVectorY * this.dashSpeed * ts * interiorScale;
             this.dashTimer--;
 
             if (this.dashTimer % 2 === 0) {
+                const isSwordDash = this.weapon && this.weapon.type === 'sword';
                 spawnAfterImage({
                     kind: 'player',
                     x: this.x,
                     y: this.y,
                     width: this.width,
                     height: this.height,
-                    life: 14,
-                    maxLife: 14,
-                    baseAlpha: 0.4
+                    life: isSwordDash ? 16 : 14,
+                    maxLife: isSwordDash ? 16 : 14,
+                    baseAlpha: isSwordDash ? 0.64 : 0.4,
+                    variant: isSwordDash ? 'swordDash' : 'player',
+                    angle: Math.atan2(this.dashVectorY, this.dashVectorX),
+                    color: isSwordDash ? (this.weapon.color || '#ffd880') : '#55ff7f'
                 });
             }
 
             if (this.dashTimer === 0) {
-                this.postDashInvulnTimer = 19;
+                // Se há mais dashes de Investida Cortante na fila, executar próximo
+                if (this.slashDashQueue > 0) {
+                    this.performSwordDash(); // Executar próximo dash automaticamente
+                } else {
+                    // Caso contrário, apenas invulnerabilidade pós-dash normal
+                    this.postDashInvulnTimer = 19;
+                }
             }
 
             if (!this.dashHasHitMonster && currentMonster && isRectOverlap(this.x, this.y, this.width, this.height, currentMonster.x, currentMonster.y, currentMonster.width, currentMonster.height)) {
                 this.dashHasHitMonster = true;
-                currentMonster.takeDamage(25);
+                
+                // Verificar se é um dash de Investida Cortante (slash-dash curto)
+                const isSlashDash = this.slashDashCounter > 0 && !this.slashDashIsNormal;
+                const damageAmount = isSlashDash ? 5 : 25;
+                const pushDistanceFactor = isSlashDash ? 0.2 : 1.0;
+                
+                currentMonster.takeDamage(damageAmount);
 
                 frameFreeze = 2;
                 currentMonster.flashTimer = 20;
@@ -1523,7 +3002,7 @@ class Player {
 
                 const startX = currentMonster.x;
                 const startY = currentMonster.y;
-                const pushDistance = 250;
+                const pushDistance = 250 * pushDistanceFactor;
                 const endX = Math.max(0, Math.min(startX + this.dashVectorX * pushDistance, gameWidth - currentMonster.width));
                 const endY = Math.max(0, Math.min(startY + this.dashVectorY * pushDistance, gameHeight - currentMonster.height));
 
@@ -1553,7 +3032,10 @@ class Player {
             const isReloadingGun = this.weapon && this.weapon.type === 'gun' && this.gunReloadCooldown > 0;
             const moveX = (keys['d'] || keys['arrowright'] ? 1 : 0) - (keys['a'] || keys['arrowleft'] ? 1 : 0);
             const moveY = (keys['s'] || keys['arrowdown'] ? 1 : 0) - (keys['w'] || keys['arrowup'] ? 1 : 0);
-            const isMoving = moveX !== 0 || moveY !== 0;
+            const confusionMultiplier = this.confusedTimer > 0 ? -1 : 1;
+            const invertedMoveX = moveX * confusionMultiplier;
+            const invertedMoveY = moveY * confusionMultiplier;
+            const isMoving = invertedMoveX !== 0 || invertedMoveY !== 0;
 
             if (isReloadingGun) {
                 if (this.gunReloadInvulnCharges <= 0) {
@@ -1585,23 +3067,108 @@ class Player {
                 this.gunReloadFlashTicker = 0;
             }
 
-            const movementSpeed = (this.speed + (isReloadingGun ? this.speed * 0.25 : 0) + this.gunReloadMoveBonus) * ts;
-            if (moveY < 0) this.y -= movementSpeed;
-            if (moveY > 0) this.y += movementSpeed;
-            if (moveX < 0) this.x -= movementSpeed;
-            if (moveX > 0) this.x += movementSpeed;
+            // Calcular bônus de velocidade
+            let speedBonus = this.dashAccelerationSpeedBonus + this.swordAlignmentSpeedBonus;
+            const baseSpeed = this.speed * (1 + speedBonus);
+            const fireZoneSpeedBonus = this.getFireZoneSpeedBonus();
+            const cooldownSpeedBonus = this.getBombCooldownSpeedBonus();
+            const movementSpeed = (baseSpeed + (isReloadingGun ? this.speed * 0.25 : 0) + this.gunReloadMoveBonus + fireZoneSpeedBonus + cooldownSpeedBonus) * ts * interiorScale;
+            
+            if (invertedMoveY < 0) this.y -= movementSpeed;
+            if (invertedMoveY > 0) this.y += movementSpeed;
+            if (invertedMoveX < 0) this.x -= movementSpeed;
+            if (invertedMoveX > 0) this.x += movementSpeed;
+            
+            // === Partículas de aceleração (Espada) ===
+            if (this.weapon && this.weapon.type === 'sword' && this.dashAccelerationSpeedBonus > 0 && isMoving) {
+                const accelLevel = this.dashAccelerationSpeedBonus;
+                this.accelParticleTimer = (this.accelParticleTimer || 0) + 1;
+                const interval = Math.max(1, Math.round(5 - accelLevel * 8));
+                if (this.accelParticleTimer >= interval) {
+                    this.accelParticleTimer = 0;
+                    const mvx = invertedMoveX, mvy = invertedMoveY;
+                    const ml = Math.hypot(mvx, mvy) || 1;
+                    const dirX = mvx / ml, dirY = mvy / ml;
+                    const cx = this.x + this.width / 2;
+                    const cy = this.y + this.height / 2;
+                    const count = 1 + Math.floor(accelLevel * 4);
+                    for (let i = 0; i < count; i++) {
+                        const spread = (Math.random() - 0.5) * 14;
+                        const px = cx - dirX * (6 + Math.random() * 6) - dirY * spread;
+                        const py = cy - dirY * (6 + Math.random() * 6) + dirX * spread;
+                        accelParticles.push({
+                            x: px,
+                            y: py,
+                            vx: -dirX * (1.5 + accelLevel * 4) - (Math.random() - 0.5) * 0.6,
+                            vy: -dirY * (1.5 + accelLevel * 4) - (Math.random() - 0.5) * 0.6,
+                            life: 14 + Math.floor(Math.random() * 8),
+                            maxLife: 21 + Math.floor(Math.random() * 8),
+                            len: 8 + accelLevel * 30 + Math.random() * 6,
+                            width: 1.5 + accelLevel * 2,
+                            color: this.weapon.color || '#ffd880',
+                            angle: Math.atan2(dirY, dirX)
+                        });
+                    }
+                }
+            }
+            // Rastrear direção de movimento para bônus de alinhamento com espada
+            if (isMoving) {
+                const moveLen = Math.hypot(invertedMoveX, invertedMoveY);
+                this.lastMoveDirX = invertedMoveX / moveLen;
+                this.lastMoveDirY = invertedMoveY / moveLen;
+                
+                // === Sistema de bônus por alinhamento com espada ===
+                if (this.weapon && this.weapon.type === 'sword') {
+                    // Calcular ângulo da espada
+                    const swordAngle = this.swordAimAngle + (this.swordAimOffsetAngle || 0);
+                    const swordDirX = Math.cos(swordAngle);
+                    const swordDirY = Math.sin(swordAngle);
+                    
+                    // Calcular dot product para verificar alinhamento
+                    const alignment = this.lastMoveDirX * swordDirX + this.lastMoveDirY * swordDirY;
+                    
+                    if (alignment > 0.7) { // Movendo ~45 graus ou menos de diferença
+                        this.swordAlignmentTimer++;
+                        if (this.swordAlignmentTimer >= 120) { // 2s em 60fps
+                            this.swordAlignmentSpeedBonus = Math.min(0.75, this.swordAlignmentSpeedBonus + 0.15); // +15%, máx 75%
+                            this.swordAlignmentTimer = 0;
+                        }
+                    } else {
+                        // Não está alinhado, reseta timer
+                        this.swordAlignmentTimer = 0;
+                    }
+                } else {
+                    this.swordAlignmentTimer = 0;
+                    this.swordAlignmentSpeedBonus = 0;
+                }
+            } else {
+                // Não está movendo, reseta timers
+                this.swordAlignmentTimer = 0;
+                if (!this.weapon || this.weapon.type !== 'sword') {
+                    this.swordAlignmentSpeedBonus = 0;
+                }
+            }
         }
 
-        clampEntityToMapCircle(this);
-
-        if (resolveEntityWallCollision(this, prevX, prevY) && this.dashTimer > 0) {
-            this.dashTimer = 0;
+        if (playerInsideConstruction) {
+            resolveEntityViewportBounds(this, prevX, prevY, 16);
+        } else {
+            clampEntityToMapCircle(this);
         }
 
-        clampEntityToMapCircle(this);
+        if (!playerInsideConstruction) {
+            if (resolveEntityWallCollision(this, prevX, prevY) && this.dashTimer > 0) {
+                this.dashTimer = 0;
+            }
+            clampEntityToMapCircle(this);
+        }
 
         if (this.postDashInvulnTimer > 0) {
             this.postDashInvulnTimer--;
+        }
+
+        if (this.slashDashInvulnTimer > 0) {
+            this.slashDashInvulnTimer--;
         }
 
         if (this.healthRegen > 0) {
@@ -1647,6 +3214,8 @@ class Player {
                 this.bowDashCharges = this.bowDashMaxCharges;
             }
         }
+        if (this.bombCooldown > 0) this.bombCooldown--;
+        if (this.grenadeCooldown > 0) this.grenadeCooldown--;
         if (this.gunReloadCooldown > 0) {
             this.gunReloadCooldown--;
             if (this.gunReloadCooldown === 0) {
@@ -1657,6 +3226,13 @@ class Player {
             }
         }
         if (this.parryCooldown > 0) this.parryCooldown--;
+        if (this.parryHealOverTimeTimer > 0) {
+            this.parryHealOverTimeTimer--;
+            if (this.parryHealOverTime > 0) {
+                const healAmount = this.maxHealth * (0.04 * this.parryHealOverTime) / 60;
+                this.health = Math.min(this.maxHealth, this.health + healAmount);
+            }
+        }
         if (this.staffBurstCooldown > 0) this.staffBurstCooldown--;
         if (this.slashTimer > 0) {
             this.slashTimer--;
@@ -1730,12 +3306,15 @@ class Player {
         }
         const centerX = this.x + this.width / 2;
         const centerY = this.y + this.height / 2;
+        const playerScale = getPlayerInteriorScale();
+
+        ctx.translate(centerX, centerY);
+        ctx.scale(playerScale, playerScale);
 
         // Aura visual quando envenenado (player)
         if (this.poisonTimer > 0) {
             const pulse = 0.9 + 0.2 * Math.sin(performance.now() * 0.02);
             ctx.save();
-            ctx.translate(centerX, centerY);
             ctx.globalAlpha = 0.36;
             ctx.fillStyle = '#34ff7a';
             ctx.beginPath();
@@ -1754,10 +3333,49 @@ class Player {
             }
         }
 
+        // Aura visual quando queimado (bomba)
+        if (this.burnTimer > 0 && this.burnTimer > 0) {
+            const burnIntensity = Math.min(1, this.burnTimer / 180);
+            const burnPulse = 0.8 + 0.3 * Math.sin(performance.now() * 0.025);
+            ctx.save();
+            
+            // Primeiro anel - laranja
+            ctx.globalAlpha = 0.4 * burnIntensity * burnPulse;
+            ctx.fillStyle = '#ff8800';
+            ctx.beginPath();
+            ctx.arc(0, 0, 22 * burnPulse, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Segundo anel - vermelho
+            ctx.globalAlpha = 0.28 * burnIntensity;
+            ctx.fillStyle = '#ff3300';
+            ctx.beginPath();
+            ctx.arc(0, 0, 30 * burnPulse, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Contorno com brilho
+            ctx.globalAlpha = 0.5 * burnIntensity;
+            ctx.strokeStyle = 'rgba(255,100,0,0.8)';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.arc(0, 0, 28 * burnPulse, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            ctx.restore();
+            
+            // Partículas de fogo ocasionais
+            if (Math.random() < 0.08 * burnIntensity) {
+                const angle = Math.random() * Math.PI * 2;
+                const distance = 18 + Math.random() * 12;
+                const px = centerX + Math.cos(angle) * distance;
+                const py = centerY + Math.sin(angle) * distance;
+                spawnEvaporationEffect(px, py, Math.random() < 0.5 ? '#ff6600' : '#ffaa00', 4, 1);
+            }
+        }
+
         // Desenhar escudos visuais quando em cooldown de parry
         if (this.parryCooldown > 0 && this.parryDefenseBonus > 0) {
             ctx.save();
-            ctx.translate(centerX, centerY);
             
             const shieldRadius = 45;
             const totalShields = Math.round(this.parryDefenseBonus / 12.5);
@@ -1806,7 +3424,6 @@ class Player {
         const canBowDash = this.weapon && this.weapon.type === 'bow' && this.bowDashCharges > 0 && this.attackCooldown > 0 && this.dashTimer === 0;
         const dashGlowActive = canBowDash;
 
-        ctx.translate(centerX, centerY);
         ctx.scale(1.7, 1.7);
         const isReloadingGun = this.weapon && this.weapon.type === 'gun' && this.gunReloadCooldown > 0 && this.gunReloadInvulnCharges > 0;
         const isFlashing = isReloadingGun && this.gunReloadFlashTicker < 6;
@@ -1892,21 +3509,138 @@ class Player {
             ctx.restore();
         }
 
+        const weapon = this.weapon;
+        const weaponAimAngle = (typeof this.swordAimAngle === 'number' && isFinite(this.swordAimAngle)) ? this.swordAimAngle : 0;
+        const weaponInfo = this.getWeaponMountPoint(weaponAimAngle);
+        if (weapon && (weapon.type === 'gun' || weapon.type === 'bow' || weapon.type === 'staff')) {
+            ctx.save();
+            ctx.translate(weaponInfo.offsetX, weaponInfo.offsetY);
+            ctx.globalAlpha = 0.96;
+
+            if (weapon.type === 'gun') {
+                ctx.rotate(weaponInfo.aimAngle);
+                ctx.fillStyle = '#0f172a';
+                ctx.shadowColor = 'rgba(255,255,255,0.35)';
+                ctx.shadowBlur = 10;
+                ctx.fillRect(-10, -5.5, 18, 11);
+                ctx.fillRect(-10, -3.5, 8, 7);
+                ctx.fillStyle = '#64748b';
+                ctx.fillRect(-8.5, -4.2, 8, 8.4);
+                ctx.fillStyle = '#f8fafc';
+                ctx.fillRect(-3.2, -2.4, 3.6, 4.8);
+                ctx.fillStyle = '#e2e8f0';
+                ctx.fillRect(8.8, -4, 7.2, 8);
+                ctx.fillStyle = '#111827';
+                ctx.fillRect(12.4, -2.6, 3.4, 5.2);
+                ctx.fillRect(4.2, -2.8, 4.4, 5.6);
+                ctx.fillStyle = '#facc15';
+                ctx.beginPath();
+                ctx.arc(8.2, 0, 2.8, 0, Math.PI * 2);
+                ctx.fill();
+            } else if (weapon.type === 'bow') {
+                ctx.rotate(weaponInfo.aimAngle);
+                ctx.strokeStyle = '#8b5a2b';
+                ctx.lineWidth = 3.0;
+                ctx.beginPath();
+                ctx.moveTo(-9.8, -8.2);
+                ctx.quadraticCurveTo(-1.4, -5.2, 2.8, -1.5);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(-9.8, 8.2);
+                ctx.quadraticCurveTo(-1.4, 5.2, 2.8, 1.5);
+                ctx.stroke();
+
+                ctx.strokeStyle = '#f8fafc';
+                ctx.lineWidth = 1.6;
+                ctx.beginPath();
+                ctx.moveTo(-9.2, -8.0);
+                ctx.quadraticCurveTo(-1.4, -3.8, 12.8, -0.8);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(-9.2, 8.0);
+                ctx.quadraticCurveTo(-1.4, 3.8, 12.8, 0.8);
+                ctx.stroke();
+
+                ctx.fillStyle = '#0f172a';
+                ctx.fillRect(-10.2, -3.2, 8.2, 6.4);
+                ctx.fillStyle = '#f59e0b';
+                ctx.fillRect(-8.8, -2.2, 5.3, 4.4);
+
+                ctx.fillStyle = '#fde68a';
+                ctx.beginPath();
+                ctx.moveTo(11.8, -2.2);
+                ctx.lineTo(16.4, 0);
+                ctx.lineTo(11.8, 2.2);
+                ctx.lineTo(13.4, 0);
+                ctx.closePath();
+                ctx.fill();
+                ctx.strokeStyle = '#f8fafc';
+                ctx.lineWidth = 1.2;
+                ctx.beginPath();
+                ctx.moveTo(13.0, -0.8);
+                ctx.lineTo(18.0, 0);
+                ctx.lineTo(13.0, 0.8);
+                ctx.stroke();
+            } else if (weapon.type === 'staff') {
+                ctx.rotate(-Math.PI / 2);
+
+                const staffColor = weapon.color || '#38bdf8';
+
+                ctx.fillStyle = '#1f2937';
+                ctx.fillRect(-4.8, -1.6, 15.2, 3.2);
+
+                ctx.fillStyle = '#f8fafc';
+                ctx.fillRect(-4.0, -1.0, 13.6, 2.0);
+
+                ctx.fillStyle = staffColor;
+                ctx.fillRect(-2.2, -0.8, 11.8, 1.6);
+
+                ctx.fillStyle = '#0f172a';
+                ctx.fillRect(-4.8, -2.4, 1.4, 4.8);
+
+                ctx.fillStyle = 'rgba(255,255,255,0.9)';
+                ctx.beginPath();
+                ctx.arc(12.6, 0, 2.2, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.fillStyle = staffColor;
+                ctx.beginPath();
+                ctx.arc(12.6, 0, 1.2, 0, Math.PI * 2);
+                ctx.fill();
+            } else if (weapon.type === 'grenade') {
+                ctx.rotate(weaponInfo.aimAngle);
+                ctx.fillStyle = '#7c2d12';
+                ctx.beginPath();
+                ctx.arc(0, 0, 6.4, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#f97316';
+                ctx.beginPath();
+                ctx.arc(0, 0, 4.2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#fde68a';
+                ctx.fillRect(-1.4, -2.6, 2.8, 5.2);
+            }
+
+            ctx.restore();
+        }
+
         ctx.restore();
 
         if (this.attacking) {
+            const playerScale = getPlayerInteriorScale();
             if (this.weapon && this.weapon.type === 'sword') {
                 const px = this.x + this.width / 2;
                 const py = this.y + this.height / 2;
-                const extraRange = Math.max(0, this.attackRange - 80);
-                const swordLen = (this.weapon.range || 45) + extraRange;
+                const extraRange = Math.max(0, this.attackRange - 80) * playerScale;
+                const swordLen = ((this.weapon.range || 45) + extraRange) * playerScale;
                 const baseAim = (typeof this.swordAimAngle === 'number') ? this.swordAimAngle : this.meleeDirection || 0;
                 const aim = baseAim + (this.swordAimOffsetAngle || 0);
 
                 // faint arc showing sword reach
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
-                ctx.strokeStyle = '#ffd880';
-                ctx.lineWidth = 3;
+                const arcAccent = this.weapon.color || '#ffd880';
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+                ctx.strokeStyle = arcAccent;
+                ctx.lineWidth = 2;
                 ctx.beginPath();
                 ctx.moveTo(px, py);
                 ctx.arc(px, py, swordLen, aim - (this.meleeAngle || (160 * Math.PI / 180)) / 2, aim + (this.meleeAngle || (160 * Math.PI / 180)) / 2);
@@ -1919,32 +3653,66 @@ class Player {
                 ctx.translate(px, py);
                 ctx.rotate(aim);
 
-                // handle
-                ctx.fillStyle = '#6b4b2a';
-                ctx.fillRect(-6, -6, 12, 12);
+                const accent = this.weapon.color || '#ffd880';
+                const dark = '#0b1220';
 
-                // blade
+                // grip / handle
+                ctx.fillStyle = dark;
+                ctx.fillRect(-15, -2.6, 11, 5.2);
+                ctx.fillStyle = '#1f2937';
+                for (let g = 0; g < 5; g++) {
+                    ctx.fillRect(-14 + g * 2.2, -2.6, 1.1, 5.2);
+                }
+                // pommel
+                ctx.fillStyle = accent;
+                ctx.shadowColor = accent;
+                ctx.shadowBlur = 8;
                 ctx.beginPath();
-                ctx.moveTo(12, -4);
-                ctx.lineTo(swordLen, 0);
-                ctx.lineTo(12, 4);
-                ctx.closePath();
-                ctx.fillStyle = this.weapon.color || '#ffd880';
-                ctx.shadowColor = this.weapon.color || '#ffd880';
-                ctx.shadowBlur = 14;
+                ctx.arc(-15.5, 0, 3.0, 0, Math.PI * 2);
                 ctx.fill();
-                ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-                ctx.lineWidth = 1.5;
-                ctx.stroke();
+                ctx.shadowBlur = 0;
+                // crossguard
+                ctx.fillStyle = '#e5e7eb';
+                ctx.fillRect(-4.5, -6, 3, 12);
+                ctx.fillStyle = accent;
+                ctx.fillRect(-4.5, -6, 1.2, 12);
 
-                // small fuller/edge highlight
+                // glowing energy blade with gradient
+                const grad = ctx.createLinearGradient(0, 0, swordLen, 0);
+                grad.addColorStop(0, '#ffffff');
+                grad.addColorStop(0.18, accent);
+                grad.addColorStop(1, accent);
                 ctx.beginPath();
-                ctx.moveTo(12, -1.5);
-                ctx.lineTo(swordLen * 0.9, 0);
-                ctx.lineTo(12, 1.5);
-                ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+                ctx.moveTo(0, -3.4);
+                ctx.lineTo(swordLen * 0.12, -1.3);
+                ctx.lineTo(swordLen * 0.85, -0.5);
+                ctx.lineTo(swordLen, 0);
+                ctx.lineTo(swordLen * 0.85, 0.5);
+                ctx.lineTo(swordLen * 0.12, 1.3);
+                ctx.lineTo(0, 3.4);
+                ctx.closePath();
+                ctx.fillStyle = grad;
+                ctx.shadowColor = accent;
+                ctx.shadowBlur = 22;
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+                ctx.lineWidth = 1.3;
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+
+                // fuller / bright center line
+                ctx.beginPath();
+                ctx.moveTo(2, 0);
+                ctx.lineTo(swordLen * 0.92, 0);
+                ctx.strokeStyle = 'rgba(255,255,255,0.45)';
                 ctx.lineWidth = 1;
                 ctx.stroke();
+
+                // glowing tip
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.arc(swordLen, 0, 1.8, 0, Math.PI * 2);
+                ctx.fill();
 
                 ctx.restore();
 
@@ -1964,11 +3732,12 @@ class Player {
                     ctx.restore();
                 }
             } else {
+                const playerScale = getPlayerInteriorScale();
                 ctx.strokeStyle = '#ffff00';
                 ctx.lineWidth = 3;
                 const meleeRadius = this.weapon && this.weapon.type === 'sword'
-                    ? this.weapon.range + Math.max(0, this.attackRange - 80)
-                    : this.attackRange;
+                    ? (this.weapon.range + Math.max(0, this.attackRange - 80)) * playerScale
+                    : this.attackRange * playerScale;
                 ctx.beginPath();
                 if (this.weapon && this.weapon.type === 'sword') {
                     ctx.arc(this.x + this.width / 2, this.y + this.height / 2, meleeRadius, this.meleeDirection - this.meleeAngle / 2, this.meleeDirection + this.meleeAngle / 2);
@@ -1980,10 +3749,11 @@ class Player {
         }
         // draw sword even when not actively attacking if always active
         if (!this.attacking && this.weapon && this.weapon.type === 'sword' && this.swordAlwaysActive) {
+            const playerScale = getPlayerInteriorScale();
             const px = this.x + this.width / 2;
             const py = this.y + this.height / 2;
-            const extraRange = Math.max(0, this.attackRange - 80);
-            const swordLen = (this.weapon.range || 45) + extraRange;
+            const extraRange = Math.max(0, this.attackRange - 80) * playerScale;
+            const swordLen = ((this.weapon.range || 45) + extraRange) * playerScale;
             const baseAim = (typeof this.swordAimAngle === 'number') ? this.swordAimAngle : this.meleeDirection || 0;
             const aim = baseAim + (this.swordAimOffsetAngle || 0);
 
@@ -1991,24 +3761,147 @@ class Player {
             ctx.translate(px, py);
             ctx.rotate(aim);
 
-            ctx.fillStyle = '#6b4b2a';
-            ctx.fillRect(-5, -5, 10, 10);
+            const accent = this.weapon.color || '#ffd880';
+            const dark = '#0b1220';
 
+            // grip
+            ctx.fillStyle = dark;
+            ctx.fillRect(-12, -2, 9, 4);
+            // pommel
+            ctx.fillStyle = accent;
             ctx.beginPath();
-            ctx.moveTo(10, -3);
-            ctx.lineTo(swordLen, 0);
-            ctx.lineTo(10, 3);
-            ctx.closePath();
-            ctx.fillStyle = this.weapon.color || '#ffd880';
-            ctx.shadowColor = this.weapon.color || '#ffd880';
-            ctx.shadowBlur = 12;
+            ctx.arc(-12.5, 0, 2.4, 0, Math.PI * 2);
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-            ctx.lineWidth = 1;
+            // crossguard
+            ctx.fillStyle = '#e5e7eb';
+            ctx.fillRect(-3.5, -4.5, 2.4, 9);
+
+            // glowing energy blade
+            const grad = ctx.createLinearGradient(0, 0, swordLen, 0);
+            grad.addColorStop(0, '#ffffff');
+            grad.addColorStop(0.2, accent);
+            grad.addColorStop(1, accent);
+            ctx.beginPath();
+            ctx.moveTo(0, -2.6);
+            ctx.lineTo(swordLen * 0.12, -1.0);
+            ctx.lineTo(swordLen * 0.86, -0.4);
+            ctx.lineTo(swordLen, 0);
+            ctx.lineTo(swordLen * 0.86, 0.4);
+            ctx.lineTo(swordLen * 0.12, 1.0);
+            ctx.lineTo(0, 2.6);
+            ctx.closePath();
+            ctx.fillStyle = grad;
+            ctx.shadowColor = accent;
+            ctx.shadowBlur = 14;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+            ctx.lineWidth = 0.8;
             ctx.stroke();
 
             ctx.restore();
         }
+    }
+
+    computeDashAngle() {
+        const px = this.x + this.width / 2;
+        const py = this.y + this.height / 2;
+        let targetX = null, targetY = null;
+
+        const nearest = (typeof getNearestInteriorEnemy === 'function') ? getNearestInteriorEnemy() : null;
+        if (nearest) {
+            targetX = nearest.x + nearest.width / 2;
+            targetY = nearest.y + nearest.height / 2;
+        }
+        if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
+            const cmx = currentMonster.x + currentMonster.width / 2;
+            const cmy = currentMonster.y + currentMonster.height / 2;
+            if (targetX === null || Math.hypot(px - cmx, py - cmy) < Math.hypot(px - targetX, py - targetY)) {
+                targetX = cmx;
+                targetY = cmy;
+            }
+        }
+
+        if (targetX !== null) {
+            return Math.atan2(targetY - py, targetX - px);
+        }
+        const baseAim = (typeof this.swordAimAngle === 'number') ? this.swordAimAngle : (this.meleeDirection || 0);
+        return baseAim + (this.swordAimOffsetAngle || 0);
+    }
+
+    tryInvestidaDash() {
+        if (this.attackMove > 0 && this.swordDashCooldown === 0 && this.dashTimer === 0) {
+            this.performSwordDash();
+        }
+    }
+
+    performSwordDash() {
+        if (!this.weapon || this.weapon.type !== 'sword') return false;
+        if (this.dashTimer > 0) return false;
+        
+        // Verificar se já há dashes da Investida Cortante na fila
+        if (this.slashDashQueue > 0) {
+            // Executar o próximo dash da Investida Cortante
+            const dashAngle = this.computeDashAngle();
+
+            this.dashVectorX = Math.cos(dashAngle);
+            this.dashVectorY = Math.sin(dashAngle);
+            this.swordAimAngle = dashAngle;
+            if (this.slashDashIsNormal) {
+                // Investida Cortante: cada nível ativa um dash normal
+                this.dashTimer = 10;
+                this.dashSpeed = 17;
+            } else {
+                this.dashTimer = 2; // 20% do tamanho original (10 * 0.2)
+                this.dashSpeed = 3.4; // 20% da velocidade original (17 * 0.2)
+            }
+            this.dashHasHitMonster = false;
+            this.slashDashInvulnTimer = 2; // Invulnerável durante o dash
+            this.attacking = false;
+            this.meleeAttacking = false;
+            this.coneAttacking = false;
+            
+            this.slashDashQueue--;
+            this.slashDashCounter++;
+            
+            return true;
+        }
+        
+        // Verificar se pode fazer um dash normal ou iniciar Investida Cortante
+        if (this.swordDashCooldown > 0) return false;
+
+        const dashAngle = this.computeDashAngle();
+        this.swordAimAngle = dashAngle;
+
+        this.dashVectorX = Math.cos(dashAngle);
+        this.dashVectorY = Math.sin(dashAngle);
+        
+        // Verificar se tem upgrade de Investida Cortante
+        const slashUpgradeCount = Math.max(0, Math.floor((this.attackMove || 0) / 6));
+        if (slashUpgradeCount > 0) {
+            // Investida Cortante: cada nível ativa um dash normal
+            this.dashTimer = 10; // dash normal
+            this.dashSpeed = 17; // dash normal
+            this.slashDashQueue = slashUpgradeCount - 1; // Fila dos dashes normais restantes (1 por nível)
+            this.slashDashCounter = 1;
+            this.slashDashInvulnTimer = 2; // Invulnerável durante o dash
+            this.slashDashIsNormal = true;
+        } else {
+            // Dash normal
+            this.dashTimer = 10;
+            this.dashSpeed = 17;
+            this.slashDashQueue = 0;
+            this.slashDashCounter = 0;
+            this.slashDashInvulnTimer = 0;
+            this.slashDashIsNormal = false;
+        }
+        
+        this.dashHasHitMonster = false;
+        this.swordDashCooldown = this.swordDashCooldownMax;
+        this.postDashInvulnTimer = 0;
+        this.attacking = false;
+        this.meleeAttacking = false;
+        this.coneAttacking = false;
+        return true;
     }
 
     attack() {
@@ -2040,6 +3933,10 @@ class Monster {
         this.dashTimer = 0;
         this.splitAttackCooldown = 0;
         this.stunTimer = 0;
+        this.isDying = false;
+        this.deathTimer = 0;
+        this.deathMaxTimer = 0;
+        this.deathShards = [];
         this.tookDamage = false;
         this.direction = Math.random() > 0.5 ? 1 : -1;
         this.shakeTimer = 0;
@@ -2131,6 +4028,16 @@ class Monster {
             this.projectileSpeed = 3.75 + phase * 0.2;
             this.areaAttackCooldown = 0;
             this.projectileAttackCooldown = 0;
+        } else if (this.type === 'castle_bone_sphere') {
+            this.health = 120 + phase * 48;
+            this.maxHealth = this.health;
+            this.speed = 0.95 + phase * 0.05;
+            this.attackRange = 220;
+            this.rotationAngle = Math.random() * Math.PI * 2;
+            this.boneRainCooldown = 0;
+            this.boneRingCooldown = 20;
+            this.specialAttackCooldown = 120;
+            this.stunTimer = 0;
         } else if (this.type === 'simple') {
             this.health = 22.5 + phase * 4;
             this.maxHealth = this.health;
@@ -2168,21 +4075,32 @@ class Monster {
             this.simpleDashOpen = 0;
             this.attackCooldown = 1;
             this.simpleVariant = 'croc';
-            // State for being thrown / transparent / confused / stunned
-            this.thrown = false;
-            this.thrownTimer = 0;
-            this.thrownTotalTime = 0;
-            this.thrownVx = 0;
-            this.thrownVy = 0;
-            this.thrownTargetX = null;
-            this.thrownTargetY = null;
-            this.thrownArcHeight = 0;
-            this.fallStarsTimer = 0;
-            this.alpha = 1;
-            this.confusedLevel = 0;
+            this.isOffScreen = false;
+            this.lastOnScreenFrame = 0;
+            this.roarQueued = false;
+            this.roarTimer = 0;
+            this.sprintEscapeTimer = 0;
+            this.sprintEscapeDir = 0;
+            this.crocCircleAngle = Math.random() * Math.PI * 2;
+            this.crocCircleRadius = 90 + Math.random() * 120;
+            this.crocCircleSpeed = 0.035 + Math.random() * 0.02;
+            this.hitsTakenThisLife = 0;
+            this.lastHitFrame = -999;
+            this.consecutiveHitsOnPlayer = 0;
             this.confusedTimer = 0;
-            this.stunnedTimer = 0;
-            this.attacksDealtToPlayer = 0; // contador de acertos ao jogador
+            this.confusedLevel = 0;
+            this.postConfusionRoar = false;
+            this.hasRoaredThisEntry = false;
+            this.crocDecoyX = this.x + this.width / 2;
+            this.crocDecoyY = this.y + this.height / 2;
+            this.crocDecoyAngle = Math.random() * Math.PI * 2;
+            this.crocDecoyWanderTimer = 60 + Math.floor(Math.random() * 120);
+            this.crocOffsetAngle = Math.random() * Math.PI * 2;
+            this.crocOffsetDist = 60 + Math.random() * 80;
+            this.x = Math.max(0, Math.min(gameWidth - this.width, this.crocDecoyX + Math.cos(this.crocOffsetAngle) * this.crocOffsetDist - this.width / 2));
+            this.y = Math.max(0, Math.min(gameHeight - this.height, this.crocDecoyY + Math.sin(this.crocOffsetAngle) * this.crocOffsetDist - this.height / 2));
+            this.fakeMarkerX = this.crocDecoyX;
+            this.fakeMarkerY = this.crocDecoyY;
         } else {
             this.health = 56.25 + phase * 22.5;
             this.speed = 1.0875 + phase * 0.3625;
@@ -2194,7 +4112,64 @@ class Monster {
         return chooseMonsterType();
     }
 
+    startDeathAnimation() {
+        if (this.isDying || this.deathTimer > 0) return;
+        this.isDying = true;
+        this.deathTimer = 24;
+        this.deathMaxTimer = 24;
+        this.deathShards = [];
+        spawnMonsterDeathEffect(this);
+
+        const centerX = this.x + this.width / 2;
+        const centerY = this.y + this.height / 2;
+        const shardCount = 16 + Math.floor(Math.random() * 8);
+
+        for (let i = 0; i < shardCount; i++) {
+            const angle = (Math.PI * 2 / shardCount) * i + (Math.random() - 0.5) * 0.35;
+            const speed = 1.2 + Math.random() * 4.4;
+            this.deathShards.push({
+                x: centerX,
+                y: centerY,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed * 0.7,
+                size: 4 + Math.random() * 8,
+                rotation: Math.random() * Math.PI * 2,
+                spin: (Math.random() - 0.5) * 0.18,
+                life: 18 + Math.floor(Math.random() * 12)
+            });
+        }
+    }
+
+    updateDeathAnimation() {
+        if (!this.isDying || this.deathTimer <= 0) return;
+        this.deathTimer--;
+        const progress = 1 - this.deathTimer / this.deathMaxTimer;
+
+        for (let i = this.deathShards.length - 1; i >= 0; i--) {
+            const shard = this.deathShards[i];
+            shard.x += shard.vx;
+            shard.y += shard.vy;
+            shard.vy += 0.08 + progress * 0.03;
+            shard.vx *= 0.96;
+            shard.vy *= 0.98;
+            shard.rotation += shard.spin;
+            shard.life--;
+            if (shard.life <= 0) {
+                this.deathShards.splice(i, 1);
+            }
+        }
+
+        if (this.deathTimer <= 0) {
+            this.deathShards = [];
+        }
+    }
+
     update(playerX, playerY) {
+        if (this.isDying) {
+            this.updateDeathAnimation();
+            return;
+        }
+
         const ts = timeScale || 1;
         const monsterCenterX = this.x + this.width / 2;
         const monsterCenterY = this.y + this.height / 2;
@@ -2549,7 +4524,7 @@ class Monster {
                 this.portalModeToggleCooldown--;
             } else {
                 // Alterna o modo de ataque entre as variantes do caster
-                const portalModes = ['circular', 'spiral', 'ring', 'aim16'];
+                const portalModes = ['circular', 'spiral', 'ring', 'aim16', 'ember'];
                 const currentIndex = portalModes.indexOf(this.portalAttackMode);
                 this.portalAttackMode = portalModes[(currentIndex + 1) % portalModes.length];
                 this.portalModeToggleCooldown = portalModeToggleInterval;
@@ -2588,10 +4563,12 @@ class Monster {
                         this.nextPortalActiveDuration = null; // reset for next use
                         this.spiralProjectileCount = 0; // Reset spiral counter
                         // Execute single-shot portal attacks immediately when the portal becomes active
-                        if (this.portalAttackMode === 'ring') {
+                                    if (this.portalAttackMode === 'ring') {
                             this.casterRingWaveAttack();
                         } else if (this.portalAttackMode === 'aim16') {
                             this.casterAimedVolley(screenCenterX, screenCenterY);
+                        } else if (this.portalAttackMode === 'ember') {
+                            this.casterEmberBurst(screenCenterX, screenCenterY);
                         }
                     } catch (e) {
                         console.error('Error activating caster portal attack', { err: e && e.stack ? e.stack : e, portalAttackMode: this.portalAttackMode, portalX: this.portalX, portalY: this.portalY, playerX, playerY });
@@ -2617,7 +4594,7 @@ class Monster {
                                 Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)),
                                 '#ff9e3c',
                                 4.5 + this.phase * 0.2,
-                                { monsterType: this.type, size: 16, style: 'casterFlameCircle' }
+                                { monsterType: this.type, size: 16, style: 'casterFlameCircle', homing: false, afterImageTrail: false, afterImageInterval: 5 }
                             );
                         }
                     } else if (this.portalAttackMode === 'spiral') {
@@ -2635,7 +4612,7 @@ class Monster {
                                 Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)),
                                 '#ff6a2d',
                                 4.5 + this.phase * 0.2,
-                                { monsterType: this.type, size: 16, style: 'casterFlameSpiral' }
+                                { monsterType: this.type, size: 16, style: 'casterFlameSpiral', homing: false, afterImageTrail: false, afterImageInterval: 5 }
                             );
                         }
                         this.spiralProjectileCount++; // Incrementa para próxima rodada
@@ -2643,6 +4620,8 @@ class Monster {
                         this.casterRingWaveAttack();
                     } else if (this.portalAttackMode === 'aim16' && this.portalTimer === portalActiveDuration) {
                         this.casterAimedVolley(screenCenterX, screenCenterY);
+                    } else if (this.portalAttackMode === 'ember' && this.portalTimer === portalActiveDuration) {
+                        this.casterEmberBurst(screenCenterX, screenCenterY);
                     }
                 }
                 this.portalTimer--;
@@ -2744,19 +4723,25 @@ class Monster {
                         const coneRange = this.simpleClawRange || this.attackRange * 2.2;
 
                         if (dist <= coneRange && delta <= coneAngle / 2) {
-                            const meleeDamage = Math.max(1, this.getAttackDamage() + 1);
-                            const effectiveDamage = Math.max(0, meleeDamage - (player.damageReduction || 0));
-                            player.health -= effectiveDamage;
-                            spawnAfterImage({
-                                kind: 'player',
-                                x: player.x,
-                                y: player.y,
-                                width: player.width,
-                                height: player.height,
-                                life: 14,
-                                maxLife: 14,
-                                baseAlpha: 0.45
-                            });
+                            // Verificar invulnerabilidade do jogador
+                            if (player.dashTimer <= 0 && player.postDashInvulnTimer <= 0 && player.slashDashInvulnTimer <= 0) {
+                                const meleeDamage = Math.max(1, this.getAttackDamage() + 1);
+                                const effectiveDamage = Math.max(0, meleeDamage - (player.damageReduction || 0));
+                                player.health -= effectiveDamage;
+                                if (this.type === 'simple') {
+                                    tryApplyPlayerConfusionFromAttack(this.type, { chance: 2 });
+                                }
+                                spawnAfterImage({
+                                    kind: 'player',
+                                    x: player.x,
+                                    y: player.y,
+                                    width: player.width,
+                                    height: player.height,
+                                    life: 14,
+                                    maxLife: 14,
+                                    baseAlpha: 0.45
+                                });
+                            }
                         }
                     }
                 }
@@ -2792,100 +4777,267 @@ class Monster {
                     this.simpleClawRange = this.attackRange * 2.2;
                 }
             }
-        } else if (this.type === 'croc') {
-            // If thrown, travel away while transparent
-            if (this.thrown && this.thrownTimer > 0) {
-                this.x += this.thrownVx * ts;
-                this.y += this.thrownVy * ts;
-                this.thrownTimer--;
-                this.alpha = 0.35;
-                const progress = 1 - this.thrownTimer / Math.max(1, this.thrownTotalTime);
-                this.thrownArcHeight = Math.sin(Math.min(1, Math.max(0, progress)) * Math.PI) * 24;
-                if (this.thrownTimer <= 0) {
-                    this.thrown = false;
-                    this.alpha = 1;
-                    this.thrownArcHeight = 0;
-                    this.confusedLevel = 3;
-                    this.confusedTimer = 6 * 60; // 6 seconds
-                    this.stunnedTimer = 60; // 1 second stopped
-                    this.fallStarsTimer = 40;
-                    this.impactShakeTimer = 24;
-                    screenShakeTimer = Math.max(screenShakeTimer, 28);
-                    spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#ffd860', 22, 14);
-                    const baseHitX = this.x + this.width / 2;
-                    const baseHitY = this.y + this.height / 2;
-                    const projectileCount = 12;
-                    const launchRadius = Math.max(this.width, this.height) * 0.55;
-                    for (let i = 0; i < projectileCount; i++) {
-                        const angle = Math.random() * Math.PI * 2;
-                        const startX = baseHitX + Math.cos(angle) * launchRadius;
-                        const startY = baseHitY + Math.sin(angle) * launchRadius;
-                        const travelDistance = 260 + Math.random() * 120;
-                        const targetX = startX + Math.cos(angle) * travelDistance;
-                        const targetY = startY + Math.sin(angle) * travelDistance;
-                        const speed = 16 + Math.random() * 4;
-                        spawnMonsterProjectile(
-                            startX,
-                            startY,
-                            targetX,
-                            targetY,
-                            Math.max(1, Math.round(this.getAttackDamage() * 0.2)),
-                            '#ffd860',
-                            speed,
-                            { monsterType: 'croc', size: 10, maxDistance: 1400 }
-                        );
-                    }
-                    // ensure it doesn't move immediately
-                    this.simpleDashVx = 0;
-                    this.simpleDashVy = 0;
-                    this.simpleDashTimer = 0;
-                }
-                this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
-                this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+        } else if (this.type === 'castle_bone_sphere') {
+            if (this.specialAttackCooldown > 0) this.specialAttackCooldown--;
+            const angleToPlayer = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+            const angleDelta = normalizeAngle(angleToPlayer - this.rotationAngle);
+            this.rotationAngle += angleDelta * 0.12 * ts;
+            this.rotationAngle = normalizeAngle(this.rotationAngle);
+
+            const movingSpeed = this.speed * ts;
+            if (dist > this.attackRange * 0.9) {
+                this.x += Math.cos(angleToPlayer) * movingSpeed;
+                this.y += Math.sin(angleToPlayer) * movingSpeed;
             } else {
-                // If stunned due to recent throw end, remain stopped for stunnedTimer
-                if (this.stunnedTimer > 0) {
-                    this.stunnedTimer--;
-                    this.attackCooldown = 1;
-                } else {
-                    if (this.simpleDashPauseTimer > 0) {
-                        this.simpleDashPauseTimer--;
-                        this.attackCooldown = 1;
-                    } else if (this.simpleDashWarningTimer > 0) {
-                        this.simpleDashWarningTimer--;
-                        if (this.simpleDashWarningTimer <= 0) {
-                            this.simpleDashTimer = 20;
-                            this.attackCooldown = 0;
-                        } else {
-                            this.attackCooldown = 1;
+                const orbitAngle = angleToPlayer + Math.PI / 2;
+                this.x += Math.cos(orbitAngle) * movingSpeed * 0.25;
+                this.y += Math.sin(orbitAngle) * movingSpeed * 0.25;
+            }
+
+            if (this.boneRainCooldown <= 0) {
+                this.attackEffectTimer = 18;
+                const projectileCount = 5;
+                for (let i = 0; i < projectileCount; i += 1) {
+                    const spread = (i - (projectileCount - 1) / 2) * 0.18 + (Math.random() - 0.5) * 0.08;
+                    const angle = angleToPlayer + spread;
+                    const startX = monsterCenterX + Math.cos(angle) * 48 + (Math.random() - 0.5) * 12;
+                    const startY = monsterCenterY + Math.sin(angle) * 48 + (Math.random() - 0.5) * 12;
+                    const targetX = playerX + (Math.random() - 0.5) * 100;
+                    const targetY = playerY + (Math.random() - 0.5) * 100;
+                    spawnMonsterProjectile(
+                        startX,
+                        startY,
+                        targetX,
+                        targetY,
+                        Math.max(3, Math.round(this.getAttackDamage() * 0.85)),
+                        '#ffffff',
+                        5.2,
+                        {
+                            monsterType: 'castle_bone_sphere',
+                            projectileEmoji: '☠',
+                            size: 12,
+                            style: 'boneShard',
+                            homing: true,
+                            homingTarget: player,
+                            homingStrength: 0.14,
+                            homingDuration: 110,
+                            maxDistance: 980,
+                            afterImageTrail: true,
+                            afterImageInterval: 6
                         }
-                    } else if (this.simpleDashTimer > 0) {
-                        this.x += this.simpleDashVx * ts;
-                        this.y += this.simpleDashVy * ts;
-                        this.simpleDashTimer--;
-                        if (this.simpleDashTimer <= 0) {
-                            this.simpleDashPauseTimer = 30;
-                            this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
-                            this.attackCooldown = 60;
+                    );
+                }
+                this.boneRainCooldown = Math.max(80, 120 - this.phase * 4);
+            } else {
+                this.boneRainCooldown -= 1;
+            }
+
+            if (this.boneRingCooldown <= 0) {
+                spawnCastleBossProjectileRing(monsterCenterX, monsterCenterY, this.rotationAngle, 10, 5.0, '#9cb8ff', '🦴');
+                this.boneRingCooldown = Math.max(110, 150 - this.phase * 4);
+            } else {
+                this.boneRingCooldown -= 1;
+            }
+
+            if (this.specialAttackCooldown <= 0 && dist < this.attackRange * 1.05) {
+                this.attackEffectTimer = 20;
+                    this.specialAttackCooldown = 210;
+                if (player) player.stunTimer = 120;
+                spawnCastleBossProjectileRing(monsterCenterX, monsterCenterY, this.rotationAngle + Math.PI / 6, 12, 4.6, '#d6e4ff', '☠');
+                for (let i = 0; i < 4; i += 1) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const startX = monsterCenterX + Math.cos(angle) * 38;
+                    const startY = monsterCenterY + Math.sin(angle) * 38;
+                    const targetX = monsterCenterX + Math.cos(angle) * (240 + Math.random() * 90);
+                    const targetY = monsterCenterY + Math.sin(angle) * (240 + Math.random() * 90);
+                    spawnMonsterProjectile(
+                        startX,
+                        startY,
+                        targetX,
+                        targetY,
+                        Math.max(4, Math.round(this.getAttackDamage() * 0.95)),
+                        '#dfe8ff',
+                        5.4,
+                        {
+                            monsterType: 'castle_bone_sphere',
+                            projectileEmoji: '☠',
+                            size: 14,
+                            style: 'tankOrbit',
+                            homing: false,
+                            maxDistance: 980,
+                            afterImageTrail: true,
+                            afterImageInterval: 6
                         }
-                    } else if (this.simpleDashCooldown > 0) {
-                        this.simpleDashCooldown--;
-                        this.attackCooldown = 1;
-                    } else {
-                        let dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
-                        if (this.confusedTimer > 0) dashDir += Math.PI;
-                        this.simpleDashDirection = dashDir;
-                        this.simpleDashVx = Math.cos(dashDir) * this.simpleDashSpeed;
-                        this.simpleDashVy = Math.sin(dashDir) * this.simpleDashSpeed;
-                        this.simpleDashWarningTimer = this.simpleDashWarningDuration;
-                        this.attackCooldown = 1;
+                    );
+                }
+            }
+
+            if (this.stunTimer > 0) {
+                this.stunTimer -= 1;
+                return;
+            }
+        } else if (this.type === 'croc') {
+            this.crocDecoyWanderTimer--;
+            if (this.crocDecoyWanderTimer <= 0) {
+                this.crocDecoyWanderTimer = 60 + Math.floor(Math.random() * 120);
+                this.crocDecoyAngle += (Math.random() - 0.5) * Math.PI * 1.5;
+            }
+            const decoySpeed = 1.0 * ts;
+            this.crocDecoyX += Math.cos(this.crocDecoyAngle) * decoySpeed;
+            this.crocDecoyY += Math.sin(this.crocDecoyAngle) * decoySpeed;
+            this.crocDecoyX = Math.max(20, Math.min(gameWidth - 20, this.crocDecoyX));
+            this.crocDecoyY = Math.max(20, Math.min(gameHeight - 20, this.crocDecoyY));
+
+            if (this.confusedTimer > 0) {
+                this.confusedTimer--;
+                if (this.confusedTimer === 0 && this.postConfusionRoar) {
+                    this.postConfusionRoar = false;
+                    this.roarQueued = true;
+                    this.roarTimer = 60;
+                    this.stunTimer = 0;
+                    this.sprintEscapeTimer = 0;
+                    this.simpleDashTimer = 0;
+                    this.simpleDashWarningTimer = 0;
+                    this.simpleDashPauseTimer = 0;
+                    this.simpleDashCooldown = 0;
+                    this.hasRoaredThisEntry = true;
+                    const roarCenterX = this.crocDecoyX;
+                    const roarCenterY = this.crocDecoyY;
+                    cameraLockTarget = { x: roarCenterX, y: roarCenterY, timer: 60 };
+                    roarFreezeTimer = 60;
+                    slowdownTimer = 0;
+                    screenShakeTimer = Math.max(screenShakeTimer, 60);
+                    if (this.isOffScreen) {
+                        const spawnAngle = this.crocOffsetAngle;
+                        const spawnDist = this.crocOffsetDist;
+                        const spawnX = Math.max(0, Math.min(gameWidth - this.width, this.crocDecoyX + Math.cos(spawnAngle) * spawnDist - this.width / 2));
+                        const spawnY = Math.max(0, Math.min(gameHeight - this.height, this.crocDecoyY + Math.sin(spawnAngle) * spawnDist - this.height / 2));
+                        this.x = spawnX;
+                        this.y = spawnY;
+                        this.isOffScreen = false;
+                        this.fakeMarkerX = this.crocDecoyX;
+                        this.fakeMarkerY = this.crocDecoyY;
                     }
                 }
             }
-            const targetOpen = this.simpleDashTimer > 0 ? 1 : 0;
-            this.simpleDashOpen += (targetOpen - this.simpleDashOpen) * 0.18;
-            this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
-            this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+
+            const isOnScreen = this.x + this.width >= cameraX &&
+                this.x <= cameraX + viewportWidth &&
+                this.y + this.height >= cameraY &&
+                this.y <= cameraY + viewportHeight;
+            const wasOffScreen = this.isOffScreen;
+            this.isOffScreen = !isOnScreen;
+
+            if (this.isOffScreen && !wasOffScreen) {
+                this.hasRoaredThisEntry = false;
+            }
+
+            if (this.isOffScreen) {
+                this.crocCircleAngle += this.crocCircleSpeed * ts * 2;
+                const orbitX = this.crocDecoyX + Math.cos(this.crocCircleAngle) * this.crocCircleRadius;
+                const orbitY = this.crocDecoyY + Math.sin(this.crocCircleAngle) * this.crocCircleRadius;
+                const angleToOrbit = Math.atan2(orbitY - this.y, orbitX - this.x);
+                const offScreenSpeed = (this.simpleDashSpeed || 16.5) * 2 * ts;
+                this.x += Math.cos(angleToOrbit) * offScreenSpeed;
+                this.y += Math.sin(angleToOrbit) * offScreenSpeed;
+                this.alpha = 0;
+                this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.25;
+
+                if (wasOffScreen && !isOnScreen) {
+                    this.fakeMarkerX = this.crocDecoyX;
+                    this.fakeMarkerY = this.crocDecoyY;
+                }
+            } else {
+                this.alpha = 1;
+                this.fakeMarkerX = this.crocDecoyX;
+                this.fakeMarkerY = this.crocDecoyY;
+
+                if (wasOffScreen && isOnScreen) {
+                    this.lastOnScreenFrame = gameFrameCount;
+                    if (!this.roarQueued && !this.postConfusionRoar && !this.hasRoaredThisEntry) {
+                        this.roarQueued = true;
+                        this.roarTimer = 60;
+                        this.hasRoaredThisEntry = true;
+                        const roarCenterX = this.crocDecoyX;
+                        const roarCenterY = this.crocDecoyY;
+                        cameraLockTarget = { x: roarCenterX, y: roarCenterY, timer: 60 };
+                        roarFreezeTimer = 60;
+                        screenShakeTimer = Math.max(screenShakeTimer, 60);
+                    }
+                }
+
+                if (this.roarTimer > 0) {
+                    this.roarTimer--;
+                    this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.22;
+                    this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
+                    this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+                    if (this.roarTimer === 20) {
+                        screenShakeTimer = Math.max(screenShakeTimer, 22);
+                        if (player) {
+                            player.stunTimer = Math.max(player.stunTimer || 0, 12);
+                            tryApplyPlayerConfusionFromAttack('croc', {
+                                chance: 100,
+                                durationFrames: Math.round(0.75 * 60)
+                            });
+                        }
+                    }
+                    if (this.roarTimer <= 0) {
+                        this.roarQueued = false;
+                        this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
+                    }
+                } else if (this.sprintEscapeTimer > 0) {
+                    this.sprintEscapeTimer--;
+                    const sprintSpeed = this.simpleDashSpeed * 1.6 * ts;
+                    this.x += Math.cos(this.sprintEscapeDir) * sprintSpeed;
+                    this.y += Math.sin(this.sprintEscapeDir) * sprintSpeed;
+                    this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.24;
+                    this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
+                    this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+                    if (this.sprintEscapeTimer <= 0) {
+                        this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
+                        this.consecutiveHitsOnPlayer = 0;
+                    }
+                } else if (this.stunTimer > 0) {
+                    this.stunTimer--;
+                    this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.2;
+                } else if (this.simpleDashPauseTimer > 0) {
+                    this.simpleDashPauseTimer--;
+                    this.attackCooldown = 1;
+                    this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
+                } else if (this.simpleDashWarningTimer > 0) {
+                    this.simpleDashWarningTimer--;
+                    this.simpleDashOpen += (0.5 - this.simpleDashOpen) * 0.18;
+                    if (this.simpleDashWarningTimer <= 0) {
+                        this.simpleDashTimer = 20;
+                        this.attackCooldown = 0;
+                    }
+                } else if (this.simpleDashTimer > 0) {
+                    this.x += this.simpleDashVx * ts;
+                    this.y += this.simpleDashVy * ts;
+                    this.simpleDashTimer--;
+                    this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.22;
+                    if (this.simpleDashTimer <= 0) {
+                        this.simpleDashPauseTimer = 30;
+                        this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
+                        this.attackCooldown = 60;
+                    }
+                } else if (this.simpleDashCooldown > 0) {
+                    this.simpleDashCooldown--;
+                    this.attackCooldown = 1;
+                    this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
+                } else {
+                    let dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                    if (this.confusedTimer > 0) dashDir += Math.PI;
+                    this.simpleDashDirection = dashDir;
+                    this.simpleDashVx = Math.cos(dashDir) * this.simpleDashSpeed;
+                    this.simpleDashVy = Math.sin(dashDir) * this.simpleDashSpeed;
+                    this.simpleDashWarningTimer = this.simpleDashWarningDuration;
+                    this.attackCooldown = 1;
+                    this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
+                }
+                this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
+                this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+            }
         } else {
             // Basic: fallback
             if (dist > this.attackRange) {
@@ -2987,7 +5139,7 @@ class Monster {
         const fireBoost = this.onFire ? this.fireAttackBoost : 1;
         const waveCount = 1 + Math.floor(Math.random() * 3);
         const baseSpeed = 3.4 + this.phase * 0.14;
-        const framesBetweenWaves = Math.round(0.35 * 60); // ~21 frames
+        const framesBetweenWaves = Math.round(0.35 * 60);
 
         // Schedule each wave with a delay so they appear separated in time
         for (let wave = 0; wave < waveCount; wave++) {
@@ -3014,6 +5166,38 @@ class Monster {
                 projectiles: projectilesForWave
             });
         }
+    }
+
+    casterEmberBurst(playerX, playerY, srcX = this.portalX, srcY = this.portalY) {
+        const fireBoost = this.onFire ? this.fireAttackBoost : 1;
+        const burstCount = 7 + Math.min(3, this.phase);
+        const baseAngle = Math.atan2(playerY - srcY, playerX - srcX);
+        for (let i = 0; i < burstCount; i++) {
+            const spread = (i - (burstCount - 1) / 2) * 0.22;
+            const angle = baseAngle + spread;
+            const targetX = srcX + Math.cos(angle) * 480;
+            const targetY = srcY + Math.sin(angle) * 480;
+            spawnMonsterProjectile(
+                srcX,
+                srcY,
+                targetX,
+                targetY,
+                Math.max(2, Math.round(this.getAttackDamage() * 0.5 * fireBoost)),
+                '#ff9e3c',
+                3.4 + this.phase * 0.1,
+                {
+                    monsterType: this.type,
+                    size: 13,
+                    style: 'casterFlameCircle',
+                    homing: true,
+                    homingStrength: 0.05,
+                    homingDuration: 140,
+                    explodeOnExpire: true,
+                    explodeCount: 3
+                }
+            );
+        }
+        this.attackEffectTimer = 12;
     }
 
     casterAimedVolley(playerX, playerY) {
@@ -3047,7 +5231,9 @@ class Monster {
                 speed,
                 monsterType: this.type,
                 size: 16,
-                style: 'casterFlameVolley'
+                style: 'casterFlameVolley',
+                explodeOnExpire: true,
+                explodeCount: 3
             });
         }
 
@@ -3063,7 +5249,7 @@ class Monster {
         const fireBoost = this.onFire ? this.fireAttackBoost : 1;
 
         // choose attack mode
-        const modes = ['circular', 'spiral', 'ring', 'aim16'];
+        const modes = ['circular', 'spiral', 'ring', 'aim16', 'ember'];
         const mode = modes[Math.floor(Math.random() * modes.length)];
 
         if (mode === 'circular') {
@@ -3073,7 +5259,7 @@ class Monster {
                 const angle = (Math.PI * 2 / rayCount) * i;
                 const targetX = srcX + Math.cos(angle) * 1200;
                 const targetY = srcY + Math.sin(angle) * 1200;
-                spawnMonsterProjectile(srcX, srcY, targetX, targetY, Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)), '#ff9c46', speed, { monsterType: this.type, size: 16, style: 'casterFlameCircle' });
+                spawnMonsterProjectile(srcX, srcY, targetX, targetY, Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)), '#ff9c46', speed, { monsterType: this.type, size: 16, style: 'casterFlameCircle', explodeOnExpire: true, explodeCount: 3, homing: false, afterImageTrail: false, afterImageInterval: 5 });
             }
         } else if (mode === 'spiral') {
             const spiralCount = 5 + this.phase;
@@ -3083,7 +5269,7 @@ class Monster {
                 const angle = (Math.PI * 2 * i) / spiralCount + Math.random() * spiralSpacing;
                 const targetX = srcX + Math.cos(angle) * 1200;
                 const targetY = srcY + Math.sin(angle) * 1200;
-                spawnMonsterProjectile(srcX, srcY, targetX, targetY, Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)), '#ff7430', speed, { monsterType: this.type, size: 16, style: 'casterFlameSpiral' });
+                spawnMonsterProjectile(srcX, srcY, targetX, targetY, Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)), '#ff7430', speed, { monsterType: this.type, size: 16, style: 'casterFlameSpiral', explodeOnExpire: true, explodeCount: 3, homing: false, afterImageTrail: false, afterImageInterval: 5 });
             }
         } else if (mode === 'ring') {
             // schedule 1-3 waves like casterRingWaveAttack did
@@ -3102,7 +5288,7 @@ class Monster {
                     const angle = (Math.PI * 2 / ringCount) * i + wave * 0.1;
                     const targetX = srcX + Math.cos(angle) * radius;
                     const targetY = srcY + Math.sin(angle) * radius;
-                    projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 16, style: 'casterFlameRing' });
+                    projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 16, style: 'casterFlameRing', explodeOnExpire: true, explodeCount: 4 });
                 }
                 delayedProjectileSpawns.push({ timer: delay, kind: 'monsterRing', srcX, srcY, projectiles: projectilesForWave });
             }
@@ -3115,7 +5301,7 @@ class Monster {
                 const targetX = playerX + Math.cos(offset) * 27;
                 const targetY = playerY + Math.sin(offset) * 27;
                 const delay = i * framesPerShot;
-                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterAimed', srcX, srcY, targetX, targetY, damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64 * fireBoost)), color: this.confusedTimer > 0 ? '#ffd880' : '#ffb14a', speed, monsterType: this.type, size: 16, style: 'casterFlameVolley' });
+                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterAimed', srcX, srcY, targetX, targetY, damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64 * fireBoost)), color: this.confusedTimer > 0 ? '#ffd880' : '#ffb14a', speed, monsterType: this.type, size: 16, style: 'casterFlameVolley', explodeOnExpire: true, explodeCount: 3 });
             }
         }
     }
@@ -3485,6 +5671,13 @@ class Monster {
         let fillColor = '#cc0000';
         let strokeColor = '#ff0000';
         let gradient = ctx.createRadialGradient(centerX, centerY, radius * 0.1, centerX, centerY, radius);
+        const deathProgress = this.isDying ? (1 - this.deathTimer / this.deathMaxTimer) : 0;
+
+        if (this.isDying) {
+            fillColor = '#ffffff';
+            strokeColor = '#ffffff';
+            ctx.globalAlpha = Math.max(0.15, Math.min(useAlpha, 1 - deathProgress * 0.7));
+        }
 
         if (this.type === 'shooter') {
             fillColor = '#1a5eff';
@@ -3522,6 +5715,12 @@ class Monster {
             gradient.addColorStop(0, '#758398');
             gradient.addColorStop(0.4, '#3b4a63');
             gradient.addColorStop(1, '#11192a');
+        } else if (this.type === 'castle_bone_sphere') {
+            fillColor = '#e8f0ff';
+            strokeColor = '#9db8ff';
+            gradient.addColorStop(0, '#ffffff');
+            gradient.addColorStop(0.4, '#dce8ff');
+            gradient.addColorStop(1, '#8ba3d9');
         } else {
             fillColor = '#cc3333';
             strokeColor = '#ff5d5d';
@@ -3661,6 +5860,37 @@ class Monster {
             ctx.beginPath();
             ctx.arc(centerX, centerY, radius * 0.9, 0, Math.PI * 2);
             ctx.stroke();
+        } else if (this.type === 'castle_bone_sphere') {
+            const bossRadius = Math.max(radius * 0.98, radius);
+            const coreGradient = ctx.createRadialGradient(centerX, centerY, bossRadius * 0.15, centerX, centerY, bossRadius);
+            coreGradient.addColorStop(0, '#f9fbff');
+            coreGradient.addColorStop(0.4, '#dfe8ff');
+            coreGradient.addColorStop(1, '#7f8acc');
+            ctx.fillStyle = coreGradient;
+            ctx.shadowColor = '#b7c7ff';
+            ctx.shadowBlur = 30;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, bossRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#adbeff';
+            ctx.lineWidth = 6;
+            ctx.stroke();
+
+            const boneCount = 6;
+            for (let i = 0; i < boneCount; i += 1) {
+                const angle = this.rotationAngle + (Math.PI * 2 / boneCount) * i;
+                const boneX = centerX + Math.cos(angle) * (bossRadius * 0.85);
+                const boneY = centerY + Math.sin(angle) * (bossRadius * 0.85);
+                ctx.font = `${Math.max(16, bossRadius * 0.4)}px Arial`;
+                ctx.fillStyle = '#e1e9ff';
+                ctx.fillText('🦴', boneX, boneY);
+            }
+
+            ctx.fillStyle = '#28304b';
+            ctx.font = `${Math.max(48, bossRadius * 0.9)}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('☠', centerX, centerY);
         } else if (this.type === 'caster') {
             ctx.save();
             ctx.translate(centerX, centerY);
@@ -4359,6 +6589,21 @@ class Monster {
             ctx.stroke();
         }
 
+        if (this.isDying && this.deathShards.length > 0) {
+            const progress = 1 - this.deathTimer / this.deathMaxTimer;
+            ctx.save();
+            ctx.globalAlpha = Math.max(0.08, 0.7 - progress * 0.25);
+            for (const shard of this.deathShards) {
+                ctx.save();
+                ctx.translate(shard.x, shard.y);
+                ctx.rotate(shard.rotation);
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(-shard.size / 2, -shard.size / 2, shard.size, shard.size);
+                ctx.restore();
+            }
+            ctx.restore();
+        }
+
         ctx.restore();
 
         if (this.confusedTimer > 0) {
@@ -4605,6 +6850,9 @@ class Monster {
             : amount;
         this.health -= finalDamage;
         this.tookDamage = true;
+        if (this.health > 0 && !this.isDying) {
+            maybeSpawnMansionGhostCopy(this, finalDamage);
+        }
         return finalDamage;
     }
 }
@@ -4612,7 +6860,6 @@ class Monster {
 // ===== VARIÁVEIS GLOBAIS =====
 let player = new Player();
 let currentMonster;
-let crocConsecutiveHits = 0;
 let phase = 1;
 let monstersDefeated = 0;
 let defeatedTotal = 0;
@@ -4620,8 +6867,24 @@ let upgradesAcquired = 0;
 let keys = {};
 let gameOver = false;
 let isUpgrading = false;
+let isDebugMenuOpen = false;
 let selectedUpgradeIndex = 0;
+let selectedDebugUpgradeIndex = 0;
+let debugMenuQuantity = 1;
 let upgradeChoices = [];
+let debugMenuUpgradeChoices = [];
+let debugMenuFlashTimer = 0;
+let debugMenuFlashText = '';
+let debugMenuScrollOffset = 0;
+let debugMenuListGeom = { x: 0, y: 0, width: 0, itemHeight: 46, gap: 8, visibleCount: 8, startIndex: 0, listPanelH: 0 };
+let debugMenuTabIndex = 0;
+const debugMenuTabs = [
+    { id: 'upgrades', label: 'MELHORIAS' },
+    { id: 'invocar', label: 'INVOCAR' }
+];
+let selectedDebugActionIndex = 0;
+let debugMenuActionChoices = [];
+let debugMenuTabGeom = { x: 0, y: 0, tabRects: [] };
 let gameStarted = false;
 let isSelectingWeapon = false;
 let selectedWeaponIndex = 0;
@@ -4632,6 +6895,9 @@ let upgradeOverlayY = 0;
 let upgradeOverlayAlpha = 1;
 let upgradeOverlayAnimating = false;
 let projectiles = [];
+let thrownExplosives = [];
+let fireZones = [];
+let grenadeFragments = [];
 let critEffects = [];
 let sweatEffects = [];
 let evaporationEffects = [];
@@ -4668,7 +6934,1470 @@ const slowdownFlashFrames = 3;
 let timeScale = 1;
 let slowdownInsectSprites = [];
 let screenShakeTimer = 0;
+let cameraLockTarget = null;
+let roarFreezeTimer = 0;
 let afterImages = [];
+let accelParticles = [];
+let weaponPickups = [];
+let weaponPickupSpawnCounter = 0;
+let monsterDeathEffects = [];
+let portalEffects = [];
+let machineGunEffects = [];
+let explosionEffects = [];
+let trackerProjectiles = [];
+let ghostArmyUnlocked = false;
+let ghostArmyEntities = [];
+
+let castleInteriorEnemies = [];
+let castleInteriorEnemyIdCounter = 0;
+let castleInteriorWaveIndex = 0;
+let castleInteriorKills = 0;
+let castleInteriorWaveDelay = 0;
+let castleInteriorWaveSpawnQueue = [];
+let castleInteriorWaveSpawnTimer = 0;
+let castleExitOpen = false;
+let castleBossQueued = false;
+let castleBossSpawnCheckTimer = 1200;
+let castleBossSpawnChance = 0.01;
+let castleBossAlertText = '';
+let castleBossAlertTimer = 0;
+let savedCurrentMonster = null;
+let castleSkullWarningEffects = [];
+let castleEnemyAttackEffects = [];
+
+let mansionInteriorEnemies = [];
+let mansionInteriorEnemyIdCounter = 0;
+let mansionInteriorSpawnTimer = 0;
+let mansionInteriorSpawnIndex = 0;
+let mansionInteriorKills = 0;
+let mansionPeriodicWaveTimer = 0;
+let mansionExitOpen = false;
+let mansionGhostCountTier1 = 35;
+let mansionGhostCountTier2 = 35;
+let mansionGhostCountTier3 = 30;
+const mansionTotalGhosts = 100;
+const mansionMaxActiveGhosts = 30;
+const mansionSpawnIntervalMinFrames = 60;
+const mansionSpawnIntervalMaxFrames = 120;
+const mansionPeriodicWaveIntervalFrames = 300;
+const mansionGhostTierPools = {
+    0: ['shadowling', 'apparition', 'shade'],
+    1: ['poltergeist', 'phantom', 'specter', 'banshee'],
+    2: ['wraith', 'haunt', 'phantasm']
+};
+const mansionGhostTypes = [
+    { type: 'shadowling', width: 48, height: 48, health: 10, speed: 1.6, damage: 5, color: '#423f5a', accent: '#c4b0ff', visuals: ['👻'], ranged: false, attackStyle: 'slash', attackEmoji: '👻', windupFrames: 16, attackStartMultiplier: 2.2, dashEnabled: true, teleportEnabled: false, dodgeChance: 0.32 },
+    { type: 'poltergeist', width: 44, height: 44, health: 12, speed: 1.3, damage: 4, color: '#b4b0ff', accent: '#89c8ff', visuals: ['💀'], ranged: true, attackStyle: 'rain', attackInterval: 100, attackEmoji: '💨', windupFrames: 18, dashEnabled: false, teleportEnabled: true, dodgeChance: 0.22, attackStartMultiplier: 2.8 },
+    { type: 'banshee', width: 52, height: 52, health: 14, speed: 1.1, damage: 6, color: '#e8d8ff', accent: '#ffacff', visuals: ['👻'], ranged: false, attackStyle: 'stun', attackEmoji: '⚡', windupFrames: 20, attackStartMultiplier: 2.3, dashEnabled: false, teleportEnabled: true, dodgeChance: 0.28, stunOnHit: true },
+    { type: 'apparition', width: 38, height: 38, health: 8, speed: 2.0, damage: 4, color: '#95dfff', accent: '#ffffff', visuals: ['🌀'], ranged: false, attackStyle: 'slash', attackEmoji: '🌀', windupFrames: 16, attackStartMultiplier: 2.0, dashEnabled: true, teleportEnabled: true, dodgeChance: 0.44 },
+    { type: 'phantom', width: 56, height: 56, health: 16, speed: 1.05, damage: 7, color: '#c4c4ee', accent: '#eed8ff', visuals: ['👁️'], ranged: true, attackStyle: 'burst', attackInterval: 90, attackEmoji: '💥', windupFrames: 22, dashEnabled: true, teleportEnabled: false, dodgeChance: 0.18, attackStartMultiplier: 2.9, confusionOnAttackChance: 20 },
+    { type: 'specter', width: 46, height: 46, health: 12, speed: 1.45, damage: 5, color: '#6a5c9f', accent: '#c4b0ff', visuals: ['👀'], ranged: true, attackStyle: 'rain', attackInterval: 88, attackEmoji: '🌫️', windupFrames: 16, dashEnabled: false, teleportEnabled: true, dodgeChance: 0.30, attackStartMultiplier: 2.6, confusionOnAttackChance: 24 },
+    { type: 'wraith', width: 52, height: 52, health: 18, speed: 1.15, damage: 7, color: '#403f5a', accent: '#99b3ff', visuals: ['🕯️'], ranged: false, attackStyle: 'charge', attackEmoji: '💨', windupFrames: 22, attackStartMultiplier: 2.4, dashEnabled: true, teleportEnabled: false, dodgeChance: 0.18, knockbackOnHit: true },
+    { type: 'shade', width: 50, height: 50, health: 14, speed: 1.3, damage: 6, color: '#2f2a45', accent: '#d9d5ff', visuals: ['🖤'], ranged: false, attackStyle: 'slash', attackEmoji: '🖤', windupFrames: 18, attackStartMultiplier: 2.1, dashEnabled: true, teleportEnabled: true, dodgeChance: 0.38 },
+    { type: 'haunt', width: 60, height: 60, health: 20, speed: 0.95, damage: 8, color: '#8a7bff', accent: '#fff1ff', visuals: ['💀'], ranged: true, attackStyle: 'sigil', attackInterval: 98, attackEmoji: '🌀', windupFrames: 24, dashEnabled: false, teleportEnabled: false, dodgeChance: 0.16, attackStartMultiplier: 3.0, confusionOnAttackChance: 42 },
+    { type: 'phantasm', width: 60, height: 60, health: 18, speed: 1.2, damage: 7, color: '#a89eff', accent: '#f2d4ff', visuals: ['🌙'], ranged: true, attackStyle: 'slam', attackInterval: 110, attackEmoji: '🌪️', windupFrames: 26, dashEnabled: true, teleportEnabled: true, dodgeChance: 0.20, attackStartMultiplier: 2.7, confusionOnAttackGuaranteed: true }
+];
+
+const castleInteriorWaves = [3, 5, 7, 10, 15, 25, 35];
+const castleSkeletonTypes = [
+    { type: 'skeleton_grunt', width: 70, height: 70, health: 26, speed: 1.25, damage: 8, color: '#d8d8d8', accent: '#ffffff', visuals: ['☠', '☠', '🗡️', '☠', '☠'], attackStyle: 'slash', attackEmoji: '✂️', windupFrames: 18, attackStartMultiplier: 2.2 },
+    { type: 'skeleton_archer', width: 66, height: 66, health: 22, speed: 1.12, damage: 6, color: '#c4c4d0', accent: '#e8e8f0', ranged: true, attackInterval: 110, visuals: ['☠', '🏹', '☠', '☠', '☠'], attackStyle: 'rain', attackEmoji: '🏹', windupFrames: 22, attackStartMultiplier: 2.8 },
+    { type: 'skeleton_knight', width: 82, height: 82, health: 34, speed: 0.95, damage: 10, color: '#c0c0c0', accent: '#f0f0f8', visuals: ['☠', '🗡️', '🛡️', '☠', '☠'], attackStyle: 'slam', attackEmoji: '🛡️', windupFrames: 24, attackStartMultiplier: 2.4 },
+    { type: 'skeleton_brawler', width: 76, height: 76, health: 28, speed: 1.35, damage: 9, color: '#d0d0d0', accent: '#f8f8f8', visuals: ['☠', '👊', '🔨', '☠', '☠'], attackStyle: 'pound', attackEmoji: '👊', windupFrames: 20, attackStartMultiplier: 2.6 },
+    { type: 'skeleton_revenant', width: 72, height: 72, health: 24, speed: 1.4, damage: 7, color: '#e0e0e0', accent: '#ffffff', visuals: ['☠', '☠', '☠', '🕯️', '☠'], attackStyle: 'burst', attackEmoji: '🔥', windupFrames: 26, attackStartMultiplier: 2.8 },
+    { type: 'skeleton_shooter_elite', width: 96, height: 96, health: 48, speed: 0.92, damage: 11, color: '#a8a8b0', accent: '#ffe66d', ranged: true, attackInterval: 100, elite: true, visuals: ['☠', '🥊', '⚡', '☠', '☠'], attackStyle: 'boxer', attackEmoji: '🥊⚡', windupFrames: 20, attackStartMultiplier: 3.0 },
+    { type: 'skeleton_tank_elite', width: 108, height: 108, health: 74, speed: 0.72, damage: 14, color: '#9a9aa8', accent: '#d4d4e0', elite: true, visuals: ['☠', '🪓', '🛡️', '☠', '☠'], attackStyle: 'charge', attackEmoji: '🪓', windupFrames: 28, attackStartMultiplier: 2.4 },
+    { type: 'skeleton_caster_elite', width: 98, height: 98, health: 52, speed: 0.86, damage: 10, color: '#b8b8c8', accent: '#dfe0ff', ranged: true, attackInterval: 120, elite: true, visuals: ['☠', '🔮', '☠', '☠', '☠'], attackStyle: 'sigil', attackEmoji: '🌀', windupFrames: 24, attackStartMultiplier: 2.9 }
+];
+
+function getNearestCastleEnemy() {
+    if (!castleInteriorEnemies.length) return null;
+    const px = player.x + player.width / 2;
+    const py = player.y + player.height / 2;
+    let nearest = null;
+    let best = Infinity;
+    for (const enemy of castleInteriorEnemies) {
+        if (enemy.isDying) continue;
+        const ex = enemy.x + enemy.width / 2;
+        const ey = enemy.y + enemy.height / 2;
+        const dist = Math.hypot(px - ex, py - ey);
+        if (dist < best) {
+            best = dist;
+            nearest = enemy;
+        }
+    }
+    return nearest;
+}
+
+function getNearestCastleEnemyCenter() {
+    const enemy = getNearestCastleEnemy();
+    if (!enemy) return null;
+    return {
+        x: enemy.x + enemy.width / 2,
+        y: enemy.y + enemy.height / 2
+    };
+}
+
+function getCastleOrCurrentHomingTarget() {
+    if (playerInsideConstruction) {
+        const interior = getNearestInteriorEnemy();
+        return interior ? { x: interior.x + interior.width / 2, y: interior.y + interior.height / 2 } : null;
+    }
+    return currentMonster || null;
+}
+
+function getCastleOrCurrentTargetCenter() {
+    if (playerInsideConstruction) {
+        return getNearestInteriorEnemy() ? { x: getNearestInteriorEnemy().x + getNearestInteriorEnemy().width / 2, y: getNearestInteriorEnemy().y + getNearestInteriorEnemy().height / 2 } : null;
+    }
+    if (!currentMonster) return null;
+    return {
+        x: currentMonster.x + currentMonster.width / 2,
+        y: currentMonster.y + currentMonster.height / 2
+    };
+}
+
+function getPreferredTarget() {
+    // When inside a construction, prefer the nearest interior enemy
+    if (playerInsideConstruction) {
+        const interiorTarget = getNearestInteriorEnemy();
+        if (interiorTarget) return { x: interiorTarget.x + interiorTarget.width / 2, y: interiorTarget.y + interiorTarget.height / 2 };
+        return { x: mouseX, y: mouseY };
+    }
+
+    // Outside: prefer visible monster, otherwise world mouse position
+    const worldMouseX = mouseX + cameraX;
+    const worldMouseY = mouseY + cameraY;
+    const monsterVisible = currentMonster && (currentMonster.x + currentMonster.width >= cameraX) && (currentMonster.x <= cameraX + viewportWidth) && (currentMonster.y + currentMonster.height >= cameraY) && (currentMonster.y <= cameraY + viewportHeight);
+    if (monsterVisible && currentMonster) {
+        return { x: currentMonster.x + currentMonster.width / 2, y: currentMonster.y + currentMonster.height / 2 };
+    }
+    return { x: worldMouseX, y: worldMouseY };
+}
+
+function openCastleExitIfReady() {
+    if (!castleExitOpen && castleInteriorKills >= 100) {
+        castleExitOpen = true;
+        screenShakeTimer = Math.max(screenShakeTimer, 48);
+        castleBossAlertText = 'um novo inimigo aparece.';
+        castleBossAlertTimer = 120;
+        if (player && !player.castleBoneUnlocked) {
+            player.castleBoneUnlocked = true;
+            player.castleBoneHitCounter = 0;
+            player.castleBoneOrbiters = [];
+            spawnCastleSkullSummonAt(player.x + player.width / 2, player.y + player.height / 2, 4);
+        }
+    }
+}
+
+function spawnCastleSkullSummonAt(x, y, count = 3) {
+    const skullCount = Math.max(2, Math.min(4, count));
+    for (let i = 0; i < skullCount; i += 1) {
+        const spreadX = (Math.random() - 0.5) * 54;
+        const spreadY = (Math.random() - 0.5) * 54;
+        castleSkullWarningEffects.push({
+            x: x + spreadX,
+            y: y + spreadY,
+            targetX: x,
+            targetY: y,
+            size: 12 + Math.random() * 10,
+            life: 16 + Math.floor(Math.random() * 8),
+            maxLife: 16 + Math.floor(Math.random() * 8),
+            drift: (Math.random() - 0.5) * 0.9
+        });
+    }
+}
+
+function updateCastleSkullWarningEffects() {
+    for (let i = castleSkullWarningEffects.length - 1; i >= 0; i -= 1) {
+        const effect = castleSkullWarningEffects[i];
+        effect.life -= 1;
+        effect.x += (effect.targetX - effect.x) * 0.2;
+        effect.y += (effect.targetY - effect.y) * 0.2;
+        effect.x += Math.sin((effect.maxLife - effect.life) * 0.35) * effect.drift * 0.18;
+        effect.y += Math.cos((effect.maxLife - effect.life) * 0.25) * effect.drift * 0.16;
+        if (effect.life <= 0) {
+            castleSkullWarningEffects.splice(i, 1);
+        }
+    }
+}
+
+function drawCastleSkullWarningEffects() {
+    for (const effect of castleSkullWarningEffects) {
+        const alpha = Math.max(0, effect.life / effect.maxLife);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = `${effect.size}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('💀', effect.x, effect.y);
+        ctx.restore();
+    }
+}
+
+function normalizeAngle(angle) {
+    while (angle <= -Math.PI) angle += Math.PI * 2;
+    while (angle > Math.PI) angle -= Math.PI * 2;
+    return angle;
+}
+
+function spawnCastleBossProjectileRing(centerX, centerY, baseAngle, count, speed, color, emoji) {
+    for (let i = 0; i < count; i += 1) {
+        const angle = baseAngle + (i / count) * Math.PI * 2;
+        const targetX = centerX + Math.cos(angle) * 300;
+        const targetY = centerY + Math.sin(angle) * 300;
+        spawnMonsterProjectile(
+            centerX,
+            centerY,
+            targetX,
+            targetY,
+            3,
+            color,
+            speed,
+            {
+                monsterType: 'castle_bone_sphere',
+                projectileEmoji: emoji,
+                size: 14,
+                style: 'boneRing',
+                maxDistance: 980,
+                afterImageTrail: true,
+                afterImageInterval: 7
+            }
+        );
+    }
+}
+
+function spawnCastleBossSkeletons(count = 1) {
+    const skeletonCount = Math.max(1, Math.min(3, count));
+    const skeletonEmojis = ['☠', '🗡️', '🏹', '🛡️', '👊', '🔮'];
+    for (let i = 0; i < skeletonCount; i += 1) {
+        if (!currentMonster) return;
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 40 + Math.random() * 32;
+        const startX = currentMonster.x + currentMonster.width / 2 + Math.cos(angle) * distance;
+        const startY = currentMonster.y + currentMonster.height / 2 + Math.sin(angle) * distance;
+        const targetX = player.x + player.width / 2 + (Math.random() - 0.5) * 120;
+        const targetY = player.y + player.height / 2 + (Math.random() - 0.5) * 120;
+        const emoji = skeletonEmojis[Math.floor(Math.random() * skeletonEmojis.length)];
+        spawnMonsterProjectile(
+            startX,
+            startY,
+            targetX,
+            targetY,
+            Math.max(3, Math.round((20 + currentMonster.phase * 3) * 0.18)),
+            '#ffffff',
+            4.4,
+            {
+                monsterType: 'castle_bone_sphere',
+                projectileEmoji: emoji,
+                size: 12,
+                homing: true,
+                homingTarget: player,
+                homingStrength: 0.18,
+                homingDuration: 90,
+                maxDistance: 980,
+                afterImageTrail: true,
+                afterImageInterval: 7
+            }
+        );
+    }
+}
+
+function spawnCastleBossDeathWaves() {
+    if (!currentMonster) return;
+    const centerX = currentMonster.x + currentMonster.width / 2;
+    const centerY = currentMonster.y + currentMonster.height / 2;
+    for (let angleOffset = 0; angleOffset < Math.PI * 2; angleOffset += Math.PI / 3) {
+        const targetX = centerX + Math.cos(angleOffset) * 340;
+        const targetY = centerY + Math.sin(angleOffset) * 340;
+        spawnMonsterProjectile(
+            centerX,
+            centerY,
+            targetX,
+            targetY,
+            Math.max(3, Math.round(currentMonster.getAttackDamage() * 0.75)),
+            '#9dd3ff',
+            4.8,
+            {
+                monsterType: 'castle_bone_sphere',
+                projectileEmoji: '🦴',
+                size: 16,
+                style: 'boneRing',
+                maxDistance: 1120,
+                afterImageTrail: true,
+                afterImageInterval: 6
+            }
+        );
+    }
+}
+
+function spawnCastleBossDeathSkeletons() {
+    if (!currentMonster) return;
+    const centerX = currentMonster.x + currentMonster.width / 2;
+    const centerY = currentMonster.y + currentMonster.height / 2;
+    const baseDamage = Math.max(1, Math.round(currentMonster.getAttackDamage() * 0.55));
+
+    for (let i = 0; i < 4; i += 1) {
+        const angle = Math.random() * Math.PI * 2;
+        const startX = centerX + Math.cos(angle) * 34;
+        const startY = centerY + Math.sin(angle) * 34;
+        const targetX = centerX + Math.cos(angle) * (220 + Math.random() * 100);
+        const targetY = centerY + Math.sin(angle) * (220 + Math.random() * 100);
+        spawnMonsterProjectile(
+            startX,
+            startY,
+            targetX,
+            targetY,
+            baseDamage,
+            '#ffffff',
+            4.8,
+            {
+                monsterType: 'castle_bone_sphere',
+                projectileEmoji: '☠',
+                size: 12,
+                style: 'boneShard',
+                homing: true,
+                homingTarget: player,
+                homingStrength: 0.12,
+                homingDuration: 110,
+                maxDistance: 840,
+                afterImageTrail: true,
+                afterImageInterval: 8
+            }
+        );
+    }
+
+    for (let i = 0; i < 3; i += 1) {
+        const angle = Math.random() * Math.PI * 2;
+        const startX = centerX + Math.cos(angle) * 40;
+        const startY = centerY + Math.sin(angle) * 40;
+        const targetX = centerX + Math.cos(angle) * (300 + Math.random() * 100);
+        const targetY = centerY + Math.sin(angle) * (300 + Math.random() * 100);
+        spawnMonsterProjectile(
+            startX,
+            startY,
+            targetX,
+            targetY,
+            Math.max(3, Math.round(currentMonster.getAttackDamage() * 0.9)),
+            '#c8d1ff',
+            5.2,
+            {
+                monsterType: 'castle_bone_sphere',
+                projectileEmoji: '🦴',
+                size: 14,
+                style: 'tankOrbit',
+                homing: true,
+                homingTarget: player,
+                homingStrength: 0.10,
+                homingDuration: 90,
+                maxDistance: 920,
+                afterImageTrail: true,
+                afterImageInterval: 6
+            }
+        );
+    }
+}
+
+function updateCastleBossSpawnTimer() {
+    if (!castleExitOpen || playerInsideConstruction) return;
+    if (castleBossQueued || (currentMonster && currentMonster.type === 'castle_bone_sphere')) return;
+
+    castleBossSpawnCheckTimer -= 1;
+    if (castleBossSpawnCheckTimer <= 0) {
+        castleBossSpawnCheckTimer = 1200;
+        if (Math.random() < castleBossSpawnChance) {
+            castleBossQueued = true;
+            castleBossAlertText = 'um novo inimigo aparece.';
+            castleBossAlertTimer = 120;
+            spawnCastleSkullSummonAt(player.x + player.width / 2, player.y + player.height / 2, 3);
+        }
+    }
+}
+
+function updateCastleBossAlert() {
+    if (castleBossAlertTimer > 0) {
+        castleBossAlertTimer -= 1;
+        if (castleBossAlertTimer <= 0) {
+            castleBossAlertText = '';
+        }
+    }
+}
+
+function drawCastleBossAlertOverlay() {
+    if (!castleBossAlertText || castleBossAlertTimer <= 0) return;
+    const alpha = Math.min(1, castleBossAlertTimer / 30);
+    drawCountdownOverlay(castleBossAlertText, '', canvas.height / 2, alpha);
+}
+
+function spawnCastleEnemyAttackEffect(x, y, emoji, size = 24) {
+    castleEnemyAttackEffects.push({
+        x,
+        y,
+        emoji,
+        size,
+        life: 14,
+        maxLife: 14,
+        drift: (Math.random() - 0.5) * 1.4,
+        vy: -1.1
+    });
+}
+
+function updateCastleEnemyAttackEffects() {
+    for (let i = castleEnemyAttackEffects.length - 1; i >= 0; i -= 1) {
+        const effect = castleEnemyAttackEffects[i];
+        effect.life -= 1;
+        effect.y += effect.vy;
+        effect.x += effect.drift;
+        if (effect.life <= 0) {
+            castleEnemyAttackEffects.splice(i, 1);
+        }
+    }
+}
+
+function drawCastleEnemyAttackEffects() {
+    for (const effect of castleEnemyAttackEffects) {
+        const alpha = Math.max(0, effect.life / effect.maxLife);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = `${effect.size}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(effect.emoji, effect.x, effect.y);
+        ctx.restore();
+    }
+}
+
+function spawnCastleBoneOrbiters() {
+    if (!player || !player.castleBoneUnlocked) return;
+
+    const centerX = player.x + player.width / 2;
+    const centerY = player.y + player.height / 2;
+    const boneCount = 3;
+    const baseAngle = Math.random() * Math.PI * 2;
+
+    for (let i = 0; i < boneCount; i += 1) {
+        const angle = baseAngle + (i / boneCount) * Math.PI * 2;
+        player.castleBoneOrbiters.push({
+            angle,
+            radius: 34 + i * 7 + Math.random() * 4,
+            orbitSpeed: 0.024 + Math.random() * 0.008,
+            size: 7 + Math.random() * 2,
+            spin: (Math.random() - 0.5) * 0.12,
+            hitCooldown: 0,
+            x: centerX,
+            y: centerY
+        });
+    }
+}
+
+function updateCastleBoneOrbiters() {
+    if (!player || !player.castleBoneUnlocked) return;
+
+    const centerX = player.x + player.width / 2;
+    const centerY = player.y + player.height / 2;
+
+    for (let i = player.castleBoneOrbiters.length - 1; i >= 0; i -= 1) {
+        const bone = player.castleBoneOrbiters[i];
+        bone.angle += bone.orbitSpeed;
+        bone.x = centerX + Math.cos(bone.angle) * bone.radius;
+        bone.y = centerY + Math.sin(bone.angle) * bone.radius;
+        bone.hitCooldown = Math.max(0, (bone.hitCooldown || 0) - 1);
+
+        const boneHalf = (bone.size || 8) + 2;
+        if (playerInsideConstruction) {
+            for (const enemy of castleInteriorEnemies) {
+                if (enemy.isDying || bone.hitCooldown > 0) continue;
+                if (bone.x + boneHalf > enemy.x && bone.x - boneHalf < enemy.x + enemy.width && bone.y + boneHalf > enemy.y && bone.y - boneHalf < enemy.y + enemy.height) {
+                    applyDamageToCastleEnemy(enemy, 10);
+                    bone.hitCooldown = 14;
+                    break;
+                }
+            }
+        } else if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying && bone.hitCooldown <= 0) {
+            const mx = currentMonster.x + currentMonster.width / 2;
+            const my = currentMonster.y + currentMonster.height / 2;
+            if (Math.hypot(bone.x - mx, bone.y - my) <= (currentMonster.width + currentMonster.height) / 4 + boneHalf) {
+                currentMonster.takeDamage(10);
+                bone.hitCooldown = 14;
+            }
+        }
+    }
+}
+
+function drawCastleBoneOrbiters() {
+    if (!player || !player.castleBoneUnlocked) return;
+
+    for (const bone of player.castleBoneOrbiters) {
+        ctx.save();
+        ctx.translate(bone.x, bone.y);
+        ctx.rotate(bone.angle * 0.6 + bone.spin);
+        ctx.font = `${Math.max(20, bone.size * 3.2)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('🦴', 0, 0);
+        ctx.restore();
+    }
+}
+
+function executeCastleEnemyAttack(enemy, px, py) {
+    const ex = enemy.x + enemy.width / 2;
+    const ey = enemy.y + enemy.height / 2;
+    const dx = px - ex;
+    const dy = py - ey;
+    const dist = Math.hypot(dx, dy) || 1;
+    const normalizedX = dx / dist;
+    const normalizedY = dy / dist;
+
+    switch (enemy.attackStyle) {
+        case 'slash': {
+            enemy.x += normalizedX * 34;
+            enemy.y += normalizedY * 34;
+            const hitX = enemy.x + enemy.width / 2;
+            const hitY = enemy.y + enemy.height / 2;
+            if (Math.hypot(px - hitX, py - hitY) <= 174 && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0) {
+                const effectiveDamage = Math.max(0, enemy.damage - player.damageReduction);
+                player.health -= effectiveDamage;
+                spawnCastleEnemyAttackEffect(hitX, hitY - 10, enemy.attackEmoji || '✂️', 30);
+            }
+            break;
+        }
+        case 'rain': {
+            for (let i = 0; i < 5; i += 1) {
+                const leadX = px + normalizedX * 28;
+                const leadY = py + normalizedY * 28;
+                const targetX = leadX + (Math.random() - 0.5) * 20;
+                const targetY = leadY + (Math.random() - 0.5) * 20;
+                spawnMonsterProjectile(ex, ey, targetX, targetY, Math.max(1, Math.round(enemy.damage * 0.8)), '#9ad4ff', 4.6 + i * 0.08, {
+                    monsterType: enemy.type,
+                    size: enemy.isElite ? 21 : 18,
+                    style: enemy.isElite ? 'enemyArrow' : 'enemyBolt',
+                    maxDistance: 2400,
+                    projectileEmoji: '🗡️'
+                });
+            }
+            break;
+        }
+        case 'slam': {
+            for (let i = 0; i < 8; i += 1) {
+                const angle = (i / 8) * Math.PI * 2;
+                const targetX = ex + Math.cos(angle) * 360;
+                const targetY = ey + Math.sin(angle) * 360;
+                spawnMonsterProjectile(ex, ey, targetX, targetY, Math.max(1, Math.round(enemy.damage * 0.7)), '#ff7b7b', 2.7, {
+                    monsterType: enemy.type,
+                    size: 18,
+                    style: 'enemyBolt',
+                    maxDistance: 1500,
+                    projectileEmoji: enemy.attackEmoji || '🛡️'
+                });
+            }
+            if (player) {
+                tryApplyPlayerConfusionFromAttack(enemy.type || 'skeleton_knight', { guaranteed: true });
+            }
+            break;
+        }
+        case 'pound': {
+            if (Math.hypot(px - ex, py - ey) <= 288 && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0) {
+                const effectiveDamage = Math.max(0, enemy.damage + 2 - player.damageReduction);
+                player.health -= effectiveDamage;
+                if (enemy.type === 'skeleton_brawler') {
+                    tryApplyPlayerConfusionFromAttack(enemy.type, { chance: 50 });
+                }
+                spawnCastleEnemyAttackEffect(px + normalizedX * 10, py + normalizedY * 10, enemy.attackEmoji || '👊', 34);
+            }
+            break;
+        }
+        case 'stun': {
+            if (Math.hypot(px - ex, py - ey) <= 248 && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0) {
+                const effectiveDamage = Math.max(0, enemy.damage + 1 - player.damageReduction);
+                player.health -= effectiveDamage;
+                player.stunTimer = Math.max(player.stunTimer || 0, 45);
+                spawnCastleEnemyAttackEffect(px + normalizedX * 8, py + normalizedY * 8, enemy.attackEmoji || '⚡', 34);
+            }
+            break;
+        }
+        case 'burst': {
+            for (let i = 0; i < 6; i += 1) {
+                const burstAngle = (i / 6) * Math.PI * 2;
+                const targetX = ex + Math.cos(burstAngle) * 660;
+                const targetY = ey + Math.sin(burstAngle) * 660;
+                spawnMonsterProjectile(ex, ey, targetX, targetY, Math.max(1, Math.round(enemy.damage * 0.6)), '#c77dff', 3.4, {
+                    monsterType: enemy.type,
+                    size: 15,
+                    style: 'enemyBolt',
+                    maxDistance: 1950,
+                    projectileEmoji: enemy.attackEmoji || '🔥'
+                });
+            }
+            break;
+        }
+        case 'boxer': {
+            const closeRange = Math.hypot(px - ex, py - ey) <= 336;
+            if (closeRange) {
+                enemy.x += normalizedX * 84;
+                enemy.y += normalizedY * 84;
+                const hitX = enemy.x + enemy.width / 2;
+                const hitY = enemy.y + enemy.height / 2;
+                if (Math.hypot(px - hitX, py - hitY) <= 216 && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0) {
+                    const effectiveDamage = Math.max(0, enemy.damage + 1 - player.damageReduction);
+                    player.health -= effectiveDamage;
+                    spawnCastleEnemyAttackEffect(hitX, hitY - 8, enemy.attackEmoji || '🥊⚡', 34);
+                }
+            } else {
+                const targetX = px + normalizedX * 48;
+                const targetY = py + normalizedY * 48;
+                spawnMonsterProjectile(ex, ey, targetX, targetY, Math.max(1, Math.round(enemy.damage * 0.8)), '#ffe66d', 4.8, {
+                    monsterType: enemy.type,
+                    size: 21,
+                    style: 'enemyBolt',
+                    maxDistance: 2100,
+                    projectileEmoji: enemy.attackEmoji || '🥊⚡'
+                });
+            }
+            break;
+        }
+        case 'charge': {
+            enemy.x += normalizedX * 168;
+            enemy.y += normalizedY * 168;
+            const hitX = enemy.x + enemy.width / 2;
+            const hitY = enemy.y + enemy.height / 2;
+            if (Math.hypot(px - hitX, py - hitY) <= 210 && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0) {
+                const effectiveDamage = Math.max(0, enemy.damage + 1 - player.damageReduction);
+                player.health -= effectiveDamage;
+                if (enemy.knockbackOnHit) {
+                    const knockbackForce = 10;
+                    player.x = Math.max(0, Math.min(viewportWidth - player.width, player.x + normalizedX * knockbackForce));
+                    player.y = Math.max(0, Math.min(viewportHeight - player.height, player.y + normalizedY * knockbackForce));
+                }
+                if (enemy.type === 'skeleton_tank_elite') {
+                    tryApplyPlayerConfusionFromAttack(enemy.type, { guaranteed: true });
+                }
+                spawnCastleEnemyAttackEffect(hitX, hitY - 10, enemy.attackEmoji || '🪓', 34);
+            }
+            break;
+        }
+        case 'sigil': {
+            for (let i = 0; i < 4; i += 1) {
+                const targetX = px + normalizedX * 36 + (Math.random() - 0.5) * 12;
+                const targetY = py + normalizedY * 36 + (Math.random() - 0.5) * 12;
+                spawnMonsterProjectile(ex, ey, targetX, targetY, Math.max(1, Math.round(enemy.damage * 0.75)), '#8be9fd', 3.8, {
+                    monsterType: enemy.type,
+                    size: 18,
+                    style: 'enemyBolt',
+                    maxDistance: 2250,
+                    projectileEmoji: enemy.attackEmoji || '🌀'
+                });
+            }
+            if (enemy.confusionOnAttackGuaranteed) {
+                tryApplyPlayerConfusionFromAttack(enemy.type, { guaranteed: true });
+            } else if (enemy.confusionOnAttackChance) {
+                tryApplyPlayerConfusionFromAttack(enemy.type, { chance: enemy.confusionOnAttackChance });
+            }
+            break;
+        }
+        default:
+            if (enemy.ranged) {
+                spawnMonsterProjectile(ex, ey, px, py, Math.max(1, Math.round(enemy.damage * 0.9)), '#9ad4ff', 4.5, {
+                    monsterType: enemy.type,
+                    size: enemy.isElite ? 8 : 6,
+                    style: enemy.isElite ? 'enemyArrow' : 'enemyBolt',
+                    maxDistance: 900,
+                    projectileEmoji: enemy.attackEmoji || '🗡️'
+                });
+            } else if (player.dashTimer <= 0 && player.postDashInvulnTimer <= 0) {
+                const effectiveDamage = Math.max(0, enemy.damage - player.damageReduction);
+                player.health -= effectiveDamage;
+            }
+            break;
+    }
+}
+
+function getCastleInteriorSpawnDelay(waveIndex, spawnIndex) {
+    const isLastWave = waveIndex === castleInteriorWaves.length - 1;
+    if (isLastWave && spawnIndex < 2) return 18;
+    if (waveIndex >= Math.max(0, castleInteriorWaves.length - 2)) return 30;
+    return 0;
+}
+
+function spawnCastleInteriorEnemyFromTemplate(typeTemplate, waveIndex, x, y) {
+    const attackStartMultiplier = typeTemplate.attackStartMultiplier || (typeTemplate.ranged ? 2.8 : 2.2);
+    castleInteriorEnemies.push({
+        id: castleInteriorEnemyIdCounter++,
+        type: typeTemplate.type,
+        x,
+        y,
+        width: typeTemplate.width,
+        height: typeTemplate.height,
+        health: typeTemplate.health + waveIndex * 3,
+        maxHealth: typeTemplate.health + waveIndex * 3,
+        speed: typeTemplate.speed,
+        damage: typeTemplate.damage,
+        color: typeTemplate.color,
+        accent: typeTemplate.accent,
+        visuals: typeTemplate.visuals || ['☠', '☠', '☠', '☠', '☠'],
+        ranged: !!typeTemplate.ranged,
+        attackStyle: typeTemplate.attackStyle || 'melee',
+        attackEmoji: typeTemplate.attackEmoji || '⚔️',
+        windupFrames: Math.max(8, Math.round((typeTemplate.windupFrames || 20) * 0.7)),
+        attackState: 'idle',
+        attackWindupTimer: 0,
+        attackInterval: Math.max(36, Math.round((typeTemplate.attackInterval || 90) * 0.72)),
+        isAppearing: true,
+        appearanceTimer: 16 + Math.floor(Math.random() * 8),
+        attackCooldown: Math.round(Math.random() * 30),
+        attackRange: Math.max(24, Math.round((typeTemplate.ranged ? 90 : 24) * attackStartMultiplier)),
+        isElite: !!typeTemplate.elite,
+        isDying: false,
+        deathTimer: 0,
+        deathMaxTimer: 18,
+        stunTimer: 0,
+        flashTimer: 0,
+        vx: 0,
+        vy: 0
+    });
+}
+
+function spawnCastleInteriorWave() {
+    if (castleInteriorWaveIndex >= castleInteriorWaves.length) {
+        openCastleExitIfReady();
+        return;
+    }
+
+    const waveIndex = castleInteriorWaveIndex;
+    const count = castleInteriorWaves[waveIndex] || 0;
+    const eliteTypes = castleSkeletonTypes.filter(t => t.elite);
+    const normalTypes = castleSkeletonTypes.filter(t => !t.elite);
+    const eliteChance = Math.max(0, (waveIndex - 2) * 0.12);
+    const shouldStagger = waveIndex >= Math.max(0, castleInteriorWaves.length - 2);
+
+    castleInteriorWaveSpawnQueue = [];
+    castleInteriorWaveSpawnTimer = 0;
+
+    if (!shouldStagger) {
+        for (let i = 0; i < count; i += 1) {
+            const typeTemplate = Math.random() < eliteChance && eliteTypes.length > 0
+                ? eliteTypes[Math.floor(Math.random() * eliteTypes.length)]
+                : normalTypes[Math.floor(Math.random() * normalTypes.length)];
+
+            const x = Math.random() < 0.5
+                ? Math.random() * (viewportWidth - 120) + 40
+                : Math.random() < 0.5 ? 40 : viewportWidth - 120;
+            const y = Math.random() * (viewportHeight - 120) + 40;
+
+            spawnCastleSkullSummonAt(x, y, 2 + Math.floor(Math.random() * 3));
+            spawnCastleInteriorEnemyFromTemplate(typeTemplate, waveIndex, x, y);
+        }
+
+        castleInteriorWaveIndex += 1;
+        return;
+    }
+
+    for (let i = 0; i < count; i += 1) {
+        const typeTemplate = Math.random() < eliteChance && eliteTypes.length > 0
+            ? eliteTypes[Math.floor(Math.random() * eliteTypes.length)]
+            : normalTypes[Math.floor(Math.random() * normalTypes.length)];
+
+        const x = Math.random() < 0.5
+            ? Math.random() * (viewportWidth - 120) + 40
+            : Math.random() < 0.5 ? 40 : viewportWidth - 120;
+        const y = Math.random() * (viewportHeight - 120) + 40;
+
+        castleInteriorWaveSpawnQueue.push({
+            typeTemplate,
+            waveIndex,
+            x,
+            y,
+            delay: i === 0 ? 0 : getCastleInteriorSpawnDelay(waveIndex, i)
+        });
+    }
+
+    if (castleInteriorWaveSpawnQueue.length > 0) {
+        castleInteriorWaveSpawnTimer = castleInteriorWaveSpawnQueue[0].delay;
+    }
+
+    castleInteriorWaveIndex += 1;
+}
+
+function updateCastleInteriorEnemies() {
+    updateCastleSkullWarningEffects();
+    updateCastleEnemyAttackEffects();
+
+    if (castleInteriorWaveSpawnQueue.length > 0) {
+        if (castleInteriorWaveSpawnTimer > 0) {
+            castleInteriorWaveSpawnTimer -= 1;
+        }
+        if (castleInteriorWaveSpawnTimer <= 0) {
+            const nextSpawn = castleInteriorWaveSpawnQueue.shift();
+            if (nextSpawn) {
+                spawnCastleSkullSummonAt(nextSpawn.x, nextSpawn.y, 2 + Math.floor(Math.random() * 3));
+                spawnCastleInteriorEnemyFromTemplate(nextSpawn.typeTemplate, nextSpawn.waveIndex, nextSpawn.x, nextSpawn.y);
+            }
+            if (castleInteriorWaveSpawnQueue.length > 0) {
+                castleInteriorWaveSpawnTimer = castleInteriorWaveSpawnQueue[0].delay;
+            } else {
+                castleInteriorWaveSpawnTimer = 0;
+            }
+        }
+    }
+
+    for (let i = castleInteriorEnemies.length - 1; i >= 0; i -= 1) {
+        const enemy = castleInteriorEnemies[i];
+        if (enemy.isDying) {
+            enemy.deathTimer -= 1;
+            if (enemy.deathTimer <= 0) {
+                castleInteriorEnemies.splice(i, 1);
+                castleInteriorKills += 1;
+                openCastleExitIfReady();
+                if (castleInteriorEnemies.length === 0 && castleInteriorWaveSpawnQueue.length === 0 && castleInteriorWaveIndex < castleInteriorWaves.length && castleInteriorWaveDelay <= 0) {
+                    castleInteriorWaveDelay = 90;
+                }
+            }
+            continue;
+        }
+
+        if (enemy.isAppearing) {
+            enemy.appearanceTimer -= 1;
+            if (enemy.appearanceTimer <= 0) {
+                enemy.isAppearing = false;
+            }
+            continue;
+        }
+
+        if (enemy.flashTimer > 0) {
+            enemy.flashTimer -= 1;
+        }
+        if (enemy.stunTimer > 0) {
+            enemy.stunTimer -= 1;
+            continue;
+        }
+
+        const px = player.x + player.width / 2;
+        const py = player.y + player.height / 2;
+        const ex = enemy.x + enemy.width / 2;
+        const ey = enemy.y + enemy.height / 2;
+        const dx = px - ex;
+        const dy = py - ey;
+        const dist = Math.hypot(dx, dy) || 1;
+        const normalizedX = dx / dist;
+        const normalizedY = dy / dist;
+
+        if (enemy.attackState === 'windup') {
+            enemy.attackWindupTimer -= 1;
+            if (enemy.attackWindupTimer <= 0) {
+                enemy.attackState = 'idle';
+                enemy.attackCooldown = enemy.attackInterval;
+                executeCastleEnemyAttack(enemy, px, py);
+            }
+            enemy.x = Math.max(16, Math.min(enemy.x, viewportWidth - enemy.width - 16));
+            enemy.y = Math.max(16, Math.min(enemy.y, viewportHeight - enemy.height - 16));
+            continue;
+        }
+
+        if (enemy.attackCooldown > 0) {
+            enemy.attackCooldown -= 1;
+        }
+
+        const attackThreshold = enemy.attackRange || (enemy.ranged ? 90 : 24);
+        if (enemy.ranged) {
+            if (dist > attackThreshold * 0.75) {
+                enemy.x += normalizedX * enemy.speed;
+                enemy.y += normalizedY * enemy.speed;
+            }
+
+            if (enemy.attackCooldown <= 0 && dist <= attackThreshold + 16) {
+                enemy.attackState = 'windup';
+                enemy.attackWindupTimer = enemy.windupFrames || 24;
+                enemy.attackCooldown = 1;
+            }
+        } else {
+            if (dist > attackThreshold) {
+                enemy.x += normalizedX * enemy.speed;
+                enemy.y += normalizedY * enemy.speed;
+            }
+            if (enemy.attackCooldown <= 0 && dist <= attackThreshold) {
+                enemy.attackState = 'windup';
+                enemy.attackWindupTimer = enemy.windupFrames || 24;
+                enemy.attackCooldown = 1;
+            }
+        }
+
+        enemy.x = Math.max(16, Math.min(enemy.x, viewportWidth - enemy.width - 16));
+        enemy.y = Math.max(16, Math.min(enemy.y, viewportHeight - enemy.height - 16));
+    }
+
+    if (castleInteriorEnemies.length === 0 && castleInteriorWaveSpawnQueue.length === 0 && castleInteriorWaveDelay > 0) {
+        castleInteriorWaveDelay -= 1;
+        if (castleInteriorWaveDelay <= 0) {
+            castleInteriorWaveDelay = 0;
+            spawnCastleInteriorWave();
+        }
+    }
+}
+
+function drawCastleInteriorEnemies() {
+    drawCastleSkullWarningEffects();
+    drawCastleEnemyAttackEffects();
+
+    for (const enemy of castleInteriorEnemies) {
+        if (enemy.isAppearing) continue;
+
+        const alpha = enemy.isDying ? Math.max(0, enemy.deathTimer / enemy.deathMaxTimer) : 1;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = enemy.color;
+        ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+        ctx.strokeStyle = enemy.accent;
+        ctx.lineWidth = enemy.isElite ? 3 : 2;
+        ctx.strokeRect(enemy.x, enemy.y, enemy.width, enemy.height);
+        ctx.fillStyle = '#2d2d2d';
+        ctx.font = `${Math.max(18, Math.round(enemy.width * 0.22))}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const centerX = enemy.x + enemy.width / 2;
+        const centerY = enemy.y + enemy.height / 2;
+        const placements = [
+            { x: centerX, y: centerY, emoji: enemy.visuals[0] || '☠' },
+            { x: enemy.x + enemy.width * 0.28, y: enemy.y + enemy.height * 0.28, emoji: enemy.visuals[1] || '☠' },
+            { x: enemy.x + enemy.width * 0.72, y: enemy.y + enemy.height * 0.28, emoji: enemy.visuals[2] || '☠' },
+            { x: enemy.x + enemy.width * 0.28, y: enemy.y + enemy.height * 0.72, emoji: enemy.visuals[3] || '☠' },
+            { x: enemy.x + enemy.width * 0.72, y: enemy.y + enemy.height * 0.72, emoji: enemy.visuals[4] || '☠' }
+        ];
+
+        placements.forEach(placement => {
+            ctx.fillText(placement.emoji, placement.x, placement.y);
+        });
+
+        if (enemy.attackState === 'windup') {
+            const progress = enemy.attackWindupTimer / (enemy.windupFrames || 24);
+            const indicatorAlpha = Math.max(0.25, progress);
+            ctx.save();
+            ctx.globalAlpha = indicatorAlpha;
+            ctx.strokeStyle = enemy.attackStyle === 'rain' ? '#8fd8ff' : enemy.attackStyle === 'pound' ? '#ffd166' : enemy.attackStyle === 'slam' ? '#ff7c5c' : enemy.attackStyle === 'burst' ? '#c77dff' : enemy.attackStyle === 'charge' ? '#7cffb2' : enemy.attackStyle === 'boxer' ? '#ffe66d' : '#ff4d4d';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, enemy.width * 0.72 + (1 - progress) * 24, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY - 16);
+            ctx.lineTo(centerX + (player.x + player.width / 2 - centerX) * 0.18, centerY + (player.y + player.height / 2 - centerY) * 0.18);
+            ctx.stroke();
+            ctx.font = `${Math.max(16, Math.round(enemy.width * 0.2))}px Arial`;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(enemy.attackEmoji || (enemy.attackStyle === 'rain' ? '🏹' : enemy.attackStyle === 'pound' ? '💥' : enemy.attackStyle === 'slam' ? '⚡' : enemy.attackStyle === 'burst' ? '☠' : enemy.attackStyle === 'charge' ? '💨' : enemy.attackStyle === 'boxer' ? '🥊⚡' : '⚔️'), centerX, centerY - 28);
+            ctx.restore();
+        }
+
+        if (enemy.isElite) {
+            ctx.strokeStyle = 'rgba(255, 215, 140, 0.75)';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(enemy.x + 2, enemy.y + 2, enemy.width - 4, enemy.height - 4);
+        }
+        ctx.restore();
+
+        const healthFrac = Math.max(0, Math.min(1, enemy.health / enemy.maxHealth));
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(enemy.x, enemy.y - 10, enemy.width, 6);
+        ctx.fillStyle = enemy.isElite ? '#ffd966' : '#80e080';
+        ctx.fillRect(enemy.x, enemy.y - 10, enemy.width * healthFrac, 6);
+        ctx.restore();
+    }
+}
+
+function getCastleAttackTarget() {
+    if (playerInsideConstruction && castleInteriorEnemies.length) {
+        const center = getNearestCastleEnemyCenter();
+        if (center) return center;
+    }
+    if (currentMonster) {
+        return {
+            x: currentMonster.x + currentMonster.width / 2,
+            y: currentMonster.y + currentMonster.height / 2
+        };
+    }
+    return null;
+}
+
+function findCastleEnemyInRectangle(x, y, width, height) {
+    for (const enemy of castleInteriorEnemies) {
+        if (enemy.isDying) continue;
+        if (x < enemy.x + enemy.width && x + width > enemy.x && y < enemy.y + enemy.height && y + height > enemy.y) {
+            return enemy;
+        }
+    }
+    return null;
+}
+
+function findCastleEnemyHitByMelee(x1, y1, x2, y2, threshold) {
+    let bestEnemy = null;
+    let bestDist = Infinity;
+    for (const enemy of castleInteriorEnemies) {
+        if (enemy.isDying) continue;
+        const mx = enemy.x + enemy.width / 2;
+        const my = enemy.y + enemy.height / 2;
+        const distToSegment = pointToSegmentDistance(mx, my, x1, y1, x2, y2);
+        if (distToSegment <= threshold + Math.max(enemy.width, enemy.height) / 2 && distToSegment < bestDist) {
+            bestDist = distToSegment;
+            bestEnemy = enemy;
+        }
+    }
+    return bestEnemy;
+}
+
+function applyDamageToCastleEnemy(enemy, damage) {
+    if (!enemy || enemy.isDying) return;
+    enemy.health = Math.max(0, enemy.health - damage);
+    enemy.flashTimer = 10;
+    if (enemy.health <= 0) {
+        enemy.isDying = true;
+        enemy.deathTimer = enemy.deathMaxTimer;
+        spawnMonsterDeathEffect(enemy);
+    }
+}
+
+function maybeSpawnMansionGhostCopy(target, originalDamage) {
+    if (!player || !player.mansionGhostCopyUnlocked || !target || target.isDying) return false;
+    if (typeof target.health !== 'number' || target.health <= 0) return false;
+    if (Math.random() >= (player.mansionGhostCopyChance || 0.33)) return false;
+
+    const ghostDamage = Math.max(1, Math.round((originalDamage || 0) * (player.mansionGhostCopyDamageRatio || 0.5)));
+    const stunFrames = Math.max(6, Math.round(player.mansionGhostCopyStunFrames || 24));
+    const targetCenterX = (target.x || 0) + (target.width || 0) / 2;
+    const targetCenterY = (target.y || 0) + (target.height || 0) / 2;
+
+    target.health = Math.max(0, target.health - ghostDamage);
+    target.tookDamage = true;
+    target.flashTimer = Math.max(target.flashTimer || 0, 12);
+    target.stunTimer = Math.max(target.stunTimer || 0, stunFrames);
+
+    if (target.health <= 0) {
+        target.isDying = true;
+        target.deathTimer = target.deathMaxTimer || 16;
+        spawnMonsterDeathEffect(target);
+    }
+
+    spawnEvaporationEffect(targetCenterX, targetCenterY, '#f7eaff', 16, 12);
+    spawnAfterImage({
+        kind: 'monster',
+        x: targetCenterX - 12,
+        y: targetCenterY - 12,
+        width: 24,
+        height: 24,
+        life: 14,
+        maxLife: 14,
+        baseAlpha: 0.42,
+        color: '#f4e2ff',
+        type: target.type || 'ghost'
+    });
+    return true;
+}
+
+function getCurrentInteriorEnemies() {
+    const construction = constructions.find(c => c.id === currentConstructionId);
+    if (!construction) return [];
+    return construction.type === 'mansion' ? mansionInteriorEnemies : castleInteriorEnemies;
+}
+
+function findInteriorEnemyInRectangle(x, y, width, height) {
+    const enemies = getCurrentInteriorEnemies();
+    for (const enemy of enemies) {
+        if (enemy.isDying || enemy.isInvisible) continue;
+        if (x < enemy.x + enemy.width && x + width > enemy.x && y < enemy.y + enemy.height && y + height > enemy.y) {
+            return enemy;
+        }
+    }
+    return null;
+}
+
+function findInteriorEnemyHitByMelee(x1, y1, x2, y2, threshold) {
+    let bestEnemy = null;
+    let bestDist = Infinity;
+    const enemies = getCurrentInteriorEnemies();
+    for (const enemy of enemies) {
+        if (enemy.isDying || enemy.isInvisible) continue;
+        const mx = enemy.x + enemy.width / 2;
+        const my = enemy.y + enemy.height / 2;
+        const distToSegment = pointToSegmentDistance(mx, my, x1, y1, x2, y2);
+        if (distToSegment <= threshold + Math.max(enemy.width, enemy.height) / 2 && distToSegment < bestDist) {
+            bestDist = distToSegment;
+            bestEnemy = enemy;
+        }
+    }
+    return bestEnemy;
+}
+
+function applyDamageToInteriorEnemy(enemy, damage) {
+    if (!enemy || enemy.isDying) return;
+    enemy.health = Math.max(0, enemy.health - damage);
+    enemy.flashTimer = 10;
+    if (enemy.health <= 0) {
+        enemy.isDying = true;
+        enemy.deathTimer = enemy.deathMaxTimer;
+        spawnMonsterDeathEffect(enemy);
+    } else {
+        maybeSpawnMansionGhostCopy(enemy, damage);
+    }
+}
+
+function getNearestInteriorEnemy() {
+    const enemies = getCurrentInteriorEnemies();
+    if (!enemies.length) return null;
+    const px = player.x + player.width / 2;
+    const py = player.y + player.height / 2;
+    let nearest = null;
+    let best = Infinity;
+    for (const enemy of enemies) {
+        if (enemy.isDying || enemy.isInvisible) continue;
+        const ex = enemy.x + enemy.width / 2;
+        const ey = enemy.y + enemy.height / 2;
+        const dist = Math.hypot(px - ex, py - ey);
+        if (dist < best) {
+            best = dist;
+            nearest = enemy;
+        }
+    }
+    return nearest;
+}
+
+function clearCastleInterior() {
+    castleInteriorEnemies = [];
+    castleInteriorWaveIndex = 0;
+    castleInteriorKills = 0;
+    castleInteriorWaveDelay = 0;
+    castleExitOpen = false;
+}
+
+function clearMansionInterior() {
+    mansionInteriorEnemies = [];
+    mansionInteriorEnemyIdCounter = 0;
+    mansionInteriorSpawnTimer = getRandomMansionSpawnDelay();
+    mansionInteriorSpawnIndex = 0;
+    mansionInteriorKills = 0;
+    mansionPeriodicWaveTimer = mansionPeriodicWaveIntervalFrames;
+    mansionExitOpen = false;
+    mansionGhostCountTier1 = 35;
+    mansionGhostCountTier2 = 35;
+    mansionGhostCountTier3 = 30;
+}
+
+function getMansionGhostTierToSpawn() {
+    if (mansionGhostCountTier1 > 0) return 0;
+    if (mansionGhostCountTier2 > 0) return 1;
+    if (mansionGhostCountTier3 > 0) return 2;
+    return -1;
+}
+
+function getMansionGhostTypeForTier(tierIndex) {
+    const pool = mansionGhostTierPools[tierIndex] || [];
+    if (!pool.length) {
+        return mansionGhostTypes[Math.floor(Math.random() * mansionGhostTypes.length)];
+    }
+    const typeName = pool[Math.floor(Math.random() * pool.length)];
+    return mansionGhostTypes.find(template => template.type === typeName) || mansionGhostTypes[0];
+}
+
+function spawnMansionGhostFromTemplate(typeTemplate, x, y) {
+    const attackStartMultiplier = typeTemplate.attackStartMultiplier || (typeTemplate.ranged ? 2.8 : 2.2);
+    mansionInteriorEnemies.push({
+        id: mansionInteriorEnemyIdCounter++,
+        type: typeTemplate.type,
+        x,
+        y,
+        width: typeTemplate.width,
+        height: typeTemplate.height,
+        health: typeTemplate.health,
+        maxHealth: typeTemplate.health,
+        speed: typeTemplate.speed,
+        damage: typeTemplate.damage,
+        color: typeTemplate.color,
+        accent: typeTemplate.accent,
+        visuals: typeTemplate.visuals || ['👻'],
+        ranged: !!typeTemplate.ranged,
+        attackStyle: typeTemplate.attackStyle || 'melee',
+        attackEmoji: typeTemplate.attackEmoji || '👻',
+        windupFrames: typeTemplate.windupFrames || 18,
+        attackState: 'idle',
+        attackWindupTimer: 0,
+        attackInterval: typeTemplate.attackInterval || 90,
+        isAppearing: true,
+        appearanceTimer: 18 + Math.floor(Math.random() * 12),
+        attackCooldown: Math.round(Math.random() * 24),
+        attackRange: Math.max(24, Math.round((typeTemplate.ranged ? 96 : 30) * attackStartMultiplier)),
+        isDying: false,
+        deathTimer: 0,
+        deathMaxTimer: 16,
+        stunTimer: 0,
+        flashTimer: 0,
+        isInvisible: false,
+        invisibleTimer: 0,
+        invisibilityCooldown: 30 + Math.floor(Math.random() * 80),
+        dashCooldown: 20 + Math.floor(Math.random() * 80),
+        teleportCooldown: typeTemplate.teleportEnabled ? 40 + Math.floor(Math.random() * 80) : 9999,
+        dodgeChance: typeTemplate.dodgeChance || 0.28,
+        stunOnHit: !!typeTemplate.stunOnHit,
+        knockbackOnHit: !!typeTemplate.knockbackOnHit,
+        confusionOnAttackChance: typeTemplate.confusionOnAttackChance || 0,
+        confusionOnAttackGuaranteed: !!typeTemplate.confusionOnAttackGuaranteed,
+        lastHitTime: 0,
+        vx: 0,
+        vy: 0
+    });
+}
+
+function getRandomMansionSpawnDelay() {
+    return mansionSpawnIntervalMinFrames + Math.floor(Math.random() * (mansionSpawnIntervalMaxFrames - mansionSpawnIntervalMinFrames + 1));
+}
+
+function spawnMansionGhost() {
+    if (mansionInteriorSpawnIndex >= mansionTotalGhosts) return false;
+    if (mansionInteriorEnemies.length >= mansionMaxActiveGhosts) return false;
+
+    const tierIndex = getMansionGhostTierToSpawn();
+    if (tierIndex < 0) return false;
+
+    const typeTemplate = getMansionGhostTypeForTier(tierIndex);
+    const margin = 40;
+    const x = margin + Math.random() * Math.max(0, viewportWidth - margin * 2 - typeTemplate.width);
+    const y = margin + Math.random() * Math.max(0, viewportHeight - margin * 2 - typeTemplate.height);
+
+    spawnMansionGhostFromTemplate(typeTemplate, x, y);
+    mansionInteriorSpawnIndex += 1;
+    if (tierIndex === 0) {
+        mansionGhostCountTier1 -= 1;
+    } else if (tierIndex === 1) {
+        mansionGhostCountTier2 -= 1;
+    } else if (tierIndex === 2) {
+        mansionGhostCountTier3 -= 1;
+    }
+    return true;
+}
+
+function getInteriorSpawnCenter() {
+    return {
+        x: viewportWidth / 2,
+        y: viewportHeight / 2
+    };
+}
+
+function updateMansionInteriorEnemies() {
+    if (mansionInteriorSpawnIndex < mansionTotalGhosts) {
+        mansionInteriorSpawnTimer -= 1;
+        if (mansionInteriorSpawnTimer <= 0) {
+            mansionInteriorSpawnTimer = getRandomMansionSpawnDelay();
+            if (!spawnMansionGhost()) {
+                mansionInteriorSpawnTimer = 10;
+            }
+        }
+    }
+
+    mansionPeriodicWaveTimer -= 1;
+    if (mansionPeriodicWaveTimer <= 0) {
+        mansionPeriodicWaveTimer = mansionPeriodicWaveIntervalFrames;
+        let spawns = 0;
+        for (let i = 0; i < 3; i += 1) {
+            if (spawnMansionGhost()) {
+                spawns += 1;
+            } else {
+                break;
+            }
+        }
+        if (spawns === 0 && mansionInteriorSpawnIndex < mansionTotalGhosts && mansionInteriorEnemies.length >= mansionMaxActiveGhosts) {
+            mansionPeriodicWaveTimer = 10;
+        }
+    }
+
+    const playerCenterX = player.x + player.width / 2;
+    const playerCenterY = player.y + player.height / 2;
+    for (let i = mansionInteriorEnemies.length - 1; i >= 0; i -= 1) {
+        const enemy = mansionInteriorEnemies[i];
+        if (enemy.isDying) {
+            enemy.deathTimer -= 1;
+            if (enemy.deathTimer <= 0) {
+                mansionInteriorEnemies.splice(i, 1);
+                mansionInteriorKills += 1;
+                if (mansionInteriorEnemies.length === 0 && mansionInteriorSpawnIndex >= mansionTotalGhosts) {
+                    mansionExitOpen = true;
+                }
+            }
+            continue;
+        }
+
+        if (enemy.isAppearing) {
+            enemy.appearanceTimer -= 1;
+            if (enemy.appearanceTimer <= 0) {
+                enemy.isAppearing = false;
+            }
+            continue;
+        }
+
+        if (enemy.flashTimer > 0) {
+            enemy.flashTimer -= 1;
+        }
+        if (enemy.stunTimer > 0) {
+            enemy.stunTimer -= 1;
+            continue;
+        }
+
+        if (enemy.isInvisible) {
+            enemy.invisibleTimer -= 1;
+            if (enemy.invisibleTimer <= 0) {
+                enemy.isInvisible = false;
+                enemy.invisibilityCooldown = 60 + Math.floor(Math.random() * 80);
+            }
+        } else {
+            enemy.invisibilityCooldown -= 1;
+            if (enemy.invisibilityCooldown <= 0 && Math.random() < 0.24) {
+                enemy.isInvisible = true;
+                enemy.invisibleTimer = 18 + Math.floor(Math.random() * 18);
+                enemy.invisibilityCooldown = 90 + Math.floor(Math.random() * 90);
+            }
+        }
+
+        if (enemy.attackState === 'windup') {
+            enemy.attackWindupTimer -= 1;
+            if (enemy.attackWindupTimer <= 0) {
+                enemy.attackState = 'idle';
+                enemy.attackCooldown = enemy.attackInterval;
+                executeCastleEnemyAttack(enemy, playerCenterX, playerCenterY);
+            }
+            enemy.x = Math.max(16, Math.min(enemy.x, viewportWidth - enemy.width - 16));
+            enemy.y = Math.max(16, Math.min(enemy.y, viewportHeight - enemy.height - 16));
+            continue;
+        }
+
+        if (enemy.attackCooldown > 0) {
+            enemy.attackCooldown -= 1;
+        }
+
+        const ex = enemy.x + enemy.width / 2;
+        const ey = enemy.y + enemy.height / 2;
+        const dx = playerCenterX - ex;
+        const dy = playerCenterY - ey;
+        const dist = Math.hypot(dx, dy) || 1;
+        const normalizedX = dx / dist;
+        const normalizedY = dy / dist;
+
+        const threat = projectiles.some(proj => proj.owner === 'player' && Math.hypot(proj.x - ex, proj.y - ey) < 80);
+        if (threat && Math.random() < enemy.dodgeChance) {
+            enemy.x -= normalizedX * enemy.speed * 1.5;
+            enemy.y -= normalizedY * enemy.speed * 1.5;
+        } else if (enemy.teleportCooldown <= 0 && enemy.teleportEnabled && Math.random() < 0.016) {
+            enemy.teleportCooldown = 80 + Math.floor(Math.random() * 60);
+            enemy.x = Math.max(24, Math.min(viewportWidth - enemy.width - 24, playerCenterX + (Math.random() - 0.5) * 220));
+            enemy.y = Math.max(24, Math.min(viewportHeight - enemy.height - 24, playerCenterY + (Math.random() - 0.5) * 220));
+        } else if (enemy.dashCooldown <= 0 && enemy.dashEnabled && Math.random() < 0.04) {
+            enemy.dashCooldown = 40 + Math.floor(Math.random() * 32);
+            enemy.x += normalizedX * 96;
+            enemy.y += normalizedY * 96;
+        } else {
+            const attackThreshold = enemy.attackRange || (enemy.ranged ? 96 : 30);
+            if (enemy.ranged) {
+                if (dist > attackThreshold * 0.75) {
+                    enemy.x += normalizedX * enemy.speed;
+                    enemy.y += normalizedY * enemy.speed;
+                } else if (enemy.attackCooldown <= 0) {
+                    enemy.attackState = 'windup';
+                    enemy.attackWindupTimer = enemy.windupFrames;
+                    enemy.attackCooldown = 1;
+                }
+            } else {
+                if (dist > attackThreshold) {
+                    enemy.x += normalizedX * enemy.speed;
+                    enemy.y += normalizedY * enemy.speed;
+                } else if (enemy.attackCooldown <= 0) {
+                    enemy.attackState = 'windup';
+                    enemy.attackWindupTimer = enemy.windupFrames;
+                    enemy.attackCooldown = 1;
+                }
+            }
+        }
+
+        if (enemy.dashCooldown > 0) {
+            enemy.dashCooldown -= 1;
+        }
+        if (enemy.teleportCooldown > 0) {
+            enemy.teleportCooldown -= 1;
+        }
+
+        enemy.x = Math.max(16, Math.min(enemy.x, viewportWidth - enemy.width - 16));
+        enemy.y = Math.max(16, Math.min(enemy.y, viewportHeight - enemy.height - 16));
+    }
+
+    if (mansionInteriorEnemies.length === 0 && mansionInteriorSpawnIndex >= mansionTotalGhosts) {
+        mansionExitOpen = true;
+        if (player) {
+            player.mansionGhostCopyUnlocked = true;
+            ghostArmyUnlocked = true;
+        }
+    }
+}
+
+function drawMansionInteriorEnemies() {
+    for (const enemy of mansionInteriorEnemies) {
+        if (enemy.isAppearing) continue;
+        const alpha = enemy.isDying ? Math.max(0, enemy.deathTimer / enemy.deathMaxTimer) : enemy.isInvisible ? 0.25 : 1;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = enemy.color;
+        ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+        ctx.strokeStyle = enemy.accent;
+        ctx.lineWidth = enemy.isInvisible ? 1 : 2;
+        ctx.strokeRect(enemy.x, enemy.y, enemy.width, enemy.height);
+        ctx.fillStyle = '#2d2d2d';
+        ctx.font = `${Math.max(16, Math.round(enemy.width * 0.18))}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(enemy.visuals[0] || '👻', enemy.x + enemy.width / 2, enemy.y + enemy.height / 2);
+        if (enemy.attackState === 'windup') {
+            const progress = enemy.attackWindupTimer / (enemy.windupFrames || 18);
+            ctx.save();
+            ctx.globalAlpha = Math.max(0.2, progress);
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2, enemy.width * 0.75 + (1 - progress) * 18, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+        }
+        if (enemy.isDying) {
+            ctx.globalAlpha = alpha;
+        }
+        ctx.restore();
+
+        const healthFrac = Math.max(0, Math.min(1, enemy.health / enemy.maxHealth));
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(enemy.x, enemy.y - 8, enemy.width, 5);
+        ctx.fillStyle = '#a8d7ff';
+        ctx.fillRect(enemy.x, enemy.y - 8, enemy.width * healthFrac, 5);
+        ctx.restore();
+    }
+}
+
+function updateInteriorEnemies() {
+    const construction = constructions.find(c => c.id === currentConstructionId);
+    if (!construction) return;
+    if (construction.type === 'mansion') {
+        updateMansionInteriorEnemies();
+    } else {
+        updateCastleInteriorEnemies();
+    }
+}
+
+function drawCurrentInteriorEnemies() {
+    const construction = constructions.find(c => c.id === currentConstructionId);
+    if (!construction) return;
+    if (construction.type === 'mansion') {
+        drawMansionInteriorEnemies();
+    } else {
+        drawCastleInteriorEnemies();
+    }
+}
+
+function isCastleExitLocked() {
+    const construction = constructions.find(c => c.id === currentConstructionId);
+    return construction && construction.type === 'castle' && !castleExitOpen;
+}
 
 function spawnAfterImage(entry) {
     entry.life = entry.life || 12;
@@ -4690,11 +8419,135 @@ function updateAfterImages() {
     }
 }
 
+function spawnMonsterDeathEffect(monster) {
+    const centerX = monster.x + monster.width / 2;
+    const centerY = monster.y + monster.height / 2;
+    const count = 18 + Math.floor(Math.random() * 12);
+
+    screenShakeTimer = Math.max(screenShakeTimer, 18);
+
+    for (let i = 0; i < count; i++) {
+        const angle = (Math.PI * 2 / count) * i + (Math.random() - 0.5) * 0.4;
+        const speed = 1.2 + Math.random() * 5.4;
+        monsterDeathEffects.push({
+            x: centerX,
+            y: centerY,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed * 0.75,
+            size: 3 + Math.random() * 7,
+            life: 14 + Math.floor(Math.random() * 12),
+            maxLife: 14 + Math.floor(Math.random() * 12),
+            alpha: 1,
+            rotation: Math.random() * Math.PI * 2,
+            spin: (Math.random() - 0.5) * 0.18,
+            kind: 'spark'
+        });
+    }
+
+    const glassCount = 28 + Math.floor(Math.random() * 10);
+    for (let i = 0; i < glassCount; i++) {
+        const angle = (Math.PI * 2 / glassCount) * i + (Math.random() - 0.5) * 0.35;
+        const speed = 2.8 + Math.random() * 7.2;
+        monsterDeathEffects.push({
+            x: centerX,
+            y: centerY,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed * 0.9,
+            size: 3 + Math.random() * 8,
+            life: 22 + Math.floor(Math.random() * 16),
+            maxLife: 22 + Math.floor(Math.random() * 16),
+            alpha: 1,
+            rotation: Math.random() * Math.PI * 2,
+            spin: (Math.random() - 0.5) * 0.24,
+            kind: 'glass',
+            wobble: Math.random() * 0.12,
+            tint: ['#8fd6ff', '#ffffff', '#bde8ff', '#7fb4ff'][Math.floor(Math.random() * 4)]
+        });
+    }
+}
+
+function updateMonsterDeathEffects() {
+    for (let i = monsterDeathEffects.length - 1; i >= 0; i--) {
+        const effect = monsterDeathEffects[i];
+        effect.life--;
+        if (effect.life <= 0) {
+            monsterDeathEffects.splice(i, 1);
+            continue;
+        }
+        effect.x += effect.vx;
+        effect.y += effect.vy;
+        effect.vy += effect.kind === 'glass' ? 0.1 : 0.07;
+        effect.vx *= effect.kind === 'glass' ? 0.965 : 0.97;
+        effect.alpha = effect.life / effect.maxLife;
+        effect.rotation += effect.spin;
+        if (effect.kind === 'glass') {
+            effect.vx += Math.sin(effect.life * 0.2 + effect.wobble * 100) * 0.02;
+        }
+    }
+}
+
+function drawMonsterDeathEffects() {
+    if (!monsterDeathEffects.length) return;
+
+    ctx.save();
+    for (const effect of monsterDeathEffects) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0.1, effect.alpha);
+        ctx.translate(effect.x, effect.y);
+        ctx.rotate(effect.rotation);
+        if (effect.kind === 'glass') {
+            ctx.fillStyle = effect.tint || '#ffffff';
+            ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(-effect.size / 2, -effect.size / 3);
+            ctx.lineTo(effect.size / 4, -effect.size / 2);
+            ctx.lineTo(effect.size / 2, effect.size / 4);
+            ctx.lineTo(effect.size / 6, effect.size / 2);
+            ctx.lineTo(-effect.size / 3, effect.size / 5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(-effect.size / 2, -effect.size / 2, effect.size, effect.size);
+        }
+        ctx.restore();
+    }
+    ctx.restore();
+}
+
 function drawPlayerAfterImage(effect) {
     const centerX = effect.x + effect.width / 2;
     const centerY = effect.y + effect.height / 2;
     ctx.save();
     ctx.translate(centerX, centerY);
+    if (effect.variant === 'swordDash') {
+        ctx.rotate(effect.angle || 0);
+        const col = effect.color || '#ffd880';
+        // sleek energy streak trailing behind the dash
+        ctx.fillStyle = col;
+        ctx.shadowColor = col;
+        ctx.shadowBlur = 18;
+        ctx.beginPath();
+        ctx.moveTo(0, -7);
+        ctx.quadraticCurveTo(-14, -3.5, -22, 0);
+        ctx.quadraticCurveTo(-14, 3.5, 0, 7);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(0, -3);
+        ctx.lineTo(14, 0);
+        ctx.lineTo(0, 3);
+        ctx.closePath();
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+        return;
+    }
     ctx.scale(1.7, 1.7);
     ctx.fillStyle = '#55ff7f';
     ctx.beginPath();
@@ -4742,6 +8595,37 @@ function drawProjectileAfterImage(effect) {
     ctx.beginPath();
     ctx.arc(effect.x, effect.y, size * 0.8, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.restore();
+}
+
+function updateAccelParticles() {
+    for (let i = accelParticles.length - 1; i >= 0; i--) {
+        const p = accelParticles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vx *= 0.94;
+        p.vy *= 0.94;
+        p.life--;
+        if (p.life <= 0) accelParticles.splice(i, 1);
+    }
+}
+
+function drawAccelParticles() {
+    if (!accelParticles.length) return;
+    ctx.save();
+    for (const p of accelParticles) {
+        const a = p.life / p.maxLife;
+        ctx.globalAlpha = Math.max(0, a * 0.8);
+        ctx.strokeStyle = p.color;
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = 10;
+        ctx.lineWidth = p.width;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x - Math.cos(p.angle) * p.len, p.y - Math.sin(p.angle) * p.len);
+        ctx.stroke();
+    }
     ctx.restore();
 }
 
@@ -5171,6 +9055,7 @@ const weapons = [
     { name: 'Arco 🏹', type: 'bow', color: '#00ff00', cooldown: 110, range: 37.5, damage: 18, speed: 15 },
     { name: 'Varinha 🔮', type: 'staff', color: '#ff00ff', cooldown: 35, range: 25, damage: 22, speed: 0.75 },
     { name: 'Espada ⚔️', type: 'sword', color: '#ffaa00', cooldown: 0, range: 90, damage: 14 },
+    { name: 'Granada & Bomba 💣', type: 'grenade', color: '#ff8c1a', cooldown: 26, range: 80, damage: 10 },
     { name: 'Lança Tornado 🌪️', type: 'cone', color: '#83bfd3', cooldown: 35, range: 80, damage: 1, coneAngle: Math.PI / 3 }
 ];
 
@@ -5197,39 +9082,98 @@ const EXTREME_CHANCE = 0.05;
 
 const weaponUpgradeOptions = {
     gun: [
-        { name: 'Mira Ajustada', effect: 'gunReloadHitMax', value: 2, desc: 'Melhora a recarga da arma reduzindo os tiros necessários para recarregar.' },
-        { name: 'Câmara Extra +2', effect: 'gunAmmoMax', value: 2, desc: 'Aumenta a capacidade de munição do revólver.' },
-        { name: 'Recarga Ágil -8', effect: 'gunReloadCooldownMax', value: 8, desc: 'Reduz o tempo necessário para recarregar o revólver.' }
+        { name: 'Câmara Extra +4', effect: 'gunAmmoMax', value: 4, desc: 'Aumenta a capacidade de munição do revólver. Mais tiros antes de precisar recarregar.' },
+        { name: 'Rajada de Choque +1', effect: 'gunBurstFire', value: 1, desc: 'Cada disparo do revólver também solta um projétil adicional em ângulo levemente variado, transformando o tiro em rajada.' },
+        { name: 'Munição Explosiva', effect: 'gunExplosiveAmmo', value: 1, desc: 'Os projéteis detonam ao atingir o inimigo, causando dano extra em uma pequena área.' }
+    ],
+    grenade: [
+        { name: 'Atordoar Bombas +0.5s', effect: 'bombStunPerHitSeconds', value: 0.5, desc: 'A bomba padrão atordoa o alvo por 0.5s por nível ao acertar.' },
+        { name: 'Fragmentos Confundem +0.05s', effect: 'bombFragmentConfusionSeconds', value: 0.05, desc: 'Cada fragmento causa confusão por 0.1s no primeiro nível e 0.05s a mais por nível seguinte.' },
+        { name: 'Fragmentos +2', effect: 'bombFragmentCountBonus', value: 2, desc: 'Adiciona 2 fragmentos extras por explosão de bomba/granada.' },
+        { name: 'Chama Persistente +1', effect: 'bombBurnDamagePerSecond', value: 1, desc: 'A zona de fogo causa 1 de dano por segundo por nível e dura 3s + 0.5s por nível.' },
+        { name: 'Fragmentos Velozes +0.25', effect: 'bombFragmentSpeedBonus', value: 0.25, desc: 'Aumenta a velocidade dos fragmentos e concede 1 ponto de perfuração extra por nível.' },
+        { name: 'Velocidade de Arremesso +0.2', effect: 'bombThrowSpeedBonus', value: 0.2, desc: 'Aumenta a velocidade das bombas e granadas, fazendo-as chegar mais rápido.' },
+        { name: 'Fogo Mais Duradouro +0.5s', effect: 'bombFireZoneDurationBonusSeconds', value: 0.5, desc: 'Aumenta a duração do círculo de fogo em 0.5s por nível.' },
+        { name: 'Passo de Fogo +15%', effect: 'bombFireZoneMoveSpeedBonus', value: 0.15, desc: 'Enquanto estiver dentro da zona de fogo, você se move 15% mais rápido.' },
+        { name: 'Corrida de Reposição +20%', effect: 'bombCooldownMoveSpeedBonus', value: 0.2, desc: 'Enquanto a bomba estiver em cooldown, você se movimenta 20% mais rápido.' },
+        { name: 'Raio de Fogo +12.5%', effect: 'bombFireZoneRadiusBonus', value: 0.125, desc: 'Aumenta o raio do círculo de fogo da bomba em 12.5% por nível.' },
+        { name: 'Estilhaços +20%', effect: 'bombFragmentSizeBonus', value: 0.2, desc: 'Aumenta o tamanho dos fragmentos em 20% por nível.' }
     ],
     bow: [
         { name: 'Bota Leve +1', effect: 'bowDashMax', value: 1, desc: 'Concede 1 carga extra de dash ao usar o arco. Permite reposicionamento adicional durante o combate.' },
-        { name: 'Ricochete de Flecha +1', effect: 'bowRicochet', value: 1, desc: 'Cada melhoria adiciona um projétil extra ao ataque do arco. Esses projéteis têm a capacidade de destruir tiros inimigos e saltar para outro alvo.' },
-        { name: 'Tiro Certeiro +20%', effect: 'bowFirstShot', value: 20, desc: 'O primeiro tiro contra um novo monstro tem 20% de chance de crítico adicional, garantindo um início vantajoso.' },
-        { name: 'Postura Firme +15%', effect: 'bowReadyStance', value: 15, desc: 'Quando parado, sua chance de crítico aumenta em 15%. Críticos nesta postura causam 25% de dano adicional.' }
+        { name: 'Ricochete de Flecha +1', effect: 'bowRicochet', value: 1, desc: 'Adiciona projéteis auxiliares ao disparo do arco que podem destruir tiros inimigos e seguir alvos próximos.' },
+        { name: 'Postura Firme +15%', effect: 'bowReadyStance', value: 15, desc: 'Quando parado, suas flechas ganham mais chance de crítico e causam mais dano em viagens precisas.' }
     ],
     staff: [
-        { name: 'Energia Arcanista +2', effect: 'staffChargeMax', value: 2, desc: 'Aumenta a carga máxima para o burst de orbes.' },
-        { name: 'Rajada Extra +1', effect: 'staffBurstCount', value: 1, desc: 'Aumenta o número de orbes liberadas no burst.' },
-        { name: 'Fluxo Mais Rápido -12', effect: 'staffBurstCooldownMax', value: 12, desc: 'Reduz o cooldown entre bursts de orbes.' }
+        { name: 'Energia Arcanista +2', effect: 'staffChargeMax', value: 2, desc: 'Aumenta a carga máxima para o burst de orbes, permitindo cargas mais poderosas.' },
+        { name: 'Rajada Extra +1', effect: 'staffBurstCount', value: 1, desc: 'Aumenta o número de orbes liberadas no burst, transformando o ataque em uma tempestade mágica.' },
+        { name: 'Ressonância Arcana', effect: 'staffHomingBurst', value: 1, desc: 'As orbes do burst ganham força e rastreiam ferozmente o alvo, tornando o ataque mais difícil de evitar.' }
     ],
     sword: [
-        { name: 'Alcance +15', effect: 'swordRange', value: 15, desc: 'Aumenta o alcance da espada.' },
-        { name: 'Parry Veloz -40', effect: 'parryMax', value: 40, desc: 'Reduz o tempo de cooldown do parry.' },
-        { name: 'Carga por Golpe +1.5%', effect: 'parryChargePerHit', value: 1.5, desc: 'Cada ataque bem-sucedido carrega 1.5% do cooldown do parry. Cada nivel adiciona mais 1.5% de carga.' },
-        { name: 'Defesa de Parry +12.5%', effect: 'parryDefenseBonus', value: 12.5, desc: 'Quando voce nao pode fazer um parry, recebe 12.5% menos dano e ganha escudos visuais de proteção. Cada nivel adiciona mais proteção e mais um escudo.' },
-        { name: 'Cura de Parry +2.5%', effect: 'parryHealOnUse', value: 2.5, desc: 'Cura 2.5% da vida ao fazer um parry. Cura 2.5% da vida maxima ao acertar um parry no monstro.' },
-        { name: 'Parry Confusao +12.5%', effect: 'parryConfusionChance', value: 12.5, desc: 'Quando o monstro e acertado por um parry, 12.5% de chance de atacar na direcao oposta do jogador. Cada nivel faz a confusao durar 3 segundos.' }
+        { name: 'Investida Cortante +6', effect: 'attackMove', value: 6, desc: 'A cada nível, o dash da espada dispara um dash normal a mais mirando no monstro mais próximo. Com a melhoria ativa, o dash acontece sozinho ao encostar a espada em um monstro.' },
+        { name: 'Parry Veloz -40', effect: 'parryMax', value: 40, desc: 'Reduz o cooldown do parry, permitindo contra-ataques muito mais frequentes.' },
+        { name: 'Parry Confusão +12.5%', effect: 'parryConfusionChance', value: 12.5, desc: 'Parrys bem-sucedidos têm chance de confundir o inimigo, fazendo-o atacar na direção errada.' },
+        { name: 'Vínculo Vital +4%', effect: 'parryHealOverTime', value: 1, desc: 'Ao causar um parry, cura 4% da vida máxima por segundo pelos próximos 3 segundos. Cada nível adiciona +4% de cura por segundo.' }
     ],
     cone: [
-        { name: 'Fúria do Tornado +1', effect: 'tornadoCount', value: 1, desc: 'Adiciona uma lança extra à rajada do tornado.' },
-        { name: 'Tempo de Tornado +10', effect: 'tornadoDuration', value: 10, desc: 'Aumenta a duração do ataque tornado.' },
-        { name: 'Cone Mais Largo +0.1', effect: 'coneAngleBonus', value: 0.1, desc: 'Aumenta levemente a abertura do cone tornado.' }
+        { name: 'Fúria do Tornado +1', effect: 'tornadoCount', value: 1, desc: 'Adiciona uma lança extra à rajada do tornado, aumentando o volume de projéteis.' },
+        { name: 'Tempo de Tornado +10', effect: 'tornadoDuration', value: 10, desc: 'Aumenta a duração do ataque tornado, prolongando o caos no campo de batalha.' },
+        { name: 'Cone Mais Largo +0.1', effect: 'coneAngleBonus', value: 0.1, desc: 'Aumenta a abertura do cone tornado, permitindo cobrir uma área muito maior.' }
     ]
 };
 
 // ===== EVENT LISTENERS =====
 document.addEventListener('keydown', (e) => {
     keys[e.key.toLowerCase()] = true;
+    const transitionLocked = isMonsterTransitionActive();
+
+    if (e.key.toLowerCase() === 'o' && !isSelectingWeapon && !gameOver) {
+        e.preventDefault();
+        toggleDebugMenu();
+        return;
+    }
+
+    if (isDebugMenuOpen) {
+        const choices = getDebugMenuChoices();
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            debugMenuTabIndex = (debugMenuTabIndex + 1) % debugMenuTabs.length;
+            selectedDebugUpgradeIndex = 0;
+            selectedDebugActionIndex = 0;
+            return;
+        }
+        if (choices.length > 0) {
+            const selectedIndexKey = debugMenuTabs[debugMenuTabIndex].id === 'invocar' ? 'selectedDebugActionIndex' : 'selectedDebugUpgradeIndex';
+            if (e.key === 'ArrowUp' || e.key === 'w') {
+                e.preventDefault();
+                if (debugMenuTabs[debugMenuTabIndex].id === 'invocar') {
+                    selectedDebugActionIndex = (selectedDebugActionIndex - 1 + choices.length) % choices.length;
+                } else {
+                    selectedDebugUpgradeIndex = (selectedDebugUpgradeIndex - 1 + choices.length) % choices.length;
+                }
+            } else if (e.key === 'ArrowDown' || e.key === 's') {
+                e.preventDefault();
+                if (debugMenuTabs[debugMenuTabIndex].id === 'invocar') {
+                    selectedDebugActionIndex = (selectedDebugActionIndex + 1) % choices.length;
+                } else {
+                    selectedDebugUpgradeIndex = (selectedDebugUpgradeIndex + 1) % choices.length;
+                }
+            } else if (e.key === 'ArrowLeft' || e.key === 'a') {
+                e.preventDefault();
+                debugMenuQuantity = Math.max(1, debugMenuQuantity - 1);
+            } else if (e.key === 'ArrowRight' || e.key === 'd') {
+                e.preventDefault();
+                debugMenuQuantity = Math.min(99, debugMenuQuantity + 1);
+            } else if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                applyDebugUpgrade();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                isDebugMenuOpen = false;
+            }
+        }
+        return;
+    }
     
     if (isSelectingWeapon) {
         if (e.key === 'ArrowLeft' || e.key === 'a') {
@@ -5274,10 +9218,22 @@ document.addEventListener('keydown', (e) => {
             e.preventDefault();
             applyUpgrade(selectedUpgradeIndex);
         }
+    } else if (transitionLocked) {
+        // Ignorar ações de movimento e ataque durante a animação de morte/upgrade.
     } else {
-        if (e.key === ' ') {
+        if (e.key === 'i') {
             e.preventDefault();
-            attemptAttack();
+            spawnWeaponPickupsAroundPlayer();
+        } else if (e.key === 'c') {
+            e.preventDefault();
+            createConstructionEntrancePortalsAroundPlayer();
+        } else if (e.key === ' ') {
+            e.preventDefault();
+            if (player && player.weapon && player.weapon.type === 'sword') {
+                player.performSwordDash();
+            } else {
+                attemptAttack('space');
+            }
         }
     }
 });
@@ -5287,7 +9243,30 @@ document.addEventListener('keyup', (e) => {
 });
 
 canvas.addEventListener('click', (e) => {
-    if (isSelectingWeapon) {
+    if (isDebugMenuOpen) {
+        const rect = canvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+        const choices = debugMenuUpgradeChoices.length ? debugMenuUpgradeChoices : getDebugUpgradeChoices();
+        const geom = debugMenuListGeom;
+        const listX = geom.x;
+        const listY = geom.y;
+        const listWidth = geom.width;
+        const itemHeight = geom.itemHeight;
+        const gap = geom.gap;
+        const visibleCount = geom.visibleCount;
+        const startIndex = geom.startIndex;
+        for (let i = 0; i < visibleCount; i++) {
+            const index = startIndex + i;
+            const itemY = listY + i * (itemHeight + gap);
+            if (clickX >= listX && clickX <= listX + listWidth && clickY >= itemY && clickY <= itemY + itemHeight) {
+                selectedDebugUpgradeIndex = index;
+                applyDebugUpgrade();
+                break;
+            }
+        }
+        return;
+    } else if (isSelectingWeapon) {
         const rect = canvas.getBoundingClientRect();
         const clickX = e.clientX - rect.left;
         const clickY = e.clientY - rect.top;
@@ -5334,16 +9313,67 @@ canvas.addEventListener('click', (e) => {
                 break;
             }
         }
+    } else if (isMonsterTransitionActive()) {
+        // Ignorar cliques de ataque durante a animação de morte/upgrade.
     } else {
-        attemptAttack();
+        if (player && player.weapon && player.weapon.type === 'sword') {
+            player.performSwordDash();
+        } else {
+            attemptAttack('mouse');
+        }
     }
 });
 
-// ===== FUNÇÕES DE JOGO =====
+function applyCooldownBarBaseBackground() {
+    try {
+        const bar = document.getElementById('cooldownBar');
+        if (!bar) return;
+        bar.style.backgroundImage = 'linear-gradient(to right, rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(to right, rgba(120, 220, 255, 0.75), rgba(120, 155, 255, 0.35))';
+        bar.style.backgroundSize = 'calc(100% / 13) 100%';
+        bar.style.backgroundRepeat = 'repeat-x';
+    } catch (e) {}
+}
+
+function renderGunAmmoCooldownBar() {
+    try {
+        const fill = document.getElementById('cooldownBarFill');
+        if (!fill) return;
+
+        applyCooldownBarBaseBackground();
+
+        if (!player) {
+            fill.style.width = '0%';
+            return;
+        }
+
+        const maxAmmo = Math.max(1, Number(player.gunMaxAmmo || player.gunAmmo || 1) || 1);
+        const remainingAmmo = Math.max(0, Math.min(maxAmmo, Number(player.gunAmmo || 0) || 0));
+        const segmentCount = Math.max(1, maxAmmo);
+        const segmentWidth = 100 / segmentCount;
+        const segments = [];
+        const activeColor = 'rgba(255, 214, 102, 0.96)';
+        const emptyColor = 'rgba(0, 0, 0, 0)';
+
+        for (let index = 0; index < segmentCount; index++) {
+            const start = index * segmentWidth;
+            const end = (index + 1) * segmentWidth;
+            const color = index < remainingAmmo ? activeColor : emptyColor;
+            segments.push(`${color} ${start.toFixed(3)}%`, `${color} ${end.toFixed(3)}%`);
+        }
+
+        fill.style.width = '100%';
+        fill.style.backgroundImage = `linear-gradient(90deg, ${segments.join(', ')})`;
+        fill.style.backgroundSize = '100% 100%';
+        fill.style.backgroundRepeat = 'no-repeat';
+        fill.style.backgroundColor = 'transparent';
+        fill.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,0.04)';
+    } catch (e) {}
+}
+
 function selectWeapon(index) {
     player.weapon = weapons[index];
     if (player.weapon.type === 'gun') {
-        player.gunAmmo = player.gunMaxAmmo;
+        player.gunAmmo = player.gunAmmo;
         player.gunReloadCooldown = 0;
         player.gunReloadHitCount = 0;
     }
@@ -5357,13 +9387,32 @@ function selectWeapon(index) {
 }
 
 function registerPlayerHit() {
+    if (player.castleBoneUnlocked) {
+        player.castleBoneHitCounter = (player.castleBoneHitCounter || 0) + 1;
+        if (player.castleBoneHitCounter >= 4) {
+            player.castleBoneHitCounter = 0;
+            spawnCastleBoneOrbiters();
+        }
+    }
+
+    if (currentMonster && currentMonster.type === 'croc') {
+        currentMonster.hitsTakenThisLife = (currentMonster.hitsTakenThisLife || 0) + 1;
+        currentMonster.lastHitFrame = gameFrameCount;
+        if (currentMonster.hitsTakenThisLife >= 3 && currentMonster.stunTimer <= 0 && currentMonster.roarTimer <= 0 && currentMonster.sprintEscapeTimer <= 0) {
+            currentMonster.stunTimer = Math.round(0.3 * 60);
+            currentMonster.confusedTimer = Math.round(1 * 60);
+            currentMonster.confusedLevel = Math.max(currentMonster.confusedLevel || 0, 3);
+            currentMonster.postConfusionRoar = true;
+            currentMonster.hitsTakenThisLife = 0;
+        }
+    }
+
     if (player.autoAttackEnabled) return;
     player.currentMonsterHitCount++;
     if (player.currentMonsterHitCount >= 3) {
         player.autoAttackEnabled = true;
         player.currentMonsterHitCount = 3;
     }
-    // Acumular carga para reduzir o próximo cooldown de parry
     if (player.parryChargePerHit > 0 && player.parryCooldown === 0) {
         player.parryChargeAccumulator += player.parryChargePerHit;
     }
@@ -5373,6 +9422,8 @@ function updateCooldownBar() {
     try {
         const fill = document.getElementById('cooldownBarFill');
         if (!fill) return;
+
+        applyCooldownBarBaseBackground();
 
         if (player.weapon && player.weapon.type === 'staff') {
             const ratio = Math.max(0, Math.min(1, (player.staffCharge || 0) / (player.staffChargeMax || 15)));
@@ -5389,13 +9440,7 @@ function updateCooldownBar() {
         }
 
         if (player.weapon && player.weapon.type === 'gun') {
-            if (player.gunReloadCooldown > 0) {
-                const ratio = Math.max(0, Math.min(1, player.gunReloadCooldown / player.gunReloadCooldownMax));
-                fill.style.width = `${ratio * 100}%`;
-            } else {
-                const ratio = Math.max(0, Math.min(1, (player.gunReloadHitCount || 0) / player.gunReloadHitMax));
-                fill.style.width = `${ratio * 100}%`;
-            }
+            renderGunAmmoCooldownBar();
             return;
         }
 
@@ -5403,7 +9448,416 @@ function updateCooldownBar() {
     } catch (e) {}
 }
 
-function attemptAttack() {
+function applyAreaDamageAt(x, y, radius, damage, options = {}) {
+    if (!player) return 0;
+
+    const onHit = typeof options.onHit === 'function' ? options.onHit : null;
+    let applied = 0;
+    if (playerInsideConstruction) {
+        for (const enemy of castleInteriorEnemies) {
+            if (!enemy || enemy.isDying || enemy.health <= 0) continue;
+            const ex = enemy.x + enemy.width / 2;
+            const ey = enemy.y + enemy.height / 2;
+            if (Math.hypot(ex - x, ey - y) <= radius + Math.max(enemy.width, enemy.height) * 0.35) {
+                applyDamageToInteriorEnemy(enemy, damage);
+                if (onHit) onHit(enemy, { x, y, radius, damage });
+                applied += 1;
+            }
+        }
+        return applied;
+    }
+
+    if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
+        const mx = currentMonster.x + currentMonster.width / 2;
+        const my = currentMonster.y + currentMonster.height / 2;
+        if (Math.hypot(mx - x, my - y) <= radius + Math.max(currentMonster.width, currentMonster.height) * 0.35) {
+            currentMonster.takeDamage(damage);
+            if (onHit) onHit(currentMonster, { x, y, radius, damage });
+            applied += 1;
+        }
+    }
+    return applied;
+}
+
+function applyBombHitStun(target) {
+    if (!target || !player) return;
+    const stunSeconds = Math.max(0, player.bombStunPerHitSeconds || 0);
+    if (stunSeconds <= 0 || typeof target.stunTimer !== 'number') return;
+    target.stunTimer = Math.max(target.stunTimer || 0, Math.round(stunSeconds * 60));
+    if (stunSeconds > 0) {
+        spawnBombStunEffect(target.x + target.width / 2, target.y + target.height / 2);
+    }
+}
+
+function applyBurnToTarget(target, damagePerSecond, durationSeconds) {
+    if (!target || !damagePerSecond || damagePerSecond <= 0) return;
+    const durationFrames = Math.max(1, Math.round((durationSeconds || 3) * 60));
+    const isFirstBurn = !target.burnTimer || target.burnTimer <= 0;
+    target.burnTimer = Math.max(target.burnTimer || 0, durationFrames);
+    target.burnDamagePerSecond = Math.max(target.burnDamagePerSecond || 0, damagePerSecond);
+    target.burnTickTimer = Math.min(target.burnTickTimer || 60, 60);
+    if (isFirstBurn && damagePerSecond > 0) {
+        spawnBombBurnEffect(target.x + target.width / 2, target.y + target.height / 2);
+    }
+}
+
+function applyBurnToTargetsInArea(x, y, radius, damagePerSecond, durationSeconds) {
+    if (!damagePerSecond || damagePerSecond <= 0) return;
+
+    if (playerInsideConstruction) {
+        for (const enemy of castleInteriorEnemies) {
+            if (!enemy || enemy.isDying || enemy.health <= 0) continue;
+            const ex = enemy.x + enemy.width / 2;
+            const ey = enemy.y + enemy.height / 2;
+            if (Math.hypot(ex - x, ey - y) <= radius + Math.max(enemy.width, enemy.height) * 0.35) {
+                applyBurnToTarget(enemy, damagePerSecond, durationSeconds);
+            }
+        }
+        return;
+    }
+
+    if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
+        const mx = currentMonster.x + currentMonster.width / 2;
+        const my = currentMonster.y + currentMonster.height / 2;
+        if (Math.hypot(mx - x, my - y) <= radius + Math.max(currentMonster.width, currentMonster.height) * 0.35) {
+            applyBurnToTarget(currentMonster, damagePerSecond, durationSeconds);
+        }
+    }
+}
+
+function getBombFireZoneDurationFrames() {
+    const baseSeconds = Math.max(3, player?.bombBurnDurationSeconds || 3);
+    const extraSeconds = Math.max(0, player?.bombFireZoneDurationBonusSeconds || 0);
+    return Math.round((baseSeconds + extraSeconds) * 60);
+}
+
+function getBombFireZoneRadiusMultiplier() {
+    return 1 + Math.max(0, player?.bombFireZoneRadiusBonus || 0);
+}
+
+function spawnFireZone(x, y, options = {}) {
+    const durationFrames = options.durationFrames || getBombFireZoneDurationFrames();
+    const radiusMultiplier = options.radiusMultiplier || getBombFireZoneRadiusMultiplier();
+    const zone = {
+        x,
+        y,
+        damage: 40,
+        tickDamage: 5,
+        burnDamage: options.burnDamage ?? (player?.bombBurnDamagePerSecond || 0),
+        burnDurationSeconds: options.burnDurationSeconds ?? (player?.bombBurnDurationSeconds || 3),
+        maxRadius: 72 * radiusMultiplier,
+        radius: 72 * radiusMultiplier,
+        duration: durationFrames,
+        life: durationFrames,
+        tickTimer: 60,
+        color: '#ff8c1a'
+    };
+    fireZones.push(zone);
+    applyAreaDamageAt(x, y, zone.radius, zone.damage, {
+        onHit: (target) => {
+            if (options.applyStun) {
+                applyBombHitStun(target);
+                spawnBombStunEffect(target.x + target.width / 2, target.y + target.height / 2);
+            }
+        }
+    });
+    spawnEvaporationEffect(x, y, '#ff9e3c', 24, 18);
+    spawnBombFireZoneEffect(x, y, radiusMultiplier);
+    return zone;
+}
+
+function spawnSmokeBurst(x, y, count = 18) {
+    for (let i = 0; i < count; i++) {
+        const angle = (Math.random() * Math.PI * 2);
+        const speed = Math.random() * 0.8 + 0.3;
+        const gray = 70 + Math.floor(Math.random() * 30);
+        evaporationEffects.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed - 0.7 - Math.random() * 0.4,
+            life: 48 + Math.floor(Math.random() * 14),
+            alpha: 1,
+            size: 8 + Math.random() * 8,
+            color: `rgba(${gray}, ${gray}, ${gray}, 0.9)`
+        });
+    }
+}
+
+function spawnGrenadeFragments(x, y) {
+    const extraFragments = Math.max(0, player?.bombFragmentCountBonus || 0) * 2;
+    const count = 10 + extraFragments;
+    const speedMultiplier = 1 + Math.max(0, player?.bombFragmentSpeedBonus || 0);
+    const sizeMultiplier = 1 + Math.max(0, player?.bombFragmentSizeBonus || 0);
+    for (let i = 0; i < count; i++) {
+        const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.35;
+        grenadeFragments.push({
+            x,
+            y,
+            vx: Math.cos(angle) * 20 * speedMultiplier,
+            vy: Math.sin(angle) * 20 * speedMultiplier,
+            size: 3.8 * sizeMultiplier,
+            life: 28,
+            damage: 3,
+            color: '#ffb347',
+            pierceRemaining: 1 + Math.max(0, player?.bombFragmentPierce || 0)
+        });
+    }
+    if (extraFragments > 0) {
+        spawnBombFragmentCountEffect(Math.max(0, player?.bombFragmentCountBonus || 0));
+    }
+}
+
+function launchThrowingExplosive(attackType = 'bomb') {
+    const startX = player.x + player.width / 2;
+    const startY = player.y + player.height / 2;
+    const targetX = mouseX + cameraX;
+    const targetY = mouseY + cameraY;
+    const baseTravelTime = attackType === 'bomb' ? 38 : 32;
+    const travelSpeedMultiplier = 1 + Math.max(0, player?.bombThrowSpeedBonus || 0);
+    const travelTime = Math.max(10, Math.round(baseTravelTime / travelSpeedMultiplier));
+    const arcHeight = attackType === 'bomb' ? 180 : 150;
+    
+    spawnBombThrowEffect(startX, startY, targetX, targetY);
+
+    thrownExplosives.push({
+        x: startX,
+        y: startY,
+        startX,
+        startY,
+        targetX,
+        targetY,
+        travelTime,
+        elapsed: 0,
+        arcHeight,
+        type: attackType
+    });
+}
+
+function updateThrownExplosives() {
+    for (let i = thrownExplosives.length - 1; i >= 0; i--) {
+        const projectile = thrownExplosives[i];
+        projectile.elapsed += 1;
+        const progress = Math.min(1, projectile.elapsed / projectile.travelTime);
+        const eased = 1 - Math.pow(1 - progress, 2);
+        projectile.x = projectile.startX + (projectile.targetX - projectile.startX) * eased;
+        projectile.y = projectile.startY + (projectile.targetY - projectile.startY) * eased - projectile.arcHeight * 4 * eased * (1 - eased);
+
+        if (progress >= 1) {
+            if (projectile.type === 'bomb') {
+                spawnFireZone(projectile.targetX, projectile.targetY, { applyStun: true });
+                spawnSmokeBurst(projectile.targetX, projectile.targetY, 20);
+            } else {
+                applyAreaDamageAt(projectile.targetX, projectile.targetY, 30, 10);
+                spawnGrenadeFragments(projectile.targetX, projectile.targetY);
+                spawnEvaporationEffect(projectile.targetX, projectile.targetY, '#ff7a00', 18, 12);
+                spawnSmokeBurst(projectile.targetX, projectile.targetY, 20);
+            }
+            thrownExplosives.splice(i, 1);
+        }
+    }
+}
+
+function updateFireZones() {
+    for (let i = fireZones.length - 1; i >= 0; i--) {
+        const zone = fireZones[i];
+        zone.life -= 1;
+        zone.radius = zone.maxRadius * Math.max(0, zone.life / zone.duration);
+        zone.tickTimer -= 1;
+        if (zone.tickTimer <= 0) {
+            applyAreaDamageAt(zone.x, zone.y, zone.radius, zone.tickDamage);
+            if (zone.burnDamage > 0) {
+                applyBurnToTargetsInArea(zone.x, zone.y, zone.radius, zone.burnDamage, zone.burnDurationSeconds);
+            }
+            zone.tickTimer = 60;
+        }
+        if (zone.life <= 0) {
+            fireZones.splice(i, 1);
+        }
+    }
+}
+
+function updateBurningEffects() {
+    const tickTargets = [];
+
+    if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying && (currentMonster.burnTimer || 0) > 0) {
+        tickTargets.push(currentMonster);
+    }
+
+    for (const enemy of castleInteriorEnemies) {
+        if (enemy && !enemy.isDying && enemy.health > 0 && (enemy.burnTimer || 0) > 0) {
+            tickTargets.push(enemy);
+        }
+    }
+
+    for (const target of tickTargets) {
+        if (!target) continue;
+        target.burnTimer = Math.max(0, (target.burnTimer || 0) - 1);
+        target.burnTickTimer = Math.max(0, (target.burnTickTimer || 60) - 1);
+        if ((target.burnTickTimer || 0) <= 0) {
+            target.burnTickTimer = 60;
+            const damage = Math.max(1, Math.round(target.burnDamagePerSecond || 0));
+            if (playerInsideConstruction) {
+                applyDamageToInteriorEnemy(target, damage);
+            } else if (currentMonster && currentMonster === target) {
+                target.takeDamage(damage);
+            }
+            if ((target.burnDamagePerSecond || 0) > 0) {
+                spawnBombBurnEffect(target.x + target.width / 2, target.y + target.height / 2);
+            }
+        }
+    }
+}
+
+function updateGrenadeFragments() {
+    for (let i = grenadeFragments.length - 1; i >= 0; i--) {
+        const fragment = grenadeFragments[i];
+        fragment.x += fragment.vx;
+        fragment.y += fragment.vy;
+        fragment.life -= 1;
+
+        let fragmentHit = false;
+        if (playerInsideConstruction) {
+            for (const enemy of castleInteriorEnemies) {
+                if (!enemy || enemy.isDying || enemy.health <= 0) continue;
+                if (fragment.x > enemy.x && fragment.x < enemy.x + enemy.width && fragment.y > enemy.y && fragment.y < enemy.y + enemy.height) {
+                    applyDamageToInteriorEnemy(enemy, fragment.damage);
+                    if (player?.bombFragmentConfusionSeconds > 0) {
+                        enemy.confusedTimer = Math.max(enemy.confusedTimer || 0, Math.round(player.bombFragmentConfusionSeconds * 60));
+                        spawnBombConfusionEffect(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2);
+                    }
+                    fragment.pierceRemaining = Math.max(0, (fragment.pierceRemaining || 1) - 1);
+                    fragmentHit = true;
+                    spawnBombFragmentHitEffect(fragment.x, fragment.y, fragment.size);
+                    break;
+                }
+            }
+        } else if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
+            if (fragment.x > currentMonster.x && fragment.x < currentMonster.x + currentMonster.width && fragment.y > currentMonster.y && fragment.y < currentMonster.y + currentMonster.height) {
+                currentMonster.takeDamage(fragment.damage);
+                if (player?.bombFragmentConfusionSeconds > 0) {
+                    currentMonster.confusedTimer = Math.max(currentMonster.confusedTimer || 0, Math.round(player.bombFragmentConfusionSeconds * 60));
+                    spawnBombConfusionEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2);
+                }
+                fragment.pierceRemaining = Math.max(0, (fragment.pierceRemaining || 1) - 1);
+                fragmentHit = true;
+                spawnBombFragmentHitEffect(fragment.x, fragment.y, fragment.size);
+            }
+        }
+
+        if (fragmentHit && fragment.pierceRemaining <= 0) {
+            grenadeFragments.splice(i, 1);
+        } else if (fragment.life <= 0) {
+            grenadeFragments.splice(i, 1);
+        }
+    }
+}
+
+function drawThrownExplosives() {
+    for (const projectile of thrownExplosives) {
+        ctx.save();
+        ctx.translate(projectile.x, projectile.y);
+        const isBomb = projectile.type === 'bomb';
+        const color = isBomb ? '#ff8c1a' : '#8b1e00';
+        const glowColor = isBomb ? '#ffb347' : '#ff7a00';
+        const size = isBomb ? 8 : 6;
+        
+        // Glow effect
+        const throwBonus = player?.bombThrowSpeedBonus || 0;
+        const glowSize = size + 4 + throwBonus * 2;
+        ctx.fillStyle = isBomb ? 'rgba(255, 139, 26, 0.3)' : 'rgba(139, 30, 0, 0.2)';
+        ctx.beginPath();
+        ctx.arc(0, 0, glowSize, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Main projectile
+        ctx.fillStyle = color;
+        ctx.shadowColor = glowColor;
+        ctx.shadowBlur = 12 + throwBonus * 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+function drawFireZones() {
+    for (const zone of fireZones) {
+        const alpha = Math.max(0.15, zone.life / zone.duration);
+        const radiusBonus = player?.bombFireZoneRadiusBonus || 0;
+        const burnIntensity = Math.min(1, player?.bombBurnDamagePerSecond || 0) * 0.6;
+        
+        ctx.save();
+        
+        // Outer glow layer
+        const glowAlpha = alpha * 0.3 * (0.8 + 0.2 * Math.sin(performance.now() * 0.008));
+        ctx.globalAlpha = glowAlpha;
+        ctx.fillStyle = '#ff6600';
+        ctx.beginPath();
+        ctx.arc(zone.x, zone.y, zone.radius * 1.3, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Main zone fill
+        ctx.globalAlpha = alpha * 0.65;
+        ctx.fillStyle = '#ff8c1a';
+        ctx.beginPath();
+        ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Inner bright core
+        if (burnIntensity > 0) {
+            ctx.globalAlpha = alpha * 0.4 * burnIntensity;
+            ctx.fillStyle = '#ffaa00';
+            ctx.beginPath();
+            ctx.arc(zone.x, zone.y, zone.radius * 0.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        
+        // Border stroke with animation
+        ctx.globalAlpha = alpha * 0.85;
+        ctx.strokeStyle = `rgba(255, 220, 120, ${0.85 + 0.15 * Math.sin(performance.now() * 0.006)})`;
+        ctx.lineWidth = 2 + radiusBonus;
+        ctx.beginPath();
+        ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        ctx.restore();
+    }
+}
+
+function drawGrenadeFragments() {
+    for (const fragment of grenadeFragments) {
+        const sizeBonus = player?.bombFragmentSizeBonus || 0;
+        const visualSize = fragment.size * (1 + sizeBonus * 0.1);
+        
+        ctx.save();
+        ctx.translate(fragment.x, fragment.y);
+        
+        // Outer glow
+        ctx.fillStyle = 'rgba(255, 179, 71, 0.25)';
+        ctx.beginPath();
+        ctx.arc(0, 0, visualSize * 1.8, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Main fragment
+        ctx.fillStyle = fragment.color;
+        ctx.shadowColor = '#ffaa44';
+        ctx.shadowBlur = 6 + visualSize * 0.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, visualSize, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Inner highlight
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.beginPath();
+        ctx.arc(-visualSize * 0.3, -visualSize * 0.3, visualSize * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.restore();
+    }
+}
+
+function attemptAttack(source = 'mouse') {
     if (!player.weapon) return;
     // Remover ataque ativo para espadas: não executar attemptAttack() quando a arma for espada
     if (player.weapon && player.weapon.type === 'sword') return;
@@ -5422,8 +9876,9 @@ function attemptAttack() {
                 // liberar burst e zerar a carga
                 player.staffCharge = 0;
                 player.staffBurstCooldown = player.staffBurstCooldownMax || 120;
-                const centerX = player.x + player.width / 2;
-                const centerY = player.y + player.height / 2;
+                const staffMount = player.getWeaponMountPoint();
+                const centerX = staffMount.tipX;
+                const centerY = staffMount.tipY;
                 const baseDamageVal = player.weapon ? (player.weapon.damage || 1) + player.weaponDamage + player.baseDamage : 1;
                 const damage = Math.max(1, Math.round(baseDamageVal * (player.damageOutputMultiplier || 1)));
                 const miniDamage = Math.max(1, Math.round(damage * 0.5));
@@ -5438,6 +9893,21 @@ function attemptAttack() {
     }
 
     const weapon = player.weapon;
+    if (weapon.type === 'grenade') {
+        const attackType = source === 'space' ? 'bomb' : 'grenade';
+        const cooldownFrames = 5 * 60;
+        if (attackType === 'bomb') {
+            if (player.bombCooldown > 0) return;
+            launchThrowingExplosive('bomb');
+            player.bombCooldown = cooldownFrames;
+        } else {
+            if (player.grenadeCooldown > 0) return;
+            launchThrowingExplosive('grenade');
+            player.grenadeCooldown = cooldownFrames;
+        }
+        return;
+    }
+
     if (weapon.type === 'bow' && player.attackCooldown > 0 && player.bowDashCharges > 0) {
         let moveX = 0;
         let moveY = 0;
@@ -5460,6 +9930,7 @@ function attemptAttack() {
         return;
     }
 
+    if (player.stunTimer > 0) return;
     if (player.attackCooldown === 0) {
         if (weapon.type === 'bow') {
             player.bowDashCharges = player.bowDashMaxCharges;
@@ -5471,14 +9942,9 @@ function attemptAttack() {
                 return;
             }
         }
-        const worldMouseX = mouseX + cameraX;
-        const worldMouseY = mouseY + cameraY;
-        const monsterVisible = currentMonster.x + currentMonster.width >= cameraX &&
-                       currentMonster.x <= cameraX + viewportWidth &&
-                       currentMonster.y + currentMonster.height >= cameraY &&
-                       currentMonster.y <= cameraY + viewportHeight;
-        const targetX = monsterVisible ? currentMonster.x + currentMonster.width / 2 : worldMouseX;
-        const targetY = monsterVisible ? currentMonster.y + currentMonster.height / 2 : worldMouseY;
+        const preferred = getPreferredTarget();
+        const targetX = preferred.x;
+        const targetY = preferred.y;
         
         const baseWeaponDamage = weapon.damage + player.weaponDamage + player.baseDamage;
         const totalCritChance = player.critChance + ((weapon.type === 'bow') ? (player.bowCritChance || 0) : 0);
@@ -5489,6 +9955,7 @@ function attemptAttack() {
         const cooldown = Math.max(1, weapon.cooldown - player.cooldownReduction);
         const baseAngle = Math.atan2(targetY - (player.y + player.height / 2), targetX - (player.x + player.width / 2));
         const specialAttackSpeed = Math.max(6, (weapon.speed || 12) + player.projectileSpeedBonus);
+        const weaponInfo = player.getWeaponMountPoint(baseAngle);
 
         if (weapon.type === 'sword') {
             player.attacking = true;
@@ -5507,10 +9974,11 @@ function attemptAttack() {
             player.meleeTimer = 14;
             player.coneDirection = baseAngle;
             player.coneAngle = weapon.coneAngle || Math.PI / 3;
-            player.coneRange = weapon.range;
+            player.coneRange = weapon.range * getPlayerInteriorScale();
 
             if (!player.tornadoBurst || !player.tornadoBurst.active) {
-                const baseTornadoSpeed = ((weapon.speed || 12) + player.projectileSpeedBonus) * 0.25 * 0.5 / 3;
+                const playerScale = getPlayerInteriorScale();
+                const baseTornadoSpeed = ((weapon.speed || 12) + player.projectileSpeedBonus) * 0.25 * 0.5 / 3 * playerScale;
                 const tornadoCount = Math.max(1, Math.round(5 + player.extraProjectiles + player.spreadProjectiles + (player.tornadoBurstExtraCount || 0)));
                 player.tornadoBurst = {
                     active: true,
@@ -5524,7 +9992,7 @@ function attemptAttack() {
                     critPercent: critPercent,
                     coneAngle: (weapon.coneAngle || Math.PI / 3) * 1.45 * (1 + player.spreadProjectiles * 0.15) + (player.tornadoConeAngleBonus || 0),
                     count: tornadoCount,
-                    maxDistance: weapon.range * 0.7
+                    maxDistance: weapon.range * 0.7 * playerScale
                 };
 
                 // If player has late shots, schedule tornado copy spawns to match those late shots
@@ -5559,10 +10027,12 @@ function attemptAttack() {
             const coneCooldown = tornadoActive ? Math.max(1, Math.round(baseConeCooldown * 0.67)) : baseConeCooldown;
             player.attackCooldown = Math.max(1, coneCooldown - Math.round(cooldown * player.attackSpeed));
         } else {
+            const playerScale = getPlayerInteriorScale();
             // Ataque à distância (projétil)
             const shots = 1 + player.extraProjectiles + player.spreadProjectiles;
             const baseAngle = Math.atan2(targetY - (player.y + player.height / 2), targetX - (player.x + player.width / 2));
-            const speed = weapon.speed + player.projectileSpeedBonus;
+            const speed = (weapon.speed + player.projectileSpeedBonus) * playerScale;
+            const effectiveRange = weapon.range * playerScale;
 
             let lastProjX = player.x + player.width / 2;
             let lastProjY = player.y + player.height / 2;
@@ -5570,30 +10040,26 @@ function attemptAttack() {
             for (let i = 0; i < shots; i++) {
                 const spread = (Math.random() - 0.5) * 0.2 * shots;
                 const angle = baseAngle + spread;
-                const projTargetX = player.x + player.width / 2 + Math.cos(angle) * weapon.range;
-                const projTargetY = player.y + player.height / 2 + Math.sin(angle) * weapon.range;
+                const projTargetX = player.x + player.width / 2 + Math.cos(angle) * effectiveRange;
+                const projTargetY = player.y + player.height / 2 + Math.sin(angle) * effectiveRange;
                 const projOpts = {
                     critPercent,
-                    isGunOriginal: weapon.type === 'gun' && i === 0
+                    isGunOriginal: weapon.type === 'gun' && i === 0,
+                    explosive: weapon.type === 'gun' && player.gunExplosiveAmmo > 0,
                 };
-                spawnPlayerProjectile(player.x + player.width / 2, player.y + player.height / 2, projTargetX, projTargetY, attackDamage, weapon.color, speed, projOpts);
-                lastProjX = projTargetX;
-                lastProjY = projTargetY;
-            }
+                spawnPlayerProjectile(weaponInfo.tipX, weaponInfo.tipY, projTargetX, projTargetY, attackDamage, weapon.color, speed, projOpts);
 
-            if (player.lateShots > 0) {
-                const originX = player.x + player.width / 2 + (lastProjX - (player.x + player.width / 2)) * 0.5;
-                const originY = player.y + player.height / 2 + (lastProjY - (player.y + player.height / 2)) * 0.5;
-                for (let i = 0; i < player.lateShots; i++) {
-                    player.pendingLateShots.push({
-                        x: originX,
-                        y: originY,
-                        damage: attackDamage,
-                        color: weapon.color,
-                        speed: speed,
-                        critPercent: critPercent,
-                        timer: 45 + i * 12
-                    });
+                if (weapon.type === 'gun' && player.gunBurstFire > 0) {
+                    for (let burstIndex = 0; burstIndex < player.gunBurstFire; burstIndex++) {
+                        const extraAngle = angle + ((burstIndex + 1) - (player.gunBurstFire + 1) / 2) * 0.14;
+                        const burstTargetX = player.x + player.width / 2 + Math.cos(extraAngle) * weapon.range * 0.9;
+                        const burstTargetY = player.y + player.height / 2 + Math.sin(extraAngle) * weapon.range * 0.9;
+                        spawnPlayerProjectile(weaponInfo.tipX, weaponInfo.tipY, burstTargetX, burstTargetY, Math.max(1, Math.round(attackDamage * 0.75)), weapon.color, speed * 0.95, {
+                            critPercent,
+                            explosive: player.gunExplosiveAmmo > 0,
+                            isGunOriginal: false
+                        });
+                    }
                 }
             }
 
@@ -5945,8 +10411,13 @@ function updateProjectiles() {
                         if (q.style === 'tornadoLance' && !q._scheduledTornadoCopy) {
                             // schedule spawn in ~0.3s (18 frames at 60fps)
                             const srcSpeedActual = q.baseActualSpeed || Math.sqrt(q.vx * q.vx + q.vy * q.vy) || 0.0001;
-                            const targetX = currentMonster ? currentMonster.x + (currentMonster.width || 0) / 2 : q.x + 320;
-                            const targetY = currentMonster ? currentMonster.y + (currentMonster.height || 0) / 2 : q.y;
+                            let copyTarget = currentMonster ? { x: currentMonster.x + (currentMonster.width || 0) / 2, y: currentMonster.y + (currentMonster.height || 0) / 2 } : null;
+                            if (playerInsideConstruction) {
+                                const castleTarget = getNearestCastleEnemyCenter();
+                                if (castleTarget) copyTarget = castleTarget;
+                            }
+                            const targetX = copyTarget ? copyTarget.x : q.x + 320;
+                            const targetY = copyTarget ? copyTarget.y : q.y;
                             if (DEBUG_TORNADO_COPY) console.log('Scheduling tornado lance copy', {x: q.x, y: q.y, speed: srcSpeedActual, targetX, targetY});
                             delayedProjectileSpawns.push({
                                 timer: Math.round(0.3 * 60),
@@ -5983,6 +10454,9 @@ function updateProjectiles() {
 
         if (!projectiles[i].isAlive()) {
             const p = projectiles[i];
+            if (p.owner === 'monster' && (p.monsterType === 'caster' || p.style === 'casterFlameCircle' || p.style === 'casterFlameSpiral' || p.style === 'casterFlameRing' || p.style === 'casterFlameVolley' || p.style === 'casterBurst' || p.style === 'casterShard') && p.explodeOnExpire && !p._casterBurstTriggered) {
+                spawnCasterProjectileBurst(p);
+            }
             if (p.style === 'tornadoHurricane') {
                 player.hurricaneCooldown = player.hurricaneCooldownMax || 360;
             }
@@ -6047,104 +10521,280 @@ function updateProjectiles() {
         }
         
         if (p.owner === 'player' && !p.ignoreCollision) {
-            const isHit = 
-                p.x < currentMonster.x + currentMonster.width &&
-                p.x > currentMonster.x &&
-                p.y < currentMonster.y + currentMonster.height &&
-                p.y > currentMonster.y;
-            
-            if (isHit) {
-                // Calculate base damage (lances do 1.5x)
-                let baseDamage = (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') ? p.damage * 1.5 : p.damage;
-
-                // Apply projectile-specific crit multipliers and bonuses if present
-                const projCritChanceMul = p.critChanceMultiplier || 1;
-                const projCritDamageMul = p.critDamageMultiplier || 1;
-                const projCritChanceBonus = p.critChanceBonus || 0;
-                const effectiveCritChance = ((player.critChance || 0) + projCritChanceBonus) * projCritChanceMul;
-                const effectiveCritDamage = (player.critDamage || 0) * projCritDamageMul;
-
-                let finalDamage = baseDamage;
-                let didCrit = false;
-                if (Math.random() * 100 < effectiveCritChance) {
-                    finalDamage = Math.round(finalDamage * (1 + effectiveCritDamage));
-                    didCrit = true;
-                }
-
-                currentMonster.takeDamage(finalDamage);
-                if (p.parried && player.parryHealOnUse > 0) {
-                    const healAmount = player.maxHealth * (player.parryHealOnUse / 100);
-                    player.health = Math.min(player.maxHealth, player.health + healAmount);
-                }
-                if (p.parried && player.parryConfusionChance > 0 && Math.random() * 100 < player.parryConfusionChance) {
-                    const confusionFrames = Math.round((player.parryConfusionDuration || 0) * 60);
-                    if (confusionFrames > 0) {
-                        currentMonster.confusedTimer = Math.max(currentMonster.confusedTimer, confusionFrames);
+            if (playerInsideConstruction) {
+                const enemy = findInteriorEnemyInRectangle(p.x - p.size - 4, p.y - p.size - 4, p.size * 2 + 8, p.size * 2 + 8);
+                if (enemy) {
+                    let baseDamage = (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') ? p.damage * 1.5 : p.damage;
+                    if (p.style === 'gunBullet' && player.gunExplosiveAmmo > 0 && p.explosive) {
+                        baseDamage += Math.round(baseDamage * 0.25 * player.gunExplosiveAmmo);
                     }
-                }
-                if (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') {
-                    const hitX = currentMonster.x + currentMonster.width / 2;
-                    const hitY = currentMonster.y + currentMonster.height / 2;
-                    spawnTornadoHitEffect(hitX, hitY, '#83e8ff');
-                }
-                // Tornado lance hits build charge to summon the hurricane
-                    if ((p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') && player.hurricaneCooldown <= 0) {
-                    player.tornadoCharge = (player.tornadoCharge || 0) + 1;
-                    if (player.tornadoCharge >= (player.tornadoChargeMax || 20)) {
-                        player.tornadoCharge = 0;
-                        updateCooldownBar();
-                        spawnTornadoHurricane();
-                    } else {
-                        updateCooldownBar();
-                    }
-                }
 
-                if (p.style === 'gunBullet' && player.gunReloadCooldown <= 0 && p.isGunOriginal) {
-                    player.gunReloadHitCount = Math.min(player.gunReloadHitMax, (player.gunReloadHitCount || 0) + 1);
-                    updateCooldownBar();
-                    if (player.gunReloadHitCount >= player.gunReloadHitsToTrigger) {
-                        player.gunReloadHitCount = 0;
-                        player.gunReloadCooldown = player.gunReloadCooldownMax;
-                        player.gunReloadInvulnCharges = 0;
-                        player.gunReloadFlashTicker = 0;
-                        updateCooldownBar();
+                    const projCritChanceMul = p.critChanceMultiplier || 1;
+                    const projCritDamageMul = p.critDamageMultiplier || 1;
+                    const projCritChanceBonus = p.critChanceBonus || 0;
+                    const effectiveCritChance = ((player.critChance || 0) + projCritChanceBonus) * projCritChanceMul;
+                    const effectiveCritDamage = (player.critDamage || 0) * projCritDamageMul;
+
+                    let finalDamage = baseDamage;
+                    let didCrit = false;
+                    if (Math.random() * 100 < effectiveCritChance) {
+                        finalDamage = Math.round(finalDamage * (1 + effectiveCritDamage));
+                        didCrit = true;
                     }
-                }
-                // preserve lance hit flag
-                if (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') p.hitTarget = true;
-                registerPlayerHit();
-                
-                // Rastrear acertos no tank
-                if (currentMonster.type === 'tank') {
-                    player.tankHitCount++;
-                    player.tankHitWindow = 45; // 0.75 segundos a 60 fps
-                    
-                    // Se atingiu 3 acertos, spawnar habilidade
-                    if (player.tankHitCount >= 3) {
-                        spawnTankCounterAttack();
-                        player.tankHitCount = 0;
-                        player.tankHitWindow = 0;
+
+                    applyDamageToInteriorEnemy(enemy, finalDamage);
+                    if (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') {
+                        const hitX = enemy.x + enemy.width / 2;
+                        const hitY = enemy.y + enemy.height / 2;
+                        spawnTornadoHitEffect(hitX, hitY, '#83e8ff');
+                        if (player.hurricaneCooldown <= 0) {
+                            player.tornadoCharge = (player.tornadoCharge || 0) + 1;
+                            if (player.tornadoCharge >= (player.tornadoChargeMax || 20)) {
+                                player.tornadoCharge = 0;
+                                updateCooldownBar();
+                                spawnTornadoHurricane();
+                            } else {
+                                updateCooldownBar();
+                            }
+                        }
                     }
-                }
-                
-                projectiles.splice(i, 1);
+                    registerPlayerHit();
                     if (didCrit) {
                         critEffects.push({
-                            x: currentMonster.x + currentMonster.width / 2,
-                            y: currentMonster.y - 20,
+                            x: enemy.x + enemy.width / 2,
+                            y: enemy.y - 20,
                             alpha: 1,
                             text: `⭐ +${Math.round(effectiveCritDamage * 100)}%`,
                             rise: 0
                         });
                     } else if (p.critPercent > 0) {
                         critEffects.push({
-                            x: currentMonster.x + currentMonster.width / 2,
-                            y: currentMonster.y - 20,
+                            x: enemy.x + enemy.width / 2,
+                            y: enemy.y - 20,
                             alpha: 1,
                             text: `⭐ +${Math.round(p.critPercent * 100)}%`,
                             rise: 0
                         });
                     }
+                    projectiles.splice(i, 1);
+                }
+            } else {
+                const isHit = 
+                    p.x < currentMonster.x + currentMonster.width &&
+                    p.x > currentMonster.x &&
+                    p.y < currentMonster.y + currentMonster.height &&
+                    p.y > currentMonster.y;
+                
+                if (isHit) {
+                    // Calculate base damage (lances do 1.5x)
+                    let baseDamage = (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') ? p.damage * 1.5 : p.damage;
+                    if (p.style === 'gunBullet' && player.gunExplosiveAmmo > 0 && p.explosive) {
+                        baseDamage += Math.round(baseDamage * 0.25 * player.gunExplosiveAmmo);
+                    }
+
+                    // Apply projectile-specific crit multipliers and bonuses if present
+                    const projCritChanceMul = p.critChanceMultiplier || 1;
+                    const projCritDamageMul = p.critDamageMultiplier || 1;
+                    const projCritChanceBonus = p.critChanceBonus || 0;
+                    const effectiveCritChance = ((player.critChance || 0) + projCritChanceBonus) * projCritChanceMul;
+                    const effectiveCritDamage = (player.critDamage || 0) * projCritDamageMul;
+
+                    let finalDamage = baseDamage;
+                    let didCrit = false;
+                    if (Math.random() * 100 < effectiveCritChance) {
+                        finalDamage = Math.round(finalDamage * (1 + effectiveCritDamage));
+                        didCrit = true;
+                    }
+
+                    currentMonster.takeDamage(finalDamage);
+                    
+                    if (p.owner === 'monster' && (p.monsterType === 'caster' || p.style === 'casterFlameCircle' || p.style === 'casterFlameSpiral' || p.style === 'casterFlameRing' || p.style === 'casterFlameVolley' || p.style === 'casterBurst' || p.style === 'casterShard') && !p._casterBurstTriggered) {
+                        spawnCasterProjectileBurst(p);
+                    }
+                    
+                    // Apply special projectile effects
+                    if (p.ricochet && p.ricochetCount > 0) {
+                        p.ricochetCount--;
+                        const wallOffsets = [{x: 1, y: 0}, {x: -1, y: 0}, {x: 0, y: 1}, {x: 0, y: -1}];
+                        const randomWall = wallOffsets[Math.floor(Math.random() * wallOffsets.length)];
+                        p.vx = randomWall.x * Math.abs(p.vx);
+                        p.vy = randomWall.y * Math.abs(p.vy);
+                        p.canDealDamage = false;
+                    }
+                    
+                    if (p.explosive && p.explosiveRadius) {
+                        const explosionX = currentMonster.x + currentMonster.width / 2;
+                        const explosionY = currentMonster.y + currentMonster.height / 2;
+                        spawnEvaporationEffect(explosionX, explosionY, '#ff6644', 24, 20);
+                        explosionEffects.push({
+                            x: explosionX,
+                            y: explosionY,
+                            radius: 0,
+                            maxRadius: p.explosiveRadius,
+                            life: 12,
+                            maxLife: 12,
+                            damage: Math.round(finalDamage * 0.6)
+                        });
+                    }
+                    
+                    if (p.freezer && p.freezeDuration) {
+                        currentMonster.freezeTimer = (currentMonster.freezeTimer || 0) + p.freezeDuration;
+                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#55ddff', 18, 12);
+                    }
+                    
+                    if (p.knockback && p.knockbackPower) {
+                        const knockX = Math.cos(Math.atan2(currentMonster.y - p.y, currentMonster.x - p.x)) * p.knockbackPower;
+                        const knockY = Math.sin(Math.atan2(currentMonster.y - p.y, currentMonster.x - p.x)) * p.knockbackPower;
+                        currentMonster.vx = (currentMonster.vx || 0) + knockX;
+                        currentMonster.vy = (currentMonster.vy || 0) + knockY;
+                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#ff3333', 22, 14);
+                    }
+                    
+                    if (p.parried && player.parryHealOnUse > 0) {
+                        const healAmount = player.maxHealth * (player.parryHealOnUse / 100);
+                        player.health = Math.min(player.maxHealth, player.health + healAmount);
+                    }
+                    if (p.parried && player.parryConfusionChance > 0 && Math.random() * 100 < player.parryConfusionChance) {
+                        const confusionFrames = Math.round((player.parryConfusionDuration || 0) * 60);
+                        if (confusionFrames > 0) {
+                            currentMonster.confusedTimer = Math.max(currentMonster.confusedTimer, confusionFrames);
+                        }
+                    }
+                    if (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') {
+                        const hitX = currentMonster.x + currentMonster.width / 2;
+                        const hitY = currentMonster.y + currentMonster.height / 2;
+                        spawnTornadoHitEffect(hitX, hitY, '#83e8ff');
+                    }
+                    if (p.style === 'gunBullet' && player.gunExplosiveAmmo > 0 && p.explosive) {
+                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#ffbb22', 22, 18);
+                    }
+                    // Tornado lance hits build charge to summon the hurricane
+                        if ((p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') && player.hurricaneCooldown <= 0) {
+                        player.tornadoCharge = (player.tornadoCharge || 0) + 1;
+                        if (player.tornadoCharge >= (player.tornadoChargeMax || 20)) {
+                            player.tornadoCharge = 0;
+                            updateCooldownBar();
+                            spawnTornadoHurricane();
+                        } else {
+                            updateCooldownBar();
+                        }
+                    }
+
+                    if (p.style === 'gunBullet' && player.gunReloadCooldown <= 0 && p.isGunOriginal) {
+                        player.gunReloadHitCount = Math.min(player.gunReloadHitMax, (player.gunReloadHitCount || 0) + 1);
+                        updateCooldownBar();
+                        if (player.gunReloadHitCount >= player.gunReloadHitsToTrigger) {
+                            player.gunReloadHitCount = 0;
+                            player.gunReloadCooldown = player.gunReloadCooldownMax;
+                            player.gunReloadInvulnCharges = 0;
+                            player.gunReloadFlashTicker = 0;
+                            updateCooldownBar();
+                        }
+                    }
+                    // All monster-based gun passives
+                    if (p.style === 'gunBullet' && player.weapon && player.weapon.type === 'gun' && !p._monsterPassiveTracked) {
+                        p._monsterPassiveTracked = true;
+
+                        if (player.shooterMachineGunUnlocked) {
+                            player.shooterMachineGunCount = (player.shooterMachineGunCount || 0) + 1;
+                            if (player.shooterMachineGunCount >= 4) {
+                                player.shooterMachineGunCount = 0;
+                                triggerShooterMachineGun();
+                            }
+                        }
+
+                        if (player.swarmNubeUnlocked) {
+                            player.swarmNubeCount = (player.swarmNubeCount || 0) + 1;
+                            if (player.swarmNubeCount >= 3) {
+                                player.swarmNubeCount = 0;
+                                triggerSwarmNube();
+                            }
+                        }
+
+                        if (player.casterPortalUnlocked) {
+                            player.casterPortalCount = (player.casterPortalCount || 0) + 1;
+                            if (player.casterPortalCount >= 5) {
+                                player.casterPortalCount = 0;
+                                triggerCasterPortalBurst();
+                            }
+                        }
+
+                        if (player.avianTrackerUnlocked) {
+                            player.avianTrackerCount = (player.avianTrackerCount || 0) + 1;
+                            if (player.avianTrackerCount >= 5) {
+                                player.avianTrackerCount = 0;
+                                triggerAvianTracker();
+                            }
+                        }
+
+                        if (player.smartRicochetUnlocked) {
+                            player.smartRicochetCount = (player.smartRicochetCount || 0) + 1;
+                            if (player.smartRicochetCount >= 4) {
+                                player.smartRicochetCount = 0;
+                                triggerSmartRicochet();
+                            }
+                        }
+
+                        if (player.simpleExplosiveUnlocked) {
+                            player.simpleExplosiveCount = (player.simpleExplosiveCount || 0) + 1;
+                            if (player.simpleExplosiveCount >= 3) {
+                                player.simpleExplosiveCount = 0;
+                                triggerSimpleExplosive();
+                            }
+                        }
+
+                        if (player.crocFreezerUnlocked) {
+                            player.crocFreezerCount = (player.crocFreezerCount || 0) + 1;
+                            if (player.crocFreezerCount >= 4) {
+                                player.crocFreezerCount = 0;
+                                triggerCrocFreezer();
+                            }
+                        }
+
+                        if (player.tankImpulseUnlocked) {
+                            player.tankImpulseCount = (player.tankImpulseCount || 0) + 1;
+                            if (player.tankImpulseCount >= 5) {
+                                player.tankImpulseCount = 0;
+                                triggerTankImpulse();
+                            }
+                        }
+                    }
+                    // preserve lance hit flag
+                    if (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') p.hitTarget = true;
+                    registerPlayerHit();
+                    
+                    // Rastrear acertos no tank
+                    if (currentMonster.type === 'tank') {
+                        player.tankHitCount++;
+                        player.tankHitWindow = 45; // 0.75 segundos a 60 fps
+                        
+                        // Se atingiu 3 acertos, spawnar habilidade
+                        if (player.tankHitCount >= 3) {
+                            spawnTankCounterAttack();
+                            player.tankHitCount = 0;
+                            player.tankHitWindow = 0;
+                        }
+                    }
+                    
+                    projectiles.splice(i, 1);
+                        if (didCrit) {
+                            critEffects.push({
+                                x: currentMonster.x + currentMonster.width / 2,
+                                y: currentMonster.y - 20,
+                                alpha: 1,
+                                text: `⭐ +${Math.round(effectiveCritDamage * 100)}%`,
+                                rise: 0
+                            });
+                        } else if (p.critPercent > 0) {
+                            critEffects.push({
+                                x: currentMonster.x + currentMonster.width / 2,
+                                y: currentMonster.y - 20,
+                                alpha: 1,
+                                text: `⭐ +${Math.round(p.critPercent * 100)}%`,
+                                rise: 0
+                            });
+                        }
+                }
             }
         } else {
             const playerCenterX = player.x + player.width / 2;
@@ -6192,7 +10842,7 @@ function updateProjectiles() {
             
             if (isHit) {
                 // If player is dashing with the bow, they are immune to projectile damage during the dash
-                if (player.dashTimer > 0 || player.postDashInvulnTimer > 0) {
+                if (player.dashTimer > 0 || player.postDashInvulnTimer > 0 || player.slashDashInvulnTimer > 0) {
                     projectiles.splice(i, 1);
                 } else if (p.pulledByHurricane || p.canDealDamage === false) {
                     projectiles.splice(i, 1);
@@ -6215,6 +10865,22 @@ function updateProjectiles() {
                         effectiveDamage *= (1 - player.parryDefenseBonus / 100);
                     }
                     player.health -= effectiveDamage;
+                    if (p.owner === 'monster') {
+                        const projectileMonsterType = p.monsterType || currentMonster?.type || '';
+                        if (projectileMonsterType === 'simple') {
+                            tryApplyPlayerConfusionFromAttack(projectileMonsterType, { chance: 2 });
+                        } else if (projectileMonsterType === 'shooter') {
+                            tryApplyPlayerConfusionFromAttack(projectileMonsterType, { chance: 25 });
+                        } else if (projectileMonsterType === 'specter') {
+                            tryApplyPlayerConfusionFromAttack(projectileMonsterType, { chance: 32 });
+                        } else if (projectileMonsterType === 'phantasm') {
+                            tryApplyPlayerConfusionFromAttack(projectileMonsterType, { chance: 20 });
+                        } else if (projectileMonsterType === 'poltergeist') {
+                            tryApplyPlayerConfusionFromAttack(projectileMonsterType, { chance: 12 });
+                        } else if (projectileMonsterType === 'tank' && p.style === 'tankCounter') {
+                            tryApplyPlayerConfusionFromAttack(projectileMonsterType, { chance: 10 });
+                        }
+                    }
                     projectiles.splice(i, 1);
                 }
             }
@@ -6345,7 +11011,7 @@ function updateMonsterHitscans() {
                 const playerCenterY = player.y + player.height / 2;
                 const distanceToBeam = pointToSegmentDistance(playerCenterX, playerCenterY, beam.x, beam.y, beam.targetX, beam.targetY);
                 const hitRadius = beam.thickness * 0.75;
-                if (distanceToBeam <= hitRadius && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0) {
+                if (distanceToBeam <= hitRadius && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0 && player.slashDashInvulnTimer <= 0) {
                     let effectiveDamage = Math.max(0, beam.damage - player.damageReduction);
                     if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
                         effectiveDamage *= (1 - player.parryDefenseBonus / 100);
@@ -6418,7 +11084,8 @@ function updateDelayedShots() {
             const angle = Math.atan2(targetY - delayed.y, targetX - delayed.x);
             const jitter = (Math.random() - 0.5) * 0.4;
             const finalAngle = angle + jitter;
-            const range = player.weapon ? player.weapon.range : 120;
+            const playerScale = getPlayerInteriorScale();
+            const range = (player.weapon ? player.weapon.range : 120) * playerScale;
             const projTargetX = delayed.x + Math.cos(finalAngle) * range;
             const projTargetY = delayed.y + Math.sin(finalAngle) * range;
 
@@ -6432,9 +11099,10 @@ function updateDelayedShots() {
 function processMeleeHit() {
     if (!player.weapon || player.weapon.type !== 'sword') return;
 
+    const playerScale = getPlayerInteriorScale();
     const weapon = player.weapon;
-    const extraRange = Math.max(0, player.attackRange - 80);
-    const swordLen = (weapon.range || 45) + extraRange;
+    const extraRange = Math.max(0, player.attackRange - 80) * playerScale;
+    const swordLen = ((weapon.range || 45) + extraRange) * playerScale;
     const px = player.x + player.width / 2;
     const py = player.y + player.height / 2;
     const baseAim = (typeof player.swordAimAngle === 'number') ? player.swordAimAngle : player.meleeDirection || 0;
@@ -6445,6 +11113,52 @@ function processMeleeHit() {
     const y1 = py + Math.sin(aim) * bladeBase;
     const x2 = px + Math.cos(aim) * swordLen;
     const y2 = py + Math.sin(aim) * swordLen;
+
+    if (playerInsideConstruction) {
+        const enemy = findInteriorEnemyHitByMelee(x1, y1, x2, y2, player.swordThickness / 2);
+        if (enemy && player.swordHitCooldown === 0) {
+            const baseWeaponDamage = weapon.damage + player.weaponDamage + player.baseDamage;
+            const critRoll = Math.random() * 100;
+            const critMultiplier = critRoll < player.critChance ? 1 + player.critDamage : 1;
+            const attackDamage = Math.round(baseWeaponDamage * critMultiplier * (player.damageOutputMultiplier || 1));
+
+            applyDamageToInteriorEnemy(enemy, attackDamage);
+            const ex = enemy.x + enemy.width / 2;
+            const ey = enemy.y + enemy.height / 2;
+            spawnEvaporationEffect(ex, ey, '#ffd060', 18, 10);
+            
+            if (player.swordComboTimer === 0) {
+                player.swordComboCount = 1;
+            } else {
+                player.swordComboCount++;
+            }
+            player.swordComboTimer = 120;
+            if (player.swordComboCount >= 3) {
+                const sign = Math.random() < 0.5 ? 1 : -1;
+                player.startSwordAimAnimation(sign * (240 * Math.PI / 180), 10);
+                spawnEvaporationEffect(ex, ey, '#ffd060', 22, 18);
+                spawnEvaporationEffect(px, py, '#ffffff', 14, 12);
+                enemy.flashTimer = 16;
+            }
+
+            player.swordHitCooldown = 20;
+            registerPlayerHit();
+
+            if (player.attackMove > 0) {
+                const dx = ex - px;
+                const dy = ey - py;
+                const dist = Math.hypot(dx, dy) || 1;
+                const scaledAttackMove = player.attackMove * playerScale;
+                player.x = Math.max(0, Math.min(player.x + (dx / dist) * scaledAttackMove, viewportWidth - player.width));
+                player.y = Math.max(0, Math.min(player.y + (dy / dist) * scaledAttackMove, viewportHeight - player.height));
+            }
+
+            player.tryInvestidaDash();
+        } else if (enemy) {
+            player.swordComboCount = 0;
+        }
+        return;
+    }
 
     const mx = currentMonster.x + currentMonster.width / 2;
     const my = currentMonster.y + currentMonster.height / 2;
@@ -6506,9 +11220,12 @@ function processMeleeHit() {
             const dx = mx - px;
             const dy = my - py;
             const dist = Math.hypot(dx, dy) || 1;
-            player.x = Math.max(0, Math.min(player.x + (dx / dist) * player.attackMove, gameWidth - player.width));
-            player.y = Math.max(0, Math.min(player.y + (dy / dist) * player.attackMove, gameHeight - player.height));
+            const scaledAttackMove = player.attackMove * playerScale;
+            player.x = Math.max(0, Math.min(player.x + (dx / dist) * scaledAttackMove, gameWidth - player.width));
+            player.y = Math.max(0, Math.min(player.y + (dy / dist) * scaledAttackMove, gameHeight - player.height));
         }
+
+        player.tryInvestidaDash();
 
         if (player.spinAttack) {
             const spinRadius = 18;
@@ -6529,6 +11246,34 @@ function processConeHit() {
     const weapon = player.weapon;
     const px = player.x + player.width / 2;
     const py = player.y + player.height / 2;
+    const playerScale = getPlayerInteriorScale();
+
+    if (playerInsideConstruction) {
+        const enemies = getCurrentInteriorEnemies();
+        for (const enemy of enemies) {
+            if (enemy.isDying || enemy.isInvisible) continue;
+            const ex = enemy.x + enemy.width / 2;
+            const ey = enemy.y + enemy.height / 2;
+            const dist = Math.sqrt((ex - px) * (ex - px) + (ey - py) * (ey - py));
+            const enemyAngle = Math.atan2(ey - py, ex - px);
+            let delta = Math.abs(enemyAngle - player.coneDirection);
+            while (delta > Math.PI) delta = Math.abs(delta - Math.PI * 2);
+
+            if (dist <= weapon.range * playerScale + Math.max(enemy.width, enemy.height) / 2 && delta <= player.coneAngle / 2) {
+                const baseWeaponDamage = weapon.damage + player.weaponDamage + player.baseDamage;
+                const critRoll = Math.random() * 100;
+                const critMultiplier = critRoll < player.critChance ? 1 + player.critDamage : 1;
+                const attackDamage = Math.round(baseWeaponDamage * critMultiplier * (player.damageOutputMultiplier || 1));
+
+                applyDamageToInteriorEnemy(enemy, attackDamage);
+                registerPlayerHit();
+                player.coneHitRegistered = true;
+                return;
+            }
+        }
+        return;
+    }
+
     const mx = currentMonster.x + currentMonster.width / 2;
     const my = currentMonster.y + currentMonster.height / 2;
     const dist = Math.sqrt((mx - px) * (mx - px) + (my - py) * (my - py));
@@ -6536,7 +11281,7 @@ function processConeHit() {
     let delta = Math.abs(monsterAngle - player.coneDirection);
     while (delta > Math.PI) delta = Math.abs(delta - Math.PI * 2);
 
-    if (dist <= weapon.range + Math.max(currentMonster.width, currentMonster.height) / 2 && delta <= player.coneAngle / 2) {
+    if (dist <= weapon.range * playerScale + Math.max(currentMonster.width, currentMonster.height) / 2 && delta <= player.coneAngle / 2) {
         const baseWeaponDamage = weapon.damage + player.weaponDamage + player.baseDamage;
         const critRoll = Math.random() * 100;
         const critMultiplier = critRoll < player.critChance ? 1 + player.critDamage : 1;
@@ -6551,6 +11296,7 @@ function processConeHit() {
 function spawnSpinAttackStartProjectiles() {
     if (!player.spinAttack) return;
 
+    const playerScale = getPlayerInteriorScale();
     const centerX = player.x + player.width / 2;
     const centerY = player.y + player.height / 2;
     const speed = 4;
@@ -6558,15 +11304,17 @@ function spawnSpinAttackStartProjectiles() {
     const damage = Math.max(1, Math.round(rawDamage * (player.damageOutputMultiplier || 1)));
     const size = 14;
     const angles = [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3];
+    const range = 140 * playerScale;
+    const maxDistance = 1400 * playerScale;
 
     angles.forEach((angle) => {
-        const targetX = centerX + Math.cos(angle) * 140;
-        const targetY = centerY + Math.sin(angle) * 140;
+        const targetX = centerX + Math.cos(angle) * range;
+        const targetY = centerY + Math.sin(angle) * range;
         spawnPlayerProjectile(centerX, centerY, targetX, targetY, damage, '#ffcc00', speed, {
             size,
             style: 'spinAttack',
             homing: true,
-            maxDistance: 1400
+            maxDistance
         });
     });
 }
@@ -6586,27 +11334,30 @@ function spawnSpinAttackRoulette(targetX, targetY, damage, color, speed, critPer
 }
 
 function spawnSpinAttackFollowProjectiles(centerX, centerY, targetX, targetY, damage, color, speed, critPercent) {
+    const playerScale = getPlayerInteriorScale();
     const angle = Math.atan2(targetY - centerY, targetX - centerX);
-    const mainTargetX = centerX + Math.cos(angle) * 200;
-    const mainTargetY = centerY + Math.sin(angle) * 200;
+    const distance = 200 * playerScale;
+    const maxDistance = 1400 * playerScale;
+    const mainTargetX = centerX + Math.cos(angle) * distance;
+    const mainTargetY = centerY + Math.sin(angle) * distance;
     const main = spawnPlayerProjectile(centerX, centerY, mainTargetX, mainTargetY, damage, color, speed, {
         style: 'spinAttack',
         size: 16,
-        maxDistance: 1400,
+        maxDistance,
         critPercent
     });
 
     for (let i = 0; i < 2; i++) {
         const offsetAngle = angle + (i === 0 ? 0.18 : -0.18);
-        const followerTargetX = centerX + Math.cos(offsetAngle) * 200;
-        const followerTargetY = centerY + Math.sin(offsetAngle) * 200;
+        const followerTargetX = centerX + Math.cos(offsetAngle) * distance;
+        const followerTargetY = centerY + Math.sin(offsetAngle) * distance;
         spawnPlayerProjectile(centerX, centerY, followerTargetX, followerTargetY, Math.max(1, Math.round(damage * 0.85)), color, speed, {
             style: 'spinAttack',
             size: 10,
             homing: true,
             homingTarget: main,
             homingStrength: 0.16,
-            maxDistance: 1400,
+            maxDistance,
             critPercent
         });
     }
@@ -6817,8 +11568,408 @@ function spawnEvaporationEffect(x, y, color, size, count = 8) {
     }
 }
 
+function spawnBombStunEffect(x, y) {
+    if (!player || player.bombStunPerHitSeconds <= 0) return;
+    for (let i = 0; i < 8; i++) {
+        const angle = (Math.PI * 2 * i) / 8;
+        evaporationEffects.push({
+            x,
+            y,
+            vx: Math.cos(angle) * 3.2,
+            vy: Math.sin(angle) * 3.2,
+            life: 18,
+            alpha: 0.95,
+            size: 5 + Math.random() * 3,
+            color: '#ffff88'
+        });
+    }
+}
+
+function spawnBombConfusionEffect(x, y) {
+    if (!player || player.bombFragmentConfusionSeconds <= 0) return;
+    for (let i = 0; i < 12; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1.5 + Math.random() * 1.2;
+        evaporationEffects.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 24,
+            alpha: 0.9,
+            size: 3 + Math.random() * 2.5,
+            color: '#ff88ff'
+        });
+    }
+}
+
+function spawnBombBurnEffect(x, y) {
+    if (!player || player.bombBurnDamagePerSecond <= 0) return;
+    for (let i = 0; i < 6; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 0.8 + Math.random() * 1.5;
+        evaporationEffects.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed - 0.6,
+            life: 20,
+            alpha: 0.85,
+            size: 6 + Math.random() * 4,
+            color: i % 2 === 0 ? '#ff6600' : '#ffaa00'
+        });
+    }
+}
+
+function spawnBombFragmentHitEffect(x, y, size = 3.8) {
+    const particleCount = Math.max(2, Math.round(size / 2));
+    for (let i = 0; i < particleCount; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 2 + Math.random() * 2;
+        evaporationEffects.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 12,
+            alpha: 0.9,
+            size: 2 + Math.random() * 1.5,
+            color: '#ffb347'
+        });
+    }
+}
+
+function spawnBombThrowEffect(x, y, targetX, targetY) {
+    if (!player || player.bombThrowSpeedBonus <= 0) return;
+    const speedCount = Math.min(4, Math.ceil(player.bombThrowSpeedBonus * 2));
+    for (let i = 0; i < speedCount; i++) {
+        const t = i / speedCount;
+        const px = x + (targetX - x) * t * 0.3;
+        const py = y + (targetY - y) * t * 0.3;
+        evaporationEffects.push({
+            x: px,
+            y: py,
+            vx: (Math.random() - 0.5) * 1.2,
+            vy: (Math.random() - 0.5) * 1.2 - 0.3,
+            life: 8 + Math.floor(Math.random() * 8),
+            alpha: 0.7,
+            size: 3 + Math.random() * 2,
+            color: '#ffee99'
+        });
+    }
+}
+
+function spawnBombFireZoneEffect(x, y, radiusMultiplier = 1) {
+    if (!player || (player.bombFireZoneRadiusBonus <= 0 && player.bombBurnDamagePerSecond <= 0)) return;
+    const effectCount = 8 + Math.floor(radiusMultiplier * 4);
+    for (let i = 0; i < effectCount; i++) {
+        const angle = (Math.PI * 2 * i) / effectCount + (Math.random() - 0.5) * 0.3;
+        const radius = 60 * radiusMultiplier + Math.random() * 20 * radiusMultiplier;
+        evaporationEffects.push({
+            x: x + Math.cos(angle) * radius,
+            y: y + Math.sin(angle) * radius,
+            vx: Math.cos(angle) * 0.3,
+            vy: Math.sin(angle) * 0.3,
+            life: 16,
+            alpha: 0.8,
+            size: 4 + Math.random() * 3,
+            color: '#ff9900'
+        });
+    }
+}
+
+function spawnBombFragmentCountEffect(count = 2) {
+    if (!player || player.bombFragmentCountBonus <= 0) return;
+    spawnEvaporationEffect(player.x + player.width / 2, player.y + player.height / 2, '#ffdd66', 18, Math.min(12, 4 + count * 2));
+}
+
+function spawnCasterPortalEffect(x, y, color = '#6ef2ff') {
+    portalEffects.push({
+        x,
+        y,
+        radius: 2,
+        maxRadius: 24 + Math.random() * 10,
+        life: 26,
+        maxLife: 26,
+        alpha: 1,
+        pulse: Math.random() * Math.PI * 2,
+        color
+    });
+}
+
+function triggerShooterMachineGun() {
+    if (!player || !currentMonster || !player.shooterMachineGunUnlocked) return;
+    const gunX = player.x + player.width / 2;
+    const gunY = player.y + player.height / 2;
+    const preferred = getPreferredTarget();
+    const targetX = preferred.x || (currentMonster ? currentMonster.x + currentMonster.width / 2 : gunX + 200);
+    const targetY = preferred.y || (currentMonster ? currentMonster.y + currentMonster.height / 2 : gunY);
+    const gunDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+
+    for (let i = 0; i < 4; i++) {
+        const spread = (Math.random() - 0.5) * 0.25;
+        const angle = Math.atan2(targetY - gunY, targetX - gunX) + spread;
+        const projectileTargetX = gunX + Math.cos(angle) * 280;
+        const projectileTargetY = gunY + Math.sin(angle) * 280;
+        spawnPlayerProjectile(gunX, gunY, projectileTargetX, projectileTargetY, gunDamage, '#ffaa33', 8.5, {
+            style: 'gunBullet',
+            size: 8,
+            maxDistance: 900
+        });
+    }
+    machineGunEffects.push({ x: gunX, y: gunY, life: 10, alpha: 0.8, color: '#ffaa33' });
+}
+
+function triggerSwarmNube() {
+    if (!player || !currentMonster || !player.swarmNubeUnlocked) return;
+    const nubeX = player.x + player.width / 2;
+    const nubeY = player.y + player.height / 2;
+    const preferred = getPreferredTarget();
+    const targetX = preferred.x || (currentMonster ? currentMonster.x + currentMonster.width / 2 : nubeX + 200);
+    const targetY = preferred.y || (currentMonster ? currentMonster.y + currentMonster.height / 2 : nubeY);
+    const nubeDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+
+    for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI * 2 * i) / 6 + Math.atan2(targetY - nubeY, targetX - nubeX);
+        const projectileTargetX = nubeX + Math.cos(angle) * 220;
+        const projectileTargetY = nubeY + Math.sin(angle) * 220;
+        spawnPlayerProjectile(nubeX, nubeY, projectileTargetX, projectileTargetY, nubeDamage, '#9c4fff', 7, {
+            style: 'swarmPod',
+            size: 7,
+            maxDistance: 800,
+            noBounce: true
+        });
+    }
+}
+
+function triggerCasterPortalBurst() {
+    if (!player || !currentMonster || !player.casterPortalUnlocked) return;
+    const portalX = player.x + player.width / 2;
+    const portalY = player.y + player.height / 2 - 16;
+    spawnCasterPortalEffect(portalX, portalY, '#70e7ff');
+    spawnEvaporationEffect(portalX, portalY, '#70e7ff', 24, 14);
+    const preferred = getPreferredTarget();
+    const targetX = preferred.x || (currentMonster ? currentMonster.x + currentMonster.width / 2 : portalX + 200);
+    const targetY = preferred.y || (currentMonster ? currentMonster.y + currentMonster.height / 2 : portalY);
+    const portalDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+
+    for (let i = 0; i < 3; i++) {
+        const spread = (i - 1) * 0.18;
+        const angle = Math.atan2(targetY - portalY, targetX - portalX) + spread;
+        const projectileTargetX = portalX + Math.cos(angle) * 220;
+        const projectileTargetY = portalY + Math.sin(angle) * 220;
+        spawnPlayerProjectile(portalX, portalY, projectileTargetX, projectileTargetY, portalDamage, '#70e7ff', 9.2, {
+            style: 'casterBurst',
+            size: 12,
+            maxDistance: 900,
+            afterImageTrail: true,
+            afterImageInterval: 2,
+            ignoreHurricanePull: true,
+            skipHurricaneRemoval: true
+        });
+    }
+}
+
+function triggerAvianTracker() {
+    if (!player || !currentMonster || !player.avianTrackerUnlocked) return;
+    const trackerX = player.x + player.width / 2;
+    const trackerY = player.y + player.height / 2;
+    const trackerDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+
+    for (let i = 0; i < 2; i++) {
+        const angle = (Math.PI * i);
+        const projectileTargetX = trackerX + Math.cos(angle) * 300;
+        const projectileTargetY = trackerY + Math.sin(angle) * 300;
+        trackerProjectiles.push({
+            x: trackerX,
+            y: trackerY,
+            targetX: currentMonster.x + currentMonster.width / 2,
+            targetY: currentMonster.y + currentMonster.height / 2,
+            vx: Math.cos(angle) * 5.5,
+            vy: Math.sin(angle) * 5.5,
+            damage: trackerDamage,
+            color: '#ff88cc',
+            size: 10,
+            maxDistance: 1000,
+            distanceTraveled: 0,
+            life: 200
+        });
+    }
+}
+
+function triggerSmartRicochet() {
+    if (!player || !currentMonster || !player.smartRicochetUnlocked) return;
+    const ricochetX = player.x + player.width / 2;
+    const ricochetY = player.y + player.height / 2;
+    const targetX = currentMonster.x + currentMonster.width / 2;
+    const targetY = currentMonster.y + currentMonster.height / 2;
+    const ricochetDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+
+    const angle = Math.atan2(targetY - ricochetY, targetX - ricochetX);
+    const projectileTargetX = ricochetX + Math.cos(angle) * 300;
+    const projectileTargetY = ricochetY + Math.sin(angle) * 300;
+    spawnPlayerProjectile(ricochetX, ricochetY, projectileTargetX, projectileTargetY, ricochetDamage, '#88ff88', 9, {
+        style: 'gunBullet',
+        size: 11,
+        maxDistance: 1200,
+        ricochet: true,
+        ricochetCount: 2
+    });
+}
+
+function triggerSimpleExplosive() {
+    if (!player || !currentMonster || !player.simpleExplosiveUnlocked) return;
+    const explosiveX = player.x + player.width / 2;
+    const explosiveY = player.y + player.height / 2;
+    const targetX = currentMonster.x + currentMonster.width / 2;
+    const targetY = currentMonster.y + currentMonster.height / 2;
+    const explosiveDamage = Math.max(3, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage + 1));
+
+    const angle = Math.atan2(targetY - explosiveY, targetX - explosiveX);
+    const projectileTargetX = explosiveX + Math.cos(angle) * 300;
+    const projectileTargetY = explosiveY + Math.sin(angle) * 300;
+    spawnPlayerProjectile(explosiveX, explosiveY, projectileTargetX, projectileTargetY, explosiveDamage, '#ff6644', 10, {
+        style: 'gunBullet',
+        size: 13,
+        maxDistance: 900,
+        explosive: true,
+        explosiveRadius: 60
+    });
+}
+
+function triggerCrocFreezer() {
+    if (!player || !currentMonster || !player.crocFreezerUnlocked) return;
+    const freezerX = player.x + player.width / 2;
+    const freezerY = player.y + player.height / 2;
+    const targetX = currentMonster.x + currentMonster.width / 2;
+    const targetY = currentMonster.y + currentMonster.height / 2;
+    const freezerDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+
+    const angle = Math.atan2(targetY - freezerY, targetX - freezerX);
+    const projectileTargetX = freezerX + Math.cos(angle) * 280;
+    const projectileTargetY = freezerY + Math.sin(angle) * 280;
+    spawnPlayerProjectile(freezerX, freezerY, projectileTargetX, projectileTargetY, freezerDamage, '#55ddff', 9, {
+        style: 'gunBullet',
+        size: 10,
+        maxDistance: 800,
+        freezer: true,
+        freezeDuration: 45
+    });
+}
+
+function triggerTankImpulse() {
+    if (!player || !currentMonster || !player.tankImpulseUnlocked) return;
+    const impulseX = player.x + player.width / 2;
+    const impulseY = player.y + player.height / 2;
+    const targetX = currentMonster.x + currentMonster.width / 2;
+    const targetY = currentMonster.y + currentMonster.height / 2;
+    const impulseDamage = Math.max(3, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage + 1));
+
+    const angle = Math.atan2(targetY - impulseY, targetX - impulseX);
+    const projectileTargetX = impulseX + Math.cos(angle) * 250;
+    const projectileTargetY = impulseY + Math.sin(angle) * 250;
+    spawnPlayerProjectile(impulseX, impulseY, projectileTargetX, projectileTargetY, impulseDamage, '#ff3333', 11, {
+        style: 'gunBullet',
+        size: 14,
+        maxDistance: 850,
+        knockback: true,
+        knockbackPower: 8
+    });
+}
+
+function updatePortalEffects() {
+    for (let i = portalEffects.length - 1; i >= 0; i--) {
+        const effect = portalEffects[i];
+        effect.life -= 1;
+        effect.pulse += 0.18;
+        effect.radius = Math.max(0, (effect.maxRadius * (1 - effect.life / effect.maxLife)) + Math.sin(effect.pulse) * 1.2);
+        effect.alpha = Math.max(0, effect.life / effect.maxLife);
+        if (effect.life <= 0 || effect.alpha <= 0) {
+            portalEffects.splice(i, 1);
+        }
+    }
+}
+
+function drawPortalEffects() {
+    for (const effect of portalEffects) {
+        ctx.save();
+        ctx.globalAlpha = effect.alpha * 0.95;
+        ctx.strokeStyle = effect.color;
+        ctx.lineWidth = 2.8;
+        ctx.shadowColor = effect.color;
+        ctx.shadowBlur = 18;
+        ctx.beginPath();
+        ctx.arc(effect.x, effect.y, effect.radius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.globalAlpha = effect.alpha * 0.35;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(effect.x, effect.y, effect.radius + 8, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
 function spawnEvaporationForProjectile(proj) {
     spawnEvaporationEffect(proj.x, proj.y, proj.color, proj.size, 10);
+}
+
+function updateTrackerProjectiles() {
+    for (let i = trackerProjectiles.length - 1; i >= 0; i--) {
+        const tracker = trackerProjectiles[i];
+        tracker.life--;
+        tracker.distanceTraveled += Math.hypot(tracker.vx, tracker.vy);
+        if (currentMonster) {
+            tracker.targetX = currentMonster.x + currentMonster.width / 2;
+            tracker.targetY = currentMonster.y + currentMonster.height / 2;
+        }
+        const dx = tracker.targetX - tracker.x;
+        const dy = tracker.targetY - tracker.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 0) {
+            const turnSpeed = 0.08;
+            const targetAngle = Math.atan2(dy, dx);
+            const currentAngle = Math.atan2(tracker.vy, tracker.vx);
+            let angleDiff = targetAngle - currentAngle;
+            while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+            while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+            const newAngle = currentAngle + angleDiff * turnSpeed;
+            const speed = Math.hypot(tracker.vx, tracker.vy);
+            tracker.vx = Math.cos(newAngle) * speed;
+            tracker.vy = Math.sin(newAngle) * speed;
+        }
+        tracker.x += tracker.vx;
+        tracker.y += tracker.vy;
+
+        if (currentMonster && Math.hypot(tracker.x - currentMonster.x - currentMonster.width / 2, tracker.y - currentMonster.y - currentMonster.height / 2) < currentMonster.width / 2 + tracker.size) {
+            currentMonster.health -= tracker.damage;
+            spawnEvaporationEffect(tracker.x, tracker.y, tracker.color, tracker.size, 8);
+            trackerProjectiles.splice(i, 1);
+            continue;
+        }
+
+        if (tracker.life <= 0 || tracker.distanceTraveled > tracker.maxDistance) {
+            trackerProjectiles.splice(i, 1);
+        }
+    }
+}
+
+function drawTrackerProjectiles() {
+    for (const tracker of trackerProjectiles) {
+        ctx.save();
+        ctx.fillStyle = tracker.color;
+        ctx.globalAlpha = Math.max(0, tracker.life / 200 * 0.9);
+        ctx.shadowColor = tracker.color;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(tracker.x, tracker.y, tracker.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+    }
 }
 
 function spawnTornadoHitEffect(x, y, color) {
@@ -6840,10 +11991,13 @@ function spawnTornadoHitEffect(x, y, color) {
 function handleParryProjectile(proj) {
     if (!proj || proj.parried) return;
     proj.parried = true;
-    if (player.parryHealOnUse > 0) {
-        const healAmount = player.health * (player.parryHealOnUse / 100);
-        player.health = Math.min(player.maxHealth, player.health + healAmount);
-    }
+        if (player.parryHealOnUse > 0) {
+            const healAmount = player.health * (player.parryHealOnUse / 100);
+            player.health = Math.min(player.maxHealth, player.health + healAmount);
+        }
+        if (player.parryHealOverTime > 0) {
+            player.parryHealOverTimeTimer = 180;
+        }
     proj.owner = 'player';
     const currentSpeed = Math.hypot(proj.vx || 0, proj.vy || 0) || 3;
     const speed = currentSpeed * 5.0; // increased parry speed
@@ -6884,8 +12038,10 @@ function handleParryProjectile(proj) {
     spawnEvaporationForProjectile(proj);
     // allow this parried projectile to destroy other enemy projectiles on touch
     proj.canDestroyOnTouch = true;
-    // Freeze everything visually for 1 frame to emphasize parry
-    frameFreeze = 2;
+    // Freeze everything visually for 1 frame to emphasize parry, but avoid the white flash inside constructions
+    if (!playerInsideConstruction) {
+        frameFreeze = 2;
+    }
 }
 
 function drawEvaporationEffects() {
@@ -7084,10 +12240,24 @@ function getMonsterProjectileStyle(monsterType) {
 }
 
 function spawnPlayerProjectile(x, y, targetX, targetY, damage, color, speed, opts = {}) {
+    const playerScale = getPlayerInteriorScale();
     opts.style = opts.style || getPlayerProjectileStyle(player.weapon ? player.weapon.type : '');
     if (opts.style === 'staffOrb') {
         opts.afterImageTrail = true;
         opts.afterImageInterval = opts.afterImageInterval || 3;
+        if (typeof opts.homing !== 'boolean') {
+            opts.homing = true;
+        }
+        if (typeof opts.homingStrength !== 'number') {
+            opts.homingStrength = 0.16;
+        }
+        if (typeof opts.homingDuration !== 'number') {
+            opts.homingDuration = 220;
+        }
+    }
+    // Escalar a distância máxima de jogador dentro do castelo para manter projéteis menores
+    if (typeof opts.maxDistance === 'number') {
+        opts.maxDistance *= playerScale;
     }
     // Se for orb da staff e não vier com bypass, converte em carga quando já existem 5
     if (opts.style === 'staffOrb' && !opts.bypassStaffCap) {
@@ -7112,8 +12282,9 @@ function spawnPlayerProjectile(x, y, targetX, targetY, damage, color, speed, opt
                     player.staffCharge = 0;
                     player.staffBurstCooldown = player.staffBurstCooldownMax || 120;
                     console.log('spawnPlayerProjectile: staffCharge full, releasing burst');
-                    const centerX = player.x + player.width / 2;
-                    const centerY = player.y + player.height / 2;
+                    const staffMount = player.getWeaponMountPoint();
+                    const centerX = staffMount.tipX;
+                    const centerY = staffMount.tipY;
                     const miniDamage = Math.max(1, Math.round(damage * 0.5));
                     const miniSpeed = (speed || 12) * 3;
                     const burstCount = player.staffChargeBurstCount || 5;
@@ -7124,9 +12295,9 @@ function spawnPlayerProjectile(x, y, targetX, targetY, damage, color, speed, opt
             return null;
         }
     }
-    const size = opts.size || getProjectileDefaultSize(opts.style);
+    const size = (opts.size || getProjectileDefaultSize(opts.style)) * playerScale;
     // Allow callers to force an override speed via `opts._overrideSpeed` (used by bow ricochet companion)
-    const spawnSpeed = typeof opts._overrideSpeed === 'number' ? opts._overrideSpeed : speed;
+    const spawnSpeed = (typeof opts._overrideSpeed === 'number' ? opts._overrideSpeed : speed) * playerScale;
     const proj = new Projectile(x, y, targetX, targetY, damage, color, spawnSpeed, 'player', size, opts);
     proj.critPercent = opts.critPercent || 0;
     if (opts.ricochetActive) {
@@ -7227,7 +12398,13 @@ function spawnPlayerProjectile(x, y, targetX, targetY, damage, color, speed, opt
     }
     if (opts.homing) {
         proj.homing = true;
-        proj.homingTarget = opts.homingTarget || currentMonster;
+        if (opts.homingTarget) {
+            proj.homingTarget = opts.homingTarget;
+        } else if (playerInsideConstruction) {
+            proj.homingTarget = getCastleOrCurrentHomingTarget();
+        } else {
+            proj.homingTarget = currentMonster;
+        }
         proj.homingStrength = typeof opts.homingStrength === 'number' ? opts.homingStrength : 0.06;
     }
     if (opts.ignoreHurricanePull) {
@@ -7240,9 +12417,55 @@ function spawnPlayerProjectile(x, y, targetX, targetY, damage, color, speed, opt
     return proj;
 }
 
+function spawnCasterProjectileBurst(proj) {
+    if (!proj || proj._casterBurstTriggered) return;
+    proj._casterBurstTriggered = true;
+
+    const burstCount = Math.max(3, Math.min(6, Math.round((proj.size || 12) / 3)));
+    const burstRadius = Math.max(16, (proj.size || 12) * 0.85);
+    spawnEvaporationEffect(proj.x, proj.y, '#ffb14a', burstRadius, 8);
+
+    for (let i = 0; i < burstCount; i++) {
+        const angle = (Math.PI * 2 * i) / burstCount + Math.random() * 0.2;
+        const targetX = proj.x + Math.cos(angle) * (80 + Math.random() * 60);
+        const targetY = proj.y + Math.sin(angle) * (80 + Math.random() * 60);
+        const shardDamage = Math.max(1, Math.round((proj.damage || 2) * 0.35));
+        spawnMonsterProjectile(
+            proj.x,
+            proj.y,
+            targetX,
+            targetY,
+            shardDamage,
+            '#ff9e3c',
+            2.2 + Math.random() * 1.2,
+            {
+                monsterType: proj.monsterType || 'caster',
+                size: Math.max(5, Math.round((proj.size || 12) * 0.45)),
+                style: 'casterShard',
+                homing: true,
+                homingTarget: player,
+                homingStrength: 0.18,
+                homingDuration: 48,
+                maxDistance: 220,
+                afterImageTrail: false
+            }
+        );
+    }
+}
+
 function spawnMonsterProjectile(x, y, targetX, targetY, damage, color, speed, opts = {}) {
     opts.monsterType = opts.monsterType || currentMonster?.type || '';
     opts.style = opts.style || getMonsterProjectileStyle(opts.monsterType);
+    const isCasterProjectile = opts.monsterType === 'caster' || opts.style === 'casterFlameCircle' || opts.style === 'casterFlameSpiral' || opts.style === 'casterFlameRing' || opts.style === 'casterFlameVolley' || opts.style === 'casterBurst' || opts.style === 'casterShard';
+    const isCircleCasterAttack = opts.style === 'casterFlameCircle' || opts.style === 'casterFlameSpiral' || opts.style === 'casterFlameRing';
+    if (isCasterProjectile) {
+        opts.afterImageTrail = typeof opts.afterImageTrail === 'boolean' ? opts.afterImageTrail : true;
+        opts.afterImageInterval = typeof opts.afterImageInterval === 'number' ? opts.afterImageInterval : (isCircleCasterAttack ? 5 : 2);
+        opts.homing = typeof opts.homing === 'boolean' ? opts.homing : (isCircleCasterAttack ? false : true);
+        opts.homingStrength = typeof opts.homingStrength === 'number' ? opts.homingStrength : 0.035;
+        opts.homingDuration = typeof opts.homingDuration === 'number' ? opts.homingDuration : 90;
+        opts.maxDistance = typeof opts.maxDistance === 'number' ? opts.maxDistance : 980;
+    }
     // Garantir que projéteis de monstros usem o timer offscreen (padrão 60 frames)
     if (typeof opts.offscreenLimit !== 'number') opts.offscreenLimit = 60;
     const size = opts.size || getProjectileDefaultSize(opts.style);
@@ -7262,11 +12485,12 @@ function spawnStaffBurst(centerX, centerY, color, miniDamage, miniSpeed, burstCo
     try { spawnAfterImage({ kind: 'player', x: player.x, y: player.y, width: player.width, height: player.height, life: 22, maxLife: 22, baseAlpha: 0.6 }); } catch (e) {}
     frameFreeze = Math.max(frameFreeze || 0, 3);
 
+    const playerScale = getPlayerInteriorScale();
     const baseDefault = getProjectileDefaultSize('staffOrb');
     const burstColors = ['#ff4cff', '#ff95ff', '#ff2fd4', '#ff7bff', '#d95bff', '#ff66d9'];
     for (let b = 0; b < burstCount; b++) {
         const angle = Math.random() * Math.PI * 2;
-        const range = 420 + Math.random() * 280;
+        const range = (420 + Math.random() * 280) * playerScale;
         const tx = centerX + Math.cos(angle) * range;
         const ty = centerY + Math.sin(angle) * range;
         const projColor = burstColors[b % burstColors.length];
@@ -7275,12 +12499,13 @@ function spawnStaffBurst(centerX, centerY, color, miniDamage, miniSpeed, burstCo
             size: Math.max(8, Math.floor(baseDefault * (0.9 + Math.random() * 0.6))),
             rotationSpeed: (Math.random() - 0.5) * 0.6,
             homing: true,
-            homingStrength: 0.62,
-            homingDuration: 120,
-            maxDistance: 1100
+            homingStrength: 0.62 + 0.18 * (player.staffHomingBurst || 0),
+            homingDuration: 120 + 30 * (player.staffHomingBurst || 0),
+            maxDistance: 1100 * playerScale
         };
-        if (currentMonster) {
-            opts.homingTarget = currentMonster;
+        const castleTarget = getCastleOrCurrentHomingTarget();
+        if (castleTarget) {
+            opts.homingTarget = castleTarget;
         }
         const proj = spawnPlayerProjectile(centerX, centerY, tx, ty, miniDamage, projColor, miniSpeed * (1.2 + Math.random() * 0.6), opts);
         if (proj) {
@@ -7297,13 +12522,16 @@ function spawnTornadoHurricane() {
     projectiles = projectiles.filter(proj => proj.style !== 'tornadoHurricane');
     const x = player.x + player.width / 2;
     const y = player.y + player.height / 2;
-    const targetX = currentMonster ? currentMonster.x + currentMonster.width / 2 : x + 120;
-    const targetY = currentMonster ? currentMonster.y + currentMonster.height / 2 : y;
+    // Escolher alvo apropriado dependendo se o jogador está no interior do castelo
+    const preferred = getPreferredTarget();
+    const targetX = preferred.x || (x + 120);
+    const targetY = preferred.y || y;
+    const hurricaneTarget = getCastleOrCurrentHomingTarget();
     const proj = new Projectile(x, y, targetX, targetY, 0, '#76d7ff', 3, 'player', 42, {
         style: 'tornadoHurricane',
         ignoreCollision: true,
         homing: true,
-        homingTarget: currentMonster,
+        homingTarget: hurricaneTarget,
         homingStrength: 0.38,
         homingDuration: 300,
             lifetime: 550,
@@ -7735,32 +12963,34 @@ function updateUI() {
     } else if (player.weapon && player.weapon.type === 'bow') {
         ammoInfo = ` | Dashes: ${player.bowDashCharges}/${player.bowDashMaxCharges}`;
     }
+    let passivesInfo = '';
+    const passives = [];
+    if (player.shooterMachineGunUnlocked) passives.push(`MG:${player.shooterMachineGunCount || 0}/4`);
+    if (player.swarmNubeUnlocked) passives.push(`Nube:${player.swarmNubeCount || 0}/3`);
+    if (player.casterPortalUnlocked) passives.push(`Portal:${player.casterPortalCount || 0}/5`);
+    if (player.avianTrackerUnlocked) passives.push(`Rastreador:${player.avianTrackerCount || 0}/5`);
+    if (player.smartRicochetUnlocked) passives.push(`Ricochete:${player.smartRicochetCount || 0}/4`);
+    if (player.simpleExplosiveUnlocked) passives.push(`Explosivo:${player.simpleExplosiveCount || 0}/3`);
+    if (player.crocFreezerUnlocked) passives.push(`Congelador:${player.crocFreezerCount || 0}/4`);
+    if (player.tankImpulseUnlocked) passives.push(`Impulso:${player.tankImpulseCount || 0}/5`);
+    if (passives.length > 0) passivesInfo = ` | ${passives.join(' | ')}`;
     document.getElementById('statsDisplay').innerHTML = 
-        `Arma: <span id="weaponName">${weaponName}</span> | Monstros: ${upgradesAcquired} | Vida: ${Math.max(0, Math.round(player.health))}/${player.maxHealth}${ammoInfo}${spinAttackInfo}`;
+        `Arma: <span id="weaponName">${weaponName}</span> | Monstros: ${upgradesAcquired} | Vida: ${Math.max(0, Math.round(player.health))}/${player.maxHealth}${ammoInfo}${spinAttackInfo}${passivesInfo}`;
 
     // Cooldown bar logic: show gun reload cooldown, parry cooldown for sword, hurricane cooldown for cone
     const cooldownFill = document.getElementById('cooldownBarFill');
     const cooldownBar = document.getElementById('cooldownBar');
     if (cooldownFill) {
+        applyCooldownBarBaseBackground();
         if (player.weapon && player.weapon.type === 'bow') {
             const frac = Math.max(0, Math.min(1, player.bowDashCharges / player.bowDashMaxCharges));
             cooldownFill.style.width = `${frac * 100}%`;
-            if (cooldownBar) {
-                cooldownBar.style.backgroundImage = 'linear-gradient(to right, transparent 49.9%, rgba(255,255,255,0.22) 50%, transparent 50.1%)';
-            }
         } else if (player.weapon && player.weapon.type === 'staff') {
             let frac = 0;
             if (player.staffBurstCooldown > 0) {
-                // mostrar recarga de burst da staff indo de cheio para vazio
                 frac = Math.max(0, Math.min(1, player.staffBurstCooldown / player.staffBurstCooldownMax));
-                if (cooldownBar) {
-                    cooldownBar.style.backgroundImage = 'linear-gradient(to right, rgba(255, 120, 190, 0.85), rgba(220, 60, 180, 0.45))';
-                }
             } else {
                 frac = Math.max(0, Math.min(1, (player.staffCharge || 0) / (player.staffChargeMax || 15)));
-                if (cooldownBar) {
-                    cooldownBar.style.backgroundImage = 'linear-gradient(to right, rgba(180, 120, 255, 0.45), rgba(120, 80, 255, 0.25))';
-                }
             }
             cooldownFill.style.width = `${frac * 100}%`;
         } else {
@@ -7768,31 +12998,9 @@ function updateUI() {
             if (isTornadoWeapon) {
                 const frac = Math.max(0, Math.min(1, (player.tornadoCharge || 0) / (player.tornadoChargeMax || 20)));
                 cooldownFill.style.width = `${frac * 100}%`;
-                if (cooldownBar) {
-                    cooldownBar.style.backgroundImage = 'linear-gradient(to right, rgba(180, 120, 255, 0.45), rgba(120, 80, 255, 0.25))';
-                }
             } else if (player.weapon && player.weapon.type === 'gun') {
-                if (player.gunReloadCooldown > 0) {
-                    const frac = Math.max(0, Math.min(1, player.gunReloadCooldown / player.gunReloadCooldownMax));
-                    cooldownFill.style.width = `${frac * 100}%`;
-                    if (cooldownBar) {
-                        cooldownBar.style.backgroundImage = 'linear-gradient(to right, rgba(255, 190, 90, 0.95), rgba(255, 110, 70, 0.45))';
-                        cooldownBar.style.backgroundSize = '';
-                        cooldownBar.style.backgroundRepeat = '';
-                    }
-                } else {
-                    const frac = Math.max(0, Math.min(1, (player.gunReloadHitCount || 0) / player.gunReloadHitMax));
-                    cooldownFill.style.width = `${frac * 100}%`;
-                    if (cooldownBar) {
-                        cooldownBar.style.backgroundImage = 'linear-gradient(to right, rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(to right, rgba(120, 220, 255, 0.75), rgba(120, 155, 255, 0.35))';
-                        cooldownBar.style.backgroundSize = 'calc(100% / 13) 100%';
-                        cooldownBar.style.backgroundRepeat = 'repeat-x';
-                    }
-                }
+                renderGunAmmoCooldownBar();
             } else {
-                if (cooldownBar) {
-                    cooldownBar.style.backgroundImage = '';
-                }
                 let cooldown = 0;
                 let max = 1;
                 if (player.weapon && player.weapon.type === 'cone') {
@@ -7806,7 +13014,7 @@ function updateUI() {
                 cooldownFill.style.width = `${frac * 100}%`;
             }
         }
-        }
+    }
     }
 
     // Glow indicator when weapon is ready (no attack cooldown)
@@ -7829,6 +13037,230 @@ function getRandomCrocIndicatorTarget() {
         x: Math.random() * Math.max(1, gameWidth - 40) + 20,
         y: Math.random() * Math.max(1, gameHeight - 40) + 20
     };
+}
+
+function createWeaponPickup(x, y, weapon) {
+    const pickup = {
+        x,
+        y,
+        width: 36,
+        height: 36,
+        weapon,
+        pulse: Math.random() * Math.PI * 2,
+        markerPhase: Math.random() * Math.PI * 2,
+        collected: false
+    };
+    weaponPickups.push(pickup);
+    return pickup;
+}
+
+function spawnWeaponPickup() {
+    if (!player || !gameStarted) return;
+    if (weaponPickups.some(pickup => pickup && !pickup.collected)) return;
+
+    const { centerX, centerY, spawnRadius } = getMapCircle();
+    let spawnX = centerX;
+    let spawnY = centerY;
+    let attempt = 0;
+
+    while (attempt < 60) {
+        const pos = getRandomPointInRing(centerX, centerY, 0, spawnRadius * 0.92);
+        spawnX = pos.x;
+        spawnY = pos.y;
+
+        const pickupRect = { x: spawnX - 18, y: spawnY - 18, width: 36, height: 36 };
+        const overlapsWall = mapWalls.some(wall => isRectOverlap(pickupRect.x, pickupRect.y, pickupRect.width, pickupRect.height, wall.x, wall.y, wall.width, wall.height));
+        const overlapsPlayer = isRectOverlap(pickupRect.x, pickupRect.y, pickupRect.width, pickupRect.height, player.x, player.y, player.width, player.height);
+
+        if (!overlapsWall && !overlapsPlayer) {
+            break;
+        }
+        attempt++;
+    }
+
+    const availableWeapons = weapons.filter(weapon => !(player.weapon && weapon.type === player.weapon.type));
+    const selectedWeapon = availableWeapons.length > 0
+        ? availableWeapons[Math.floor(Math.random() * availableWeapons.length)]
+        : weapons[Math.floor(Math.random() * weapons.length)];
+
+    return createWeaponPickup(spawnX - 18, spawnY - 18, selectedWeapon);
+}
+
+function spawnWeaponPickupsAroundPlayer() {
+    if (!player || !gameStarted) return [];
+
+    const centerX = player.x + player.width / 2;
+    const centerY = player.y + player.height / 2;
+    const availableWeapons = weapons.filter(weapon => !(player.weapon && weapon.type === player.weapon.type));
+    if (!availableWeapons.length) return [];
+
+    const total = Math.min(availableWeapons.length, 6);
+    const spawned = [];
+
+    for (let i = 0; i < total; i++) {
+        const weapon = availableWeapons[i];
+        const angle = (i / Math.max(1, total)) * Math.PI * 2;
+        const radius = 60 + (i % 3) * 24;
+        let x = centerX + Math.cos(angle) * radius - 18;
+        let y = centerY + Math.sin(angle) * radius - 18;
+
+        const pickupRect = { x, y, width: 36, height: 36 };
+        const overlapsWall = mapWalls.some(wall => isRectOverlap(pickupRect.x, pickupRect.y, pickupRect.width, pickupRect.height, wall.x, wall.y, wall.width, wall.height));
+        const overlapsPlayer = isRectOverlap(pickupRect.x, pickupRect.y, pickupRect.width, pickupRect.height, player.x, player.y, player.width, player.height);
+
+        if (overlapsWall || overlapsPlayer) {
+            x = centerX + Math.cos(angle + Math.PI / 4) * (radius + 28) - 18;
+            y = centerY + Math.sin(angle + Math.PI / 4) * (radius + 28) - 18;
+        }
+
+        const pickup = createWeaponPickup(x, y, weapon);
+        spawned.push(pickup);
+    }
+
+    return spawned;
+}
+
+function clearUncollectedWeaponPickups() {
+    for (let i = weaponPickups.length - 1; i >= 0; i--) {
+        const pickup = weaponPickups[i];
+        if (pickup && !pickup.collected) {
+            weaponPickups.splice(i, 1);
+        }
+    }
+}
+
+function updateWeaponPickups() {
+    for (let i = weaponPickups.length - 1; i >= 0; i--) {
+        const pickup = weaponPickups[i];
+        if (!pickup || pickup.collected) {
+            weaponPickups.splice(i, 1);
+            continue;
+        }
+
+        pickup.pulse += 0.08;
+        pickup.markerPhase += 0.03;
+
+        if (isRectOverlap(player.x, player.y, player.width, player.height, pickup.x, pickup.y, pickup.width, pickup.height)) {
+            pickup.collected = true;
+            player.weapon = pickup.weapon;
+            if (player.weapon.type === 'gun') {
+                player.gunAmmo = player.gunMaxAmmo;
+                player.gunReloadCooldown = 0;
+                player.gunReloadHitCount = 0;
+            }
+            if (player.weapon.type === 'bow') {
+                player.bowDashCharges = player.bowDashMaxCharges;
+            }
+            player.attackCooldown = 0;
+            player.attacking = false;
+            player.meleeAttacking = false;
+            player.coneAttacking = false;
+            player.tornadoBurst = null;
+            weaponPickups.splice(i, 1);
+        }
+    }
+}
+
+function drawWeaponPickups() {
+    for (const pickup of weaponPickups) {
+        if (!pickup || pickup.collected) continue;
+
+        const bob = Math.sin(pickup.pulse) * 3;
+        const centerX = pickup.x + pickup.width / 2;
+        const centerY = pickup.y + pickup.height / 2 + bob;
+        const isVisible = centerX + 24 >= cameraX && centerX - 24 <= cameraX + viewportWidth && centerY + 24 >= cameraY && centerY - 24 <= cameraY + viewportHeight;
+
+        ctx.save();
+        ctx.translate(centerX, centerY);
+
+        const glow = ctx.createRadialGradient(0, 0, 4, 0, 0, 24);
+        glow.addColorStop(0, `${pickup.weapon.color || '#ffffff'}66`);
+        glow.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, 24, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = pickup.weapon.color || '#ffffff';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, 12, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(8, 16, 30, 0.95)';
+        ctx.beginPath();
+        ctx.arc(0, 0, 8.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 12px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const label = pickup.weapon.type === 'gun' ? 'G' : pickup.weapon.type === 'bow' ? 'B' : pickup.weapon.type === 'staff' ? 'S' : pickup.weapon.type === 'sword' ? 'W' : 'T';
+        ctx.fillText(label, 0, 0);
+        ctx.restore();
+
+        if (isVisible) {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, 16 + Math.sin(pickup.markerPhase) * 1.4, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+}
+
+function drawWeaponPickupIndicators() {
+    for (const pickup of weaponPickups) {
+        if (!pickup || pickup.collected) continue;
+
+        const centerX = pickup.x + pickup.width / 2;
+        const centerY = pickup.y + pickup.height / 2;
+        const viewLeft = cameraX;
+        const viewTop = cameraY;
+        const viewRight = cameraX + viewportWidth;
+        const viewBottom = cameraY + viewportHeight;
+        const isVisible = centerX + 24 >= viewLeft && centerX - 24 <= viewRight && centerY + 24 >= viewTop && centerY - 24 <= viewBottom;
+        if (isVisible) continue;
+
+        const screenCenterX = viewportWidth / 2;
+        const screenCenterY = viewportHeight / 2;
+        const dx = centerX - (viewLeft + viewportWidth / 2);
+        const dy = centerY - (viewTop + viewportHeight / 2);
+        const angle = Math.atan2(dy, dx);
+
+        const edgeMargin = 30;
+        let indicatorX = screenCenterX + Math.cos(angle) * (viewportWidth / 2 - edgeMargin);
+        let indicatorY = screenCenterY + Math.sin(angle) * (viewportHeight / 2 - edgeMargin);
+        indicatorX = Math.max(edgeMargin, Math.min(viewportWidth - edgeMargin, indicatorX));
+        indicatorY = Math.max(edgeMargin, Math.min(viewportHeight - edgeMargin, indicatorY));
+
+        ctx.save();
+        ctx.translate(indicatorX, indicatorY);
+        ctx.rotate(angle);
+        ctx.fillStyle = 'rgba(255, 216, 96, 0.95)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(12, 0);
+        ctx.lineTo(-8, -7);
+        ctx.lineTo(-2, 0);
+        ctx.lineTo(-8, 7);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = 'bold 12px Arial';
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('ARMA', indicatorX, indicatorY - 12);
+        ctx.restore();
+    }
 }
 
 function ensureCrocFakeIndicatorTarget(monster) {
@@ -7865,9 +13297,8 @@ function drawOffscreenMonsterIndicator() {
     let targetX = monsterCenterX;
     let targetY = monsterCenterY;
     if (currentMonster.type === 'croc') {
-        const fakeTarget = ensureCrocFakeIndicatorTarget(currentMonster);
-        targetX = fakeTarget.x;
-        targetY = fakeTarget.y;
+        targetX = currentMonster.fakeMarkerX || monsterCenterX;
+        targetY = currentMonster.fakeMarkerY || monsterCenterY;
     }
 
     const screenCenterX = viewportWidth / 2;
@@ -7908,111 +13339,208 @@ function drawOffscreenMonsterIndicator() {
     ctx.restore();
 }
 
+function getConstructionIndicatorTargets() {
+    if (!Array.isArray(constructions)) return [];
+
+    return constructions.filter((construction) => {
+        return construction &&
+            typeof construction.x === 'number' &&
+            typeof construction.y === 'number' &&
+            typeof construction.width === 'number' &&
+            typeof construction.height === 'number';
+    });
+}
+
+function drawOffscreenTransitionIndicator() {
+    if (!ctx || !player || playerInsideConstruction) return;
+
+    const viewLeft = cameraX;
+    const viewTop = cameraY;
+    const viewRight = cameraX + viewportWidth;
+    const viewBottom = cameraY + viewportHeight;
+    const targets = getConstructionIndicatorTargets();
+
+    if (!targets.length) return;
+
+    for (const construction of targets) {
+        const buildingLeft = construction.x;
+        const buildingTop = construction.y;
+        const buildingRight = construction.x + construction.width;
+        const buildingBottom = construction.y + construction.height;
+        const isVisible = buildingRight >= viewLeft && buildingLeft <= viewRight && buildingBottom >= viewTop && buildingTop <= viewBottom;
+        if (isVisible) continue;
+
+        const buildingCenterX = construction.x + construction.width / 2;
+        const buildingCenterY = construction.y + construction.height / 2;
+        const screenCenterX = viewportWidth / 2;
+        const screenCenterY = viewportHeight / 2;
+        const dx = buildingCenterX - (viewLeft + viewportWidth / 2);
+        const dy = buildingCenterY - (viewTop + viewportHeight / 2);
+        const angle = Math.atan2(dy, dx);
+
+        const edgeMargin = 32;
+        let indicatorX = screenCenterX + Math.cos(angle) * (viewportWidth / 2 - edgeMargin);
+        let indicatorY = screenCenterY + Math.sin(angle) * (viewportHeight / 2 - edgeMargin);
+        indicatorX = Math.max(edgeMargin, Math.min(viewportWidth - edgeMargin, indicatorX));
+        indicatorY = Math.max(edgeMargin, Math.min(viewportHeight - edgeMargin, indicatorY));
+
+        const label = construction.type === 'mine'
+            ? 'MINA'
+            : construction.type === 'mansion'
+                ? 'MANSÃO'
+                : 'CASTELO';
+
+        const color = construction.type === 'mine'
+            ? 'rgba(255, 176, 64, 0.95)'
+            : construction.type === 'mansion'
+                ? 'rgba(180, 118, 255, 0.95)'
+                : 'rgba(122, 232, 255, 0.95)';
+
+        ctx.save();
+        ctx.translate(indicatorX, indicatorY);
+        ctx.rotate(angle);
+
+        ctx.fillStyle = color;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(14, 0);
+        ctx.lineTo(-10, -8);
+        ctx.lineTo(-4, 0);
+        ctx.lineTo(-10, 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = 'bold 12px Arial';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(label, indicatorX, indicatorY - 14);
+        ctx.restore();
+    }
+}
+
+function spawnGhostArmyAroundMonster(monster) {
+    if (!monster || !ghostArmyUnlocked) {
+        ghostArmyEntities = [];
+        return;
+    }
+    if (Math.random() * 100 >= 10) {
+        ghostArmyEntities = [];
+        return;
+    }
+
+    ghostArmyEntities = [];
+    const centerX = monster.x + monster.width / 2;
+    const centerY = monster.y + monster.height / 2;
+    const baseRadius = Math.max(monster.width * 1.35, monster.height * 1.35, 180);
+
+    for (let i = 0; i < 50; i += 1) {
+        const angle = (Math.PI * 2 / 50) * i + (Math.random() - 0.5) * 0.35;
+        const orbitRadius = baseRadius + Math.random() * 70;
+        const drift = Math.random() * 0.03;
+        const size = 8 + Math.random() * 10;
+        ghostArmyEntities.push({
+            angle,
+            orbitRadius,
+            drift,
+            size,
+            alpha: 0.2 + Math.random() * 0.8,
+            wobble: Math.random() * Math.PI * 2,
+            spin: (Math.random() - 0.5) * 0.015,
+            x: centerX + Math.cos(angle) * orbitRadius,
+            y: centerY + Math.sin(angle) * orbitRadius,
+            life: 90 + Math.floor(Math.random() * 40),
+            maxLife: 90 + Math.floor(Math.random() * 40)
+        });
+    }
+}
+
+function updateGhostArmy() {
+    if (!ghostArmyEntities.length) return;
+
+    const monster = currentMonster;
+    if (!monster || monster.isDying) {
+        ghostArmyEntities = ghostArmyEntities.filter((ghost) => {
+            ghost.life -= 1;
+            ghost.alpha = Math.max(0, ghost.alpha - 0.02);
+            return ghost.life > 0 && ghost.alpha > 0.02;
+        });
+        return;
+    }
+
+    const centerX = monster.x + monster.width / 2;
+    const centerY = monster.y + monster.height / 2;
+    const pulse = 0.5 + Math.sin(gameFrameCount * 0.06) * 0.15;
+
+    for (const ghost of ghostArmyEntities) {
+        ghost.angle += ghost.spin + ghost.drift * pulse;
+        ghost.orbitRadius = Math.max(140, ghost.orbitRadius + Math.sin(ghost.wobble + gameFrameCount * 0.04) * 0.1);
+        ghost.x = centerX + Math.cos(ghost.angle) * ghost.orbitRadius;
+        ghost.y = centerY + Math.sin(ghost.angle) * ghost.orbitRadius;
+        ghost.alpha = Math.min(1, 0.2 + (0.6 * (ghost.life / ghost.maxLife)) + pulse * 0.15);
+        ghost.wobble += 0.03;
+    }
+}
+
+function drawGhostArmy() {
+    if (!ghostArmyEntities.length) return;
+
+    ctx.save();
+    for (const ghost of ghostArmyEntities) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0.1, ghost.alpha);
+        ctx.translate(ghost.x, ghost.y);
+        ctx.fillStyle = '#d6d6ff';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(0, 0, ghost.size * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(-ghost.size * 0.2, -ghost.size * 0.2, ghost.size * 0.4, ghost.size * 0.4);
+        ctx.restore();
+    }
+    ctx.restore();
+}
+
 function positionMonsterAwayFromPlayer(monster) {
     const margin = 20;
     const playerCenterX = player.x + player.width / 2;
     const playerCenterY = player.y + player.height / 2;
-    // Special-case: simple monsters should spawn o mais perto possível do jogador
-    if (monster.type === 'simple') {
-        const minDist = 8; // muito próximo ao jogador, evitando sobreposição
-        const maxDist = 80; // pequeno raio ao redor do jogador
-        let attempt = 0;
-        while (attempt < 100) {
-            const angle = Math.random() * Math.PI * 2;
-            const r = minDist + Math.random() * (maxDist - minDist);
-            const centerX = playerCenterX + Math.cos(angle) * r;
-            const centerY = playerCenterY + Math.sin(angle) * r;
-            monster.x = Math.max(0, Math.min(gameWidth - monster.width, centerX - monster.width / 2));
-            monster.y = Math.max(0, Math.min(gameHeight - monster.height, centerY - monster.height / 2));
+    const spawnBounds = getZoneBounds('spawn');
+    const minX = Math.max(spawnBounds.minX + margin, 0);
+    const maxX = Math.max(minX, Math.min(spawnBounds.maxX - monster.width - margin, gameWidth - monster.width));
+    const minY = Math.max(spawnBounds.minY + margin, 0);
+    const maxY = Math.max(minY, Math.min(spawnBounds.maxY - monster.height - margin, gameHeight - monster.height));
 
-            // ensure not overlapping player
-            if (!isRectOverlap(monster.x, monster.y, monster.width, monster.height, player.x, player.y, player.width, player.height)) {
-                break;
-            }
-            attempt++;
-        }
-        // fallback: place just offset from player
-        if (attempt >= 100) {
-            monster.x = Math.max(0, Math.min(gameWidth - monster.width, player.x + player.width + minDist));
-            monster.y = Math.max(0, Math.min(gameHeight - monster.height, player.y));
-        }
-    } else {
-        // Handle caster and croc specially: spawn VERY far across the whole map
-        if (monster.type === 'caster' || monster.type === 'croc') {
-            const minDistanceFar = Math.max(gameWidth, gameHeight) * 0.9; // muito longe
-            let attempt = 0;
-            while (attempt < 300) {
-                monster.x = Math.random() * (gameWidth - monster.width);
-                monster.y = Math.random() * (gameHeight - monster.height);
-                const monsterCenterX = monster.x + monster.width / 2;
-                const monsterCenterY = monster.y + monster.height / 2;
-                const dist = Math.hypot(monsterCenterX - playerCenterX, monsterCenterY - playerCenterY);
-                if (dist >= minDistanceFar) break;
-                attempt++;
-            }
-            if (attempt >= 300) {
-                if (playerCenterX < gameWidth / 2) monster.x = Math.min(gameWidth - monster.width, playerCenterX + minDistanceFar);
-                else monster.x = Math.max(0, playerCenterX - minDistanceFar - monster.width);
-                if (playerCenterY < gameHeight / 2) monster.y = Math.min(gameHeight - monster.height, playerCenterY + minDistanceFar);
-                else monster.y = Math.max(0, playerCenterY - minDistanceFar - monster.height);
-            }
-            monster.portalX = monster.x + monster.width / 2;
-            monster.portalY = monster.y + monster.height / 2;
+    let attempt = 0;
+    while (attempt < 200) {
+        const pos = getRandomPointInZone('spawn', Math.max(monster.width, monster.height));
+        monster.x = Math.max(minX, Math.min(pos.x, maxX));
+        monster.y = Math.max(minY, Math.min(pos.y, maxY));
 
-            // Ensure patrol target is outside current viewport and reasonably far from spawn
-            let tx, ty, tries = 0;
-            do {
-                tx = Math.random() * Math.max(1, gameWidth - 40) + 20;
-                ty = Math.random() * Math.max(1, gameHeight - 40) + 20;
-                tries++;
-                if (tries > 500) break;
-                const dx = tx - (monster.x + monster.width / 2);
-                const dy = ty - (monster.y + monster.height / 2);
-                if (Math.hypot(dx, dy) < 1200) continue; // patrol should be extremely far from spawn
-            } while (tx >= cameraX && tx <= cameraX + viewportWidth && ty >= cameraY && ty <= cameraY + viewportHeight);
-            monster.patrolTarget = { x: tx, y: ty };
-            return;
+        const monsterCenterX = monster.x + monster.width / 2;
+        const monsterCenterY = monster.y + monster.height / 2;
+        const dist = Math.hypot(monsterCenterX - playerCenterX, monsterCenterY - playerCenterY);
+        if (dist >= 80 && !isRectOverlap(monster.x, monster.y, monster.width, monster.height, player.x, player.y, player.width, player.height)) {
+            break;
         }
-
-        // Croc spawns far; other monsters follow previous behaviour (spawn within viewport but away)
-        let minDistance;
-        if (monster.type === 'croc') {
-            minDistance = Math.max(gameWidth, gameHeight) * 0.85;
-        } else {
-            minDistance = Math.min(700, Math.max(300, Math.min(gameWidth, gameHeight) * 0.45));
-        }
-
-        const spawnMinX = cameraX;
-        const spawnMaxX = cameraX + viewportWidth;
-        const spawnMinY = cameraY;
-        const spawnMaxY = cameraY + viewportHeight;
-
-        let attempt = 0;
-        while (attempt < 100) {
-            monster.x = spawnMinX + Math.random() * (spawnMaxX - spawnMinX - monster.width);
-            monster.y = spawnMinY + Math.random() * (spawnMaxY - spawnMinY - monster.height);
-            const monsterCenterX = monster.x + monster.width / 2;
-            const monsterCenterY = monster.y + monster.height / 2;
-            const dist = Math.hypot(monsterCenterX - playerCenterX, monsterCenterY - playerCenterY);
-            if (dist >= minDistance) {
-                break;
-            }
-            attempt++;
-        }
-
-        if (attempt >= 100) {
-            if (playerCenterX < gameWidth / 2) {
-                monster.x = Math.min(spawnMaxX - monster.width, playerCenterX + minDistance);
-            } else {
-                monster.x = Math.max(spawnMinX, playerCenterX - minDistance - monster.width);
-            }
-            if (playerCenterY < gameHeight / 2) {
-                monster.y = Math.min(spawnMaxY - monster.height, playerCenterY + minDistance);
-            } else {
-                monster.y = Math.max(spawnMinY, playerCenterY - minDistance - monster.height);
-            }
-        }
+        attempt++;
     }
+
+    if (attempt >= 200) {
+        monster.x = Math.max(minX, Math.min(playerCenterX - monster.width / 2, maxX));
+        monster.y = Math.max(minY, Math.min(playerCenterY - monster.height / 2, maxY));
+    }
+
+    monster.portalX = monster.x + monster.width / 2;
+    monster.portalY = monster.y + monster.height / 2;
+    monster.patrolTarget = { x: monster.x + monster.width / 2, y: monster.y + monster.height / 2 };
 }
 
 function spawnNewMonster() {
@@ -8027,11 +13555,21 @@ function spawnNewMonster() {
 
     projectiles = [];
     monsterHitscans = [];
-    currentMonster = new Monster(phase, chooseMonsterType());
-    crocConsecutiveHits = 0;
-    positionMonsterAwayFromPlayer(currentMonster);
+    if (castleBossQueued && !playerInsideConstruction) {
+        currentMonster = new Monster(phase, 'castle_bone_sphere');
+        castleBossQueued = false;
+        castleBossAlertText = 'um novo inimigo aparece.';
+        castleBossAlertTimer = 120;
+    } else {
+        currentMonster = new Monster(phase, chooseMonsterType());
+    }
+
+    if (currentMonster.type === 'castle_bone_sphere') {
+        spawnCastleBossSkeletons(1 + Math.floor(Math.random() * 3));
+    }
     if (currentMonster.type === 'croc') {
-        currentMonster.fakeIndicatorTarget = getRandomCrocIndicatorTarget();
+        currentMonster.fakeMarkerX = currentMonster.crocDecoyX;
+        currentMonster.fakeMarkerY = currentMonster.crocDecoyY;
     }
     player.spinAttack = player.spinAttackLevel > 0;
     player.spinAttackCharges = Math.max(0, player.spinAttackLevel - 1);
@@ -8039,6 +13577,7 @@ function spawnNewMonster() {
     player.currentMonsterHitCount = 0;
     player.autoAttackEnabled = false;
     spawnSpinAttackStartProjectiles();
+    spawnGhostArmyAroundMonster(currentMonster);
     upgradeChoices = getRandomUpgrades(6);
     selectedUpgradeIndex = 0;
     isUpgrading = false;
@@ -8149,100 +13688,248 @@ function getWeaponUpgrades() {
     return weaponUpgradeOptions[player.weapon.type] ? [...weaponUpgradeOptions[player.weapon.type]] : [];
 }
 
+function getDebugUpgradeChoices() {
+    const weaponSpecific = (getWeaponUpgrades() || []).map((upgrade) => ({ ...upgrade, exclusive: true }));
+    const generic = upgradeOptions.map((upgrade) => ({ ...upgrade }));
+    const combined = [...weaponSpecific, ...generic];
+    return combined.filter((choice, index, list) => index === list.findIndex((candidate) => candidate.name === choice.name && candidate.effect === choice.effect));
+}
+
+function applyUpgradeChoice(pick, quantity = 1) {
+    if (!pick) return;
+
+    const safeQuantity = Math.max(1, Math.floor(quantity || 1));
+    for (let i = 0; i < safeQuantity; i++) {
+        switch (pick.effect) {
+            case 'maxHealth':
+                player.maxHealth += pick.value;
+                player.health += pick.value;
+                break;
+            case 'critDamage':
+                player.critDamage += pick.value;
+                break;
+            case 'spinAttack':
+                player.spinAttackLevel = (player.spinAttackLevel || 0) + 1;
+                player.spinAttack = true;
+                player.spinAttackCharges = Math.max(0, player.spinAttackLevel - 1);
+                break;
+            case 'gunAmmoMax':
+                player.gunMaxAmmo += pick.value;
+                player.gunAmmo += pick.value;
+                break;
+            case 'gunReloadHitMax':
+                player.gunReloadHitMax = Math.max(1, player.gunReloadHitMax - pick.value);
+                break;
+            case 'gunReloadCooldownMax':
+                player.gunReloadCooldownMax = Math.max(4, player.gunReloadCooldownMax - pick.value);
+                break;
+            case 'gunBurstFire':
+                player.gunBurstFire = (player.gunBurstFire || 0) + pick.value;
+                break;
+            case 'gunExplosiveAmmo':
+                player.gunExplosiveAmmo = (player.gunExplosiveAmmo || 0) + pick.value;
+                break;
+            case 'bowDashMax':
+                player.bowDashMaxCharges += pick.value;
+                player.bowDashCharges += pick.value;
+                break;
+            case 'bowRicochet':
+                player.bowRicochet = (player.bowRicochet || 0) + pick.value;
+                break;
+            case 'bowFirstShot':
+                player.bowFirstShot = (player.bowFirstShot || 0) + pick.value;
+                player.bowFirstShotUsed = false;
+                break;
+            case 'bowReadyStance':
+                player.bowReadyStance = (player.bowReadyStance || 0) + pick.value;
+                break;
+            case 'staffChargeMax':
+                player.staffChargeMax += pick.value;
+                break;
+            case 'staffBurstCount':
+                player.staffBurstCount += pick.value;
+                break;
+            case 'staffBurstCooldownMax':
+                player.staffBurstCooldownMax = Math.max(40, player.staffBurstCooldownMax - pick.value);
+                break;
+            case 'staffHomingBurst':
+                player.staffHomingBurst = (player.staffHomingBurst || 0) + pick.value;
+                break;
+            case 'bombStunPerHitSeconds':
+                player.bombStunPerHitSeconds = (player.bombStunPerHitSeconds || 0) + pick.value;
+                break;
+            case 'bombFragmentConfusionSeconds':
+                if ((player.bombFragmentConfusionLevels || 0) <= 0) {
+                    player.bombFragmentConfusionSeconds = 0.1;
+                } else {
+                    player.bombFragmentConfusionSeconds = (player.bombFragmentConfusionSeconds || 0.1) + 0.05;
+                }
+                player.bombFragmentConfusionLevels = (player.bombFragmentConfusionLevels || 0) + 1;
+                break;
+            case 'bombFragmentCountBonus':
+                player.bombFragmentCountBonus = (player.bombFragmentCountBonus || 0) + Math.round(pick.value || 0);
+                break;
+            case 'bombBurnDamagePerSecond':
+                player.bombBurnDamagePerSecond = (player.bombBurnDamagePerSecond || 0) + pick.value;
+                player.bombBurnDurationSeconds = Math.max(3, (player.bombBurnDurationSeconds || 3) + 0.5);
+                break;
+            case 'bombFragmentSpeedBonus':
+                player.bombFragmentSpeedBonus = (player.bombFragmentSpeedBonus || 0) + pick.value;
+                player.bombFragmentPierce = (player.bombFragmentPierce || 0) + 1;
+                break;
+            case 'bombThrowSpeedBonus':
+                player.bombThrowSpeedBonus = (player.bombThrowSpeedBonus || 0) + pick.value;
+                break;
+            case 'bombFireZoneDurationBonusSeconds':
+                player.bombFireZoneDurationBonusSeconds = (player.bombFireZoneDurationBonusSeconds || 0) + pick.value;
+                break;
+            case 'bombFireZoneMoveSpeedBonus':
+                player.bombFireZoneMoveSpeedBonus = (player.bombFireZoneMoveSpeedBonus || 0) + pick.value;
+                break;
+            case 'bombCooldownMoveSpeedBonus':
+                player.bombCooldownMoveSpeedBonus = (player.bombCooldownMoveSpeedBonus || 0) + pick.value;
+                break;
+            case 'bombFireZoneRadiusBonus':
+                player.bombFireZoneRadiusBonus = (player.bombFireZoneRadiusBonus || 0) + pick.value;
+                break;
+            case 'bombFragmentSizeBonus':
+                player.bombFragmentSizeBonus = (player.bombFragmentSizeBonus || 0) + pick.value;
+                break;
+            case 'swordRange':
+                if (player.weapon && player.weapon.type === 'sword') {
+                    player.weapon.range += pick.value;
+                }
+                break;
+            case 'parryMax':
+                player.parryMax = Math.max(60, player.parryMax - pick.value);
+                break;
+            case 'parryChargePerHit':
+                player.parryChargePerHit = (player.parryChargePerHit || 0) + pick.value;
+                break;
+            case 'parryDefenseBonus':
+                player.parryDefenseBonus = (player.parryDefenseBonus || 0) + pick.value;
+                break;
+            case 'parryHealOnUse':
+                player.parryHealOnUse = (player.parryHealOnUse || 0) + pick.value;
+                break;
+            case 'parryHealOverTime':
+                player.parryHealOverTime = (player.parryHealOverTime || 0) + pick.value;
+                break;
+            case 'parryConfusionChance':
+                player.parryConfusionChance = (player.parryConfusionChance || 0) + pick.value;
+                player.parryConfusionDuration = (player.parryConfusionDuration || 0) + 3 * Math.round((pick.value || 0) / 12.5);
+                break;
+            case 'tornadoCount':
+                player.tornadoBurstExtraCount = (player.tornadoBurstExtraCount || 0) + pick.value;
+                break;
+            case 'coneAngleBonus':
+                player.tornadoConeAngleBonus = (player.tornadoConeAngleBonus || 0) + pick.value;
+                break;
+            case 'tornadoDuration':
+                player.tornadoBurstExtraDuration = (player.tornadoBurstExtraDuration || 0) + pick.value;
+                break;
+            default:
+                player[pick.effect] = (player[pick.effect] || 0) + pick.value;
+                break;
+        }
+    }
+
+    healPlayer(2 * safeQuantity);
+    upgradesAcquired += safeQuantity;
+}
+
 function healPlayer(amount) {
     player.health = Math.min(player.maxHealth, player.health + amount);
+}
+
+function toggleDebugMenu() {
+    if (isSelectingWeapon || gameOver) return;
+
+    if (!isDebugMenuOpen) {
+        debugMenuUpgradeChoices = getDebugUpgradeChoices();
+        debugMenuActionChoices = getDebugActionChoices();
+        selectedDebugUpgradeIndex = 0;
+        selectedDebugActionIndex = 0;
+        debugMenuQuantity = 1;
+        debugMenuFlashTimer = 0;
+    }
+
+    isDebugMenuOpen = !isDebugMenuOpen;
+    if (overlayCanvas) {
+        overlayCanvas.style.display = isDebugMenuOpen ? 'block' : 'none';
+        overlayCanvas.style.pointerEvents = isDebugMenuOpen ? 'auto' : 'none';
+        if (isDebugMenuOpen) resizeDebugOverlay();
+        if (!isDebugMenuOpen && overlayCtx) {
+            overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        }
+    }
+}
+
+function applyDebugUpgrade() {
+    if (debugMenuTabs[debugMenuTabIndex].id === 'invocar') {
+        const action = debugMenuActionChoices[selectedDebugActionIndex] || getDebugMenuChoices()[selectedDebugActionIndex];
+        if (!action) return;
+        if (!action.enabled) {
+            debugMenuFlashTimer = 50;
+            debugMenuFlashText = `Ação indisponível: ${action.name}`;
+            return;
+        }
+        applyDebugAction(action, debugMenuQuantity);
+        debugMenuFlashTimer = 50;
+        debugMenuFlashText = `Invocado: ${action.name}`;
+        return;
+    }
+
+    const pick = debugMenuUpgradeChoices[selectedDebugUpgradeIndex];
+    if (!pick) return;
+
+    applyUpgradeChoice(pick, debugMenuQuantity);
+    debugMenuUpgradeChoices = getDebugUpgradeChoices();
+    if (selectedDebugUpgradeIndex >= debugMenuUpgradeChoices.length) {
+        selectedDebugUpgradeIndex = Math.max(0, debugMenuUpgradeChoices.length - 1);
+    }
+
+    debugMenuFlashTimer = 50;
+    debugMenuFlashText = `Aplicado: ${pick.name}`;
 }
 
 function applyUpgrade(index) {
     const pick = upgradeChoices[index];
     if (!pick) return;
 
-    switch (pick.effect) {
-        case 'maxHealth':
-            player.maxHealth += pick.value;
-            player.health += pick.value;
-            break;
-        case 'critDamage':
-            player.critDamage += pick.value;
-            break;
-        case 'spinAttack':
-            player.spinAttackLevel = (player.spinAttackLevel || 0) + 1;
-            player.spinAttack = true;
-            player.spinAttackCharges = Math.max(0, player.spinAttackLevel - 1);
-            break;
-        case 'gunAmmoMax':
-            player.gunMaxAmmo += pick.value;
-            player.gunAmmo += pick.value;
-            break;
-        case 'gunReloadHitMax':
-            player.gunReloadHitMax = Math.max(1, player.gunReloadHitMax - pick.value);
-            break;
-        case 'gunReloadCooldownMax':
-            player.gunReloadCooldownMax = Math.max(4, player.gunReloadCooldownMax - pick.value);
-            break;
-        case 'bowDashMax':
-            player.bowDashMaxCharges += pick.value;
-            player.bowDashCharges += pick.value;
-            break;
-        case 'bowRicochet':
-            player.bowRicochet = (player.bowRicochet || 0) + pick.value;
-            break;
-        case 'bowFirstShot':
-            player.bowFirstShot = (player.bowFirstShot || 0) + pick.value;
-            player.bowFirstShotUsed = false;
-            break;
-        case 'bowReadyStance':
-            player.bowReadyStance = (player.bowReadyStance || 0) + pick.value;
-            break;
-        case 'staffChargeMax':
-            player.staffChargeMax += pick.value;
-            break;
-        case 'staffBurstCount':
-            player.staffBurstCount += pick.value;
-            break;
-        case 'staffBurstCooldownMax':
-            player.staffBurstCooldownMax = Math.max(40, player.staffBurstCooldownMax - pick.value);
-            break;
-        case 'swordRange':
-            if (player.weapon && player.weapon.type === 'sword') {
-                player.weapon.range += pick.value;
-            }
-            break;
-        case 'parryMax':
-            player.parryMax = Math.max(60, player.parryMax - pick.value);
-            break;
-        case 'parryChargePerHit':
-            player.parryChargePerHit = (player.parryChargePerHit || 0) + pick.value;
-            break;
-        case 'parryDefenseBonus':
-            player.parryDefenseBonus = (player.parryDefenseBonus || 0) + pick.value;
-            break;
-        case 'parryHealOnUse':
-            player.parryHealOnUse = (player.parryHealOnUse || 0) + pick.value;
-            break;
-        case 'parryConfusionChance':
-            player.parryConfusionChance = (player.parryConfusionChance || 0) + pick.value;
-            player.parryConfusionDuration = (player.parryConfusionDuration || 0) + 3 * Math.round((pick.value || 0) / 12.5);
-            break;
-        case 'tornadoCount':
-            player.tornadoBurstExtraCount = (player.tornadoBurstExtraCount || 0) + pick.value;
-            break;
-        case 'tornadoDuration':
-            player.tornadoBurstExtraDuration = (player.tornadoBurstExtraDuration || 0) + pick.value;
-            break;
-        case 'coneAngleBonus':
-            player.tornadoConeAngleBonus = (player.tornadoConeAngleBonus || 0) + pick.value;
-            break;
-        default:
-            player[pick.effect] = (player[pick.effect] || 0) + pick.value;
-            break;
-    }
-
-    healPlayer(2);
-    upgradesAcquired++;
+    applyUpgradeChoice(pick, 1);
     isUpgrading = false;
     upgradeChoices = [];
     roundStartTimer = 60;
+}
+
+function drawPlayerConfusionOverlay() {
+    if (!player || player.confusedTimer <= 0) return;
+
+    const intensity = Math.min(1, player.confusedTimer / 180);
+    const pulse = 0.18 + 0.08 * Math.sin(gameFrameCount * 0.12 + player.confusedTimer * 0.04);
+    const alpha = 0.12 + intensity * 0.2 + pulse * 0.05;
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'rgba(255, 200, 90, 0.16)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.globalCompositeOperation = 'screen';
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.15 + intensity * 0.22})`;
+    ctx.lineWidth = 2;
+    const ringCount = 7;
+    for (let i = 0; i < ringCount; i++) {
+        const radius = 90 + i * 28 + Math.sin(gameFrameCount * 0.06 + i) * 8;
+        const offset = gameFrameCount * 0.03 + i * 0.5;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, offset, offset + Math.PI * 1.2);
+        ctx.stroke();
+    }
+
+    ctx.restore();
 }
 
 function drawCountdownOverlay(text, subtitle = '', y = canvas.height / 2, alpha = 1) {
@@ -8276,6 +13963,673 @@ function drawCountdownOverlay(text, subtitle = '', y = canvas.height / 2, alpha 
         ctx.fillText(subtitle, screenWidth / 2, y + 62);
     }
     ctx.restore();
+}
+
+function getDebugMenuChoices() {
+    if (debugMenuTabs[debugMenuTabIndex].id === 'invocar') {
+        debugMenuActionChoices = getDebugActionChoices();
+        if (selectedDebugActionIndex >= debugMenuActionChoices.length) {
+            selectedDebugActionIndex = Math.max(0, debugMenuActionChoices.length - 1);
+        }
+        return debugMenuActionChoices;
+    }
+
+    if (!debugMenuUpgradeChoices.length) {
+        debugMenuUpgradeChoices = getDebugUpgradeChoices();
+    }
+    if (selectedDebugUpgradeIndex >= debugMenuUpgradeChoices.length) {
+        selectedDebugUpgradeIndex = Math.max(0, debugMenuUpgradeChoices.length - 1);
+    }
+    return debugMenuUpgradeChoices;
+}
+
+function getDebugChoiceRarity(choice) {
+    if (choice.exclusive) return { label: 'EXCLUSIVO', color: '#ffe28a' };
+    return null;
+}
+
+function formatDebugValue(value) {
+    if (typeof value !== 'number') return String(value);
+    if (Number.isInteger(value)) return String(value);
+    return value.toFixed(2);
+}
+
+function getDebugChoiceCurrentValue(choice) {
+    const e = choice.effect || '';
+    let v;
+    if (e === 'swordRange') v = (player.weapon && player.weapon.range) || 0;
+    else if (e === 'maxHealth') v = player.maxHealth;
+    else if (typeof player[e] !== 'undefined' && player[e] !== null) v = player[e];
+
+    if (typeof v === 'boolean') return v ? 'Sim' : 'Não';
+    if (typeof v === 'undefined' || v === null) return '—';
+    if (typeof v === 'number') {
+        if (Number.isInteger(v)) return String(v);
+        return v.toFixed(2);
+    }
+    return String(v);
+}
+
+function getDebugActionChoices() {
+    const actions = [];
+    const monsterTypes = ['simple', 'croc', 'shooter', 'swarm', 'caster', 'avianightmare', 'smart', 'tank'];
+    for (const type of monsterTypes) {
+        actions.push({
+            name: `Invocar ${type === 'simple' ? 'Monstro Simples' : type === 'croc' ? 'Croc' : type === 'tank' ? 'Tanque' : type.charAt(0).toUpperCase() + type.slice(1)}`,
+            category: 'MONSTRO',
+            desc: `Substitui o monstro atual por um ${type}. Use este comando para forçar o próximo combate.`,
+            effect: 'spawnMonster',
+            monsterType: type,
+            enabled: true
+        });
+    }
+
+    actions.push({
+        name: 'Invocar Esquadrão Fantasma',
+        category: 'AÇÃO',
+        desc: 'Cria um exército de fantasmas ao redor do monstro atual, usando a mesma lógica de fantasma do jogo.',
+        effect: 'ghostArmy',
+        enabled: !!currentMonster && !currentMonster.isDying
+    });
+    actions.push({
+        name: 'Spawn Onda de Castelo',
+        category: 'CASTELO',
+        desc: 'Inicia a próxima onda do interior do castelo se você estiver dentro de um castelo.',
+        effect: 'castleWave',
+        enabled: playerInsideConstruction && constructions.find(c => c.id === currentConstructionId && c.type === 'castle')
+    });
+    actions.push({
+        name: 'Spawn Onda de Mansão',
+        category: 'MANSÃO',
+        desc: 'Gera até 3 fantasmas adicionais na mansão imediatamente.',
+        effect: 'mansionWave',
+        enabled: playerInsideConstruction && constructions.find(c => c.id === currentConstructionId && c.type === 'mansion')
+    });
+    actions.push({
+        name: 'Reiniciar Castelo',
+        category: 'CASTELO',
+        desc: 'Limpa o interior do castelo e reseta seu estado de ondas.',
+        effect: 'resetCastle',
+        enabled: true
+    });
+    actions.push({
+        name: 'Reiniciar Mansão',
+        category: 'MANSÃO',
+        desc: 'Limpa o interior da mansão e reseta seu estado de spawn.',
+        effect: 'resetMansion',
+        enabled: true
+    });
+    actions.push({
+        name: 'Abrir Saída do Castelo',
+        category: 'AÇÃO',
+        desc: 'Força a abertura do portão do castelo, se houver um castelo ativo.',
+        effect: 'openCastleExit',
+        enabled: playerInsideConstruction && constructions.find(c => c.id === currentConstructionId && c.type === 'castle')
+    });
+    return actions;
+}
+
+function applyDebugAction(action, quantity = 1) {
+    if (!action) return;
+    const safeQuantity = Math.max(1, Math.floor(quantity || 1));
+    switch (action.effect) {
+        case 'spawnMonster':
+            for (let i = 0; i < safeQuantity; i += 1) {
+                currentMonster = new Monster(phase, action.monsterType);
+                if (currentMonster.type === 'castle_bone_sphere') {
+                    spawnCastleBossSkeletons(1 + Math.floor(Math.random() * 3));
+                }
+                spawnGhostArmyAroundMonster(currentMonster);
+            }
+            break;
+        case 'ghostArmy':
+            for (let i = 0; i < safeQuantity; i += 1) {
+                spawnGhostArmyAroundMonster(currentMonster);
+            }
+            break;
+        case 'castleWave':
+            for (let i = 0; i < safeQuantity; i += 1) {
+                spawnCastleInteriorWave();
+            }
+            break;
+        case 'mansionWave':
+            for (let i = 0; i < safeQuantity; i += 1) {
+                for (let j = 0; j < 3; j += 1) {
+                    if (!spawnMansionGhost()) break;
+                }
+            }
+            break;
+        case 'resetCastle':
+            clearCastleInterior();
+            break;
+        case 'resetMansion':
+            clearMansionInterior();
+            break;
+        case 'openCastleExit':
+            openCastleExitIfReady();
+            break;
+        default:
+            break;
+    }
+}
+
+function getDebugChoiceCategory(choice) {
+    if (choice && choice.category) {
+        switch (choice.category) {
+            case 'MONSTRO': return { label: 'MONSTRO', color: '#ff9a72' };
+            case 'CASTELO': return { label: 'CASTELO', color: '#b88cff' };
+            case 'MANSÃO': return { label: 'MANSÃO', color: '#a2ff70' };
+            case 'AÇÃO': return { label: 'AÇÃO', color: '#5ad1ff' };
+        }
+    }
+    const e = choice.effect || '';
+    if (e.startsWith('gun') || e.startsWith('bow') || e.startsWith('staff') ||
+        e.startsWith('bomb') || e.startsWith('tornado') || e.startsWith('hurricane') ||
+        e.startsWith('sword') || e.startsWith('parry')) {
+        return { label: 'ARMA', color: '#5ad1ff' };
+    }
+    if (['maxHealth', 'healthRegen', 'damageReduction'].includes(e)) {
+        return { label: 'DEFESA', color: '#5be08a' };
+    }
+    if (e === 'speed') {
+        return { label: 'MOBILIDADE', color: '#ffd24a' };
+    }
+    return { label: 'DANO', color: '#ff7a6b' };
+}
+
+function drawDebugMenu(drawCtx = null) {
+    const ctx = drawCtx || window.ctx;
+    const screenWidth = (drawCtx ? overlayCanvas.width : canvas.width);
+    const screenHeight = (drawCtx ? overlayCanvas.height : canvas.height);
+    const choices = getDebugMenuChoices();
+    const selectedIndex = debugMenuTabs[debugMenuTabIndex].id === 'invocar' ? selectedDebugActionIndex : selectedDebugUpgradeIndex;
+    const pulse = 0.5 + 0.5 * Math.sin(gameFrameCount * 0.07);
+
+    ctx.fillStyle = 'rgba(5, 10, 20, 0.96)';
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
+
+    // Animated background accent
+    ctx.save();
+    const centerX = screenWidth / 2;
+    const centerY = screenHeight / 2;
+    const ring = ctx.createRadialGradient(centerX, centerY, 120, centerX, centerY, 620);
+    ring.addColorStop(0, `rgba(0, 220, 255, ${0.06 + 0.04 * pulse})`);
+    ring.addColorStop(0.55, 'rgba(0, 190, 255, 0.02)');
+    ring.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = ring;
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
+    ctx.restore();
+
+    // ===== Header =====
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#9ff6ff';
+    ctx.shadowColor = 'rgba(0, 220, 255, 0.7)';
+    ctx.shadowBlur = 14 + 10 * pulse;
+    const headerFontSize = Math.max(20, Math.min(34, screenWidth > 1200 ? 34 : screenWidth > 900 ? 28 : 22));
+    ctx.font = `bold ${headerFontSize}px Arial`;
+    ctx.fillText('DEBUG · CONSOLE DE MELHORIAS', centerX, 52);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = 'rgba(150, 230, 255, 0.75)';
+    const subtitleFontSize = headerFontSize > 28 ? 13 : 12;
+    ctx.font = `${subtitleFontSize}px Arial`;
+    const subtitle = 'Pressione O para abrir/fechar  •  Tab: alternar abas  •  I: itens  •  C: construções';
+    const subtitleLines = wrapDebugText(subtitle, Math.max(260, screenWidth * 0.72), subtitleFontSize);
+    subtitleLines.forEach((line, index) => {
+        ctx.fillText(line, centerX, 74 + index * 16);
+    });
+
+    // Animated underline
+    const lineWidth = 280 + 120 * pulse;
+    const underlineY = 86 + Math.max(0, subtitleLines.length - 1) * 16;
+    const grad = ctx.createLinearGradient(centerX - lineWidth / 2, 0, centerX + lineWidth / 2, 0);
+    grad.addColorStop(0, 'rgba(0, 225, 255, 0)');
+    grad.addColorStop(0.5, 'rgba(120, 240, 255, 0.9)');
+    grad.addColorStop(1, 'rgba(0, 225, 255, 0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(centerX - lineWidth / 2, underlineY, lineWidth, 2);
+    ctx.restore();
+
+    // Tabs
+    const tabHeight = 36;
+    const tabGap = 14;
+    const tabRects = [];
+    let tabX = centerX;
+    const tabWidths = debugMenuTabs.map((tab) => Math.max(110, ctx.measureText(tab.label).width + 32));
+    const totalTabWidth = tabWidths.reduce((sum, w) => sum + w, 0) + tabGap * (debugMenuTabs.length - 1);
+    tabX -= totalTabWidth / 2;
+    const tabY = underlineY + 18;
+    for (let i = 0; i < debugMenuTabs.length; i += 1) {
+        const tab = debugMenuTabs[i];
+        const tabW = tabWidths[i];
+        const isActive = i === debugMenuTabIndex;
+        ctx.save();
+        ctx.fillStyle = isActive ? 'rgba(0, 190, 255, 0.22)' : 'rgba(255, 255, 255, 0.06)';
+        ctx.strokeStyle = isActive ? 'rgba(86, 236, 255, 0.7)' : 'rgba(120, 200, 255, 0.12)';
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(tabX, tabY, tabW, tabHeight);
+        ctx.strokeRect(tabX + 0.5, tabY + 0.5, tabW - 1, tabHeight - 1);
+        ctx.restore();
+
+        ctx.save();
+        ctx.fillStyle = isActive ? '#eafcff' : 'rgba(220, 240, 255, 0.75)';
+        ctx.font = 'bold 13px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(tab.label, tabX + tabW / 2, tabY + tabHeight / 2);
+        ctx.restore();
+
+        tabRects.push({ id: tab.id, x: tabX, y: tabY, w: tabW, h: tabHeight });
+        tabX += tabW + tabGap;
+    }
+    debugMenuTabGeom.tabRects = tabRects;
+
+    // ===== Stats strip =====
+    const stats = [
+        { label: 'VIDA', value: `${Math.round(player.health)}/${Math.round(player.maxHealth)}`, color: '#5be08a' },
+        { label: 'DANO', value: formatDebugValue(player.baseDamage), color: '#ff7a6b' },
+        { label: 'VELOCIDADE', value: formatDebugValue(player.speed), color: '#ffd24a' },
+        { label: 'CRÍTICO', value: `${Math.round((player.critChance || 0) * 100)}%`, color: '#ff9ad2' },
+        { label: 'FASE', value: String(phase), color: '#9ad6ff' },
+        { label: 'ARMA', value: player.weapon ? (player.weapon.name || player.weapon.type) : '—', color: '#5ad1ff' }
+    ];
+    const stripY = 104 + Math.max(0, subtitleLines.length - 1) * 16;
+    const stripH = 42;
+    const chipPad = 14;
+    const chipW = (screenWidth - chipPad * (stats.length + 1)) / stats.length;
+    ctx.save();
+    for (let i = 0; i < stats.length; i++) {
+        const cx = chipPad + i * (chipW + chipPad);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+        ctx.strokeStyle = 'rgba(120, 200, 255, 0.18)';
+        ctx.lineWidth = 1;
+        ctx.fillRect(cx, stripY, chipW, stripH);
+        ctx.strokeRect(cx, stripY, chipW, stripH);
+
+        ctx.fillStyle = stats[i].color;
+        ctx.font = 'bold 10px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText(stats[i].label, cx + 10, stripY + 15);
+
+        // Truncate value if too wide for the chip
+        let val = stats[i].value;
+        ctx.font = 'bold 16px Arial';
+        if (ctx.measureText(val).width > chipW - 20) {
+            while (val.length > 1 && ctx.measureText(val + '…').width > chipW - 20) {
+                val = val.slice(0, -1);
+            }
+            val += '…';
+        }
+        ctx.fillStyle = '#eaf7ff';
+        ctx.fillText(val, cx + 10, stripY + 33);
+    }
+    ctx.restore();
+
+    // ===== Layout =====
+    const panelX = Math.max(16, screenWidth * 0.02);
+    const panelY = stripY + stripH + 12;
+    const panelW = Math.min(screenWidth - panelX * 2, screenWidth * 0.96);
+    const panelH = Math.max(360, screenHeight - panelY - 42);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(8, 20, 44, 0.92)';
+    ctx.strokeStyle = 'rgba(56, 196, 255, 0.18)';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(panelX, panelY, panelW, panelH);
+    ctx.strokeRect(panelX, panelY, panelW, panelH);
+    ctx.restore();
+
+    const listPanelX = panelX + 14;
+    const listPanelY = panelY + 12;
+    const listPanelW = Math.min(panelW * 0.58, 560);
+    const listPanelH = panelH - 24;
+
+    const itemH = 50;
+    const gap = 8;
+    const maxVisible = Math.max(1, Math.floor((listPanelH - 4) / (itemH + gap)));
+    const visibleCount = Math.min(maxVisible, choices.length);
+    const startIndex = Math.min(Math.max(selectedIndex - Math.floor(visibleCount / 2), 0), Math.max(0, choices.length - visibleCount));
+
+    // List panel header
+    ctx.save();
+    ctx.fillStyle = '#8fd9ff';
+    ctx.font = 'bold 13px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${debugMenuTabs[debugMenuTabIndex].label} (${choices.length})`, listPanelX + 4, listPanelY + 12);
+    ctx.restore();
+
+    const headerOffset = 18;
+    const listTop = listPanelY + headerOffset;
+    const listBottom = listPanelY + listPanelH;
+
+    // store geometry for click handling (uses clickable top = listTop)
+    debugMenuListGeom = { x: listPanelX, y: listTop, width: listPanelW, itemHeight: itemH, gap, visibleCount, startIndex, listPanelH, headerOffset };
+
+    // Clip list area
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(listPanelX, listTop, listPanelW, listBottom - listTop);
+    ctx.clip();
+
+    for (let i = 0; i < visibleCount; i++) {
+        const index = startIndex + i;
+        const choice = choices[index];
+        const itemY = listTop + i * (itemH + gap);
+        const isSelected = index === selectedIndex;
+        const category = getDebugChoiceCategory(choice);
+        const rarity = getDebugChoiceRarity(choice);
+
+        ctx.save();
+        if (isSelected) {
+            ctx.fillStyle = `rgba(0, 225, 255, ${0.14 + 0.08 * pulse})`;
+            ctx.strokeStyle = `rgba(123, 242, 255, ${0.6 + 0.4 * pulse})`;
+            ctx.lineWidth = 2;
+        } else {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+            ctx.strokeStyle = 'rgba(80, 180, 255, 0.16)';
+            ctx.lineWidth = 1;
+        }
+        ctx.fillRect(listPanelX, itemY, listPanelW, itemH);
+        ctx.strokeRect(listPanelX, itemY, listPanelW, itemH);
+        ctx.restore();
+
+        // Left category accent bar
+        ctx.save();
+        ctx.fillStyle = category.color;
+        ctx.fillRect(listPanelX, itemY, 5, itemH);
+        ctx.restore();
+
+        // Category pill (vertically centered)
+        const pillX = listPanelX + 12;
+        const pillW = 72;
+        const pillH = 20;
+        const pillCY = itemY + itemH / 2;
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,255,255,0.05)';
+        ctx.strokeStyle = category.color;
+        ctx.lineWidth = 1;
+        ctx.fillRect(pillX, pillCY - pillH / 2, pillW, pillH);
+        ctx.strokeRect(pillX, pillCY - pillH / 2, pillW, pillH);
+        ctx.fillStyle = category.color;
+        ctx.font = 'bold 9px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(category.label, pillX + pillW / 2, pillCY);
+        ctx.restore();
+
+        // Name (after pill, truncated if needed)
+        const nameX = pillX + pillW + 12;
+        const rarityW = rarity ? 84 : 0;
+        const valueW = 74;
+        const maxNameW = Math.max(90, (listPanelX + listPanelW - 12) - nameX - valueW - rarityW - 10);
+        ctx.save();
+        ctx.fillStyle = isSelected ? '#ffffff' : '#cfeaff';
+        ctx.font = isSelected ? 'bold 14px Arial' : '13px Arial';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        let dispName = choice.name || '';
+        if (maxNameW > 10 && ctx.measureText(dispName).width > maxNameW) {
+            while (dispName.length > 1 && ctx.measureText(dispName + '…').width > maxNameW) {
+                dispName = dispName.slice(0, -1);
+            }
+            dispName += '…';
+        }
+        ctx.fillText(dispName, nameX, pillCY);
+        ctx.restore();
+
+        // Value or status label (right side)
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.font = 'bold 13px Arial';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        const valueX = listPanelX + listPanelW - (rarity ? rarityW + 16 : 12);
+        const statusText = debugMenuTabs[debugMenuTabIndex].id === 'invocar'
+            ? (choice.enabled ? 'DISPONÍVEL' : 'BLOQUEADO')
+            : `+${formatDebugValue(choice.value)}`;
+        ctx.fillText(statusText, valueX, pillCY);
+        ctx.restore();
+
+        // Rarity pill (far right)
+        if (rarity) {
+            const rX = listPanelX + listPanelW - 12 - rarityW;
+            ctx.save();
+            ctx.fillStyle = 'rgba(255, 226, 138, 0.16)';
+            ctx.strokeStyle = rarity.color;
+            ctx.lineWidth = 1;
+            ctx.fillRect(rX, pillCY - 10, rarityW, 20);
+            ctx.strokeRect(rX, pillCY - 10, rarityW, 20);
+            ctx.fillStyle = rarity.color;
+            ctx.font = 'bold 10px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(rarity.label, rX + rarityW / 2, pillCY);
+            ctx.restore();
+        }
+    }
+    ctx.restore();
+
+    // Scrollbar
+    if (choices.length > visibleCount) {
+        const trackX = listPanelX + listPanelW - 4;
+        const trackY = listTop;
+        const trackH = listBottom - listTop;
+        const thumbH = Math.max(20, trackH * (visibleCount / choices.length));
+        const thumbY = trackY + (trackH - thumbH) * (startIndex / Math.max(1, choices.length - visibleCount));
+        ctx.save();
+        ctx.fillStyle = 'rgba(120, 200, 255, 0.12)';
+        ctx.fillRect(trackX, trackY, 4, trackH);
+        ctx.fillStyle = 'rgba(120, 240, 255, 0.55)';
+        ctx.fillRect(trackX, thumbY, 4, thumbH);
+        ctx.restore();
+    }
+
+    // ===== Detail panel =====
+    const detailX = listPanelX + listPanelW + 16;
+    const detailW = Math.max(280, panelX + panelW - 14 - detailX);
+    const detailY = listPanelY;
+    const detailH = listPanelH;
+
+    const selected = choices[selectedIndex];
+    ctx.save();
+    ctx.fillStyle = 'rgba(10, 26, 52, 0.6)';
+    ctx.strokeStyle = 'rgba(56, 196, 255, 0.12)';
+    ctx.lineWidth = 1;
+    ctx.fillRect(detailX, detailY, detailW, detailH);
+    ctx.strokeRect(detailX, detailY, detailW, detailH);
+    ctx.restore();
+
+    if (selected) {
+        const cat = getDebugChoiceCategory(selected);
+        const rar = getDebugChoiceRarity(selected);
+        let dy = detailY + 26;
+
+        // Name
+        ctx.save();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 19px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText(selected.name || '', detailX + 16, dy);
+        ctx.restore();
+        dy += 22;
+
+        // Badges
+        const badgeW = 84;
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        ctx.strokeStyle = cat.color;
+        ctx.lineWidth = 1;
+        ctx.fillRect(detailX + 16, dy, badgeW, 22);
+        ctx.strokeRect(detailX + 16, dy, badgeW, 22);
+        ctx.fillStyle = cat.color;
+        ctx.font = 'bold 11px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(cat.label, detailX + 16 + badgeW / 2, dy + 15);
+        if (rar) {
+            ctx.fillStyle = 'rgba(255, 226, 138, 0.14)';
+            ctx.strokeStyle = rar.color;
+            ctx.fillRect(detailX + 16 + badgeW + 10, dy, badgeW, 22);
+            ctx.strokeRect(detailX + 16 + badgeW + 10, dy, badgeW, 22);
+            ctx.fillStyle = rar.color;
+            ctx.fillText(rar.label, detailX + 16 + badgeW + 10 + badgeW / 2, dy + 15);
+        }
+        ctx.restore();
+        dy += 40;
+
+        // Description (wrapped, capped to avoid overflow)
+        ctx.save();
+        ctx.fillStyle = 'rgba(200, 235, 255, 0.85)';
+        ctx.font = '13px Arial';
+        ctx.textAlign = 'left';
+        let descLines = wrapDebugText(selected.desc || '', Math.max(180, detailW - 32), 13);
+        const maxDescLines = 5;
+        if (descLines.length > maxDescLines) {
+            descLines = descLines.slice(0, maxDescLines);
+            descLines[maxDescLines - 1] = descLines[maxDescLines - 1].replace(/.$/, '…');
+        }
+        for (const line of descLines) {
+            ctx.fillText(line, detailX + 16, dy);
+            dy += 18;
+        }
+        ctx.restore();
+        dy += 10;
+
+        // Stat rows
+        let rows;
+        if (debugMenuTabs[debugMenuTabIndex].id === 'invocar') {
+            rows = [
+                { label: 'Ação', value: selected.effect || '—', color: '#7bf2ff' },
+                { label: 'Disponível', value: selected.enabled ? 'Sim' : 'Não', color: selected.enabled ? '#5be08a' : '#ff7a6b' },
+                { label: 'Quantidade', value: String(debugMenuQuantity), color: '#5ad1ff' }
+            ];
+        } else {
+            rows = [
+                { label: 'Valor ao aplicar', value: `+${formatDebugValue(selected.value)}`, color: '#7bf2ff' },
+                { label: 'Atual', value: getDebugChoiceCurrentValue(selected), color: '#eaf7ff' },
+                { label: 'Total (xQTD)', value: `+${formatDebugValue(selected.value * debugMenuQuantity)}`, color: '#5be08a' }
+            ];
+        }
+        const rowBoxW = Math.max(220, detailW - 32);
+        for (const row of rows) {
+            ctx.save();
+            ctx.fillStyle = 'rgba(255,255,255,0.06)';
+            ctx.fillRect(detailX + 16, dy, rowBoxW, 28);
+            ctx.fillStyle = 'rgba(180, 225, 255, 0.8)';
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(row.label, detailX + 26, dy + 18);
+            ctx.fillStyle = row.color;
+            ctx.font = 'bold 14px Arial';
+            ctx.textAlign = 'right';
+            ctx.fillText(row.value, detailX + 16 + rowBoxW - 12, dy + 18);
+            ctx.restore();
+            dy += 34;
+        }
+
+        // Quantity stepper
+        dy += 6;
+        const stepY = dy;
+        const stepH = 40;
+        const minusW = 44;
+        const plusW = 44;
+        const qtyW = Math.max(96, detailW - 32 - minusW - plusW - 12);
+        const baseX = detailX + 16;
+
+        ctx.save();
+        // minus
+        ctx.fillStyle = 'rgba(255, 120, 120, 0.14)';
+        ctx.strokeStyle = 'rgba(255, 150, 150, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.fillRect(baseX, stepY, minusW, stepH);
+        ctx.strokeRect(baseX, stepY, minusW, stepH);
+        ctx.fillStyle = '#ffd0d0';
+        ctx.font = 'bold 22px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('−', baseX + minusW / 2, stepY + 28);
+        // qty
+        ctx.fillStyle = 'rgba(0, 225, 255, 0.12)';
+        ctx.strokeStyle = 'rgba(123, 242, 255, 0.5)';
+        ctx.fillRect(baseX + minusW + 6, stepY, qtyW, stepH);
+        ctx.strokeRect(baseX + minusW + 6, stepY, qtyW, stepH);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 24px Arial';
+        ctx.fillText(String(debugMenuQuantity), baseX + minusW + 6 + qtyW / 2, stepY + 28);
+        // plus
+        ctx.fillStyle = 'rgba(120, 255, 180, 0.14)';
+        ctx.strokeStyle = 'rgba(150, 255, 200, 0.5)';
+        ctx.fillRect(baseX + minusW + 6 + qtyW + 6, stepY, plusW, stepH);
+        ctx.strokeRect(baseX + minusW + 6 + qtyW + 6, stepY, plusW, stepH);
+        ctx.fillStyle = '#cfffd9';
+        ctx.fillText('+', baseX + minusW + 6 + qtyW + 6 + plusW / 2, stepY + 28);
+        // label
+        ctx.fillStyle = 'rgba(150, 230, 255, 0.7)';
+        ctx.font = '11px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText('QUANTIDADE  (←/→)', baseX, stepY - 6);
+        ctx.restore();
+    } else {
+        ctx.save();
+        ctx.fillStyle = 'rgba(180, 225, 255, 0.6)';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        const emptyText = debugMenuTabs[debugMenuTabIndex].id === 'invocar'
+            ? 'Nenhuma ação disponível'
+            : 'Nenhuma melhoria disponível';
+        ctx.fillText(emptyText, detailX + detailW / 2, detailY + detailH / 2);
+        ctx.restore();
+    }
+
+    // ===== Footer =====
+    ctx.save();
+    ctx.fillStyle = '#a6eeff';
+    ctx.font = '13px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('↑/↓ ou W/S: navegar   •   ←/→ ou A/D: quantidade   •   Enter/Espaço: aplicar   •   Esc: fechar', centerX, screenHeight - 26);
+    ctx.restore();
+
+    // ===== Apply flash toast =====
+    if (debugMenuFlashTimer > 0) {
+        debugMenuFlashTimer -= 1;
+        const a = Math.min(1, debugMenuFlashTimer / 20);
+        ctx.save();
+        ctx.globalAlpha = a;
+        const tw = 260;
+        const th = 46;
+        const tx = centerX - tw / 2;
+        const ty = screenHeight - 86;
+        ctx.fillStyle = 'rgba(20, 60, 40, 0.92)';
+        ctx.strokeStyle = 'rgba(120, 255, 180, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.fillRect(tx, ty, tw, th);
+        ctx.strokeRect(tx, ty, tw, th);
+        ctx.fillStyle = '#b6ffd0';
+        ctx.font = 'bold 16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(debugMenuFlashText, centerX, ty + 29);
+        ctx.restore();
+    }
+}
+
+function wrapDebugText(text, maxWidth, fontSize) {
+    if (!text) return [];
+    ctx.save();
+    ctx.font = `${fontSize}px Arial`;
+    const words = String(text).split(' ');
+    const lines = [];
+    let current = '';
+    for (const word of words) {
+        const test = current ? current + ' ' + word : word;
+        if (ctx.measureText(test).width > maxWidth && current) {
+            lines.push(current);
+            current = word;
+        } else {
+            current = test;
+        }
+    }
+    if (current) lines.push(current);
+    ctx.restore();
+    return lines;
 }
 
 function drawUpgradeMenu() {
@@ -8480,6 +14834,8 @@ function getUpgradeDescription(upgrade) {
             return `Orbes do burst: ${ply.staffBurstCount || 0} → ${Math.max(0, (ply.staffBurstCount || 0) + value)}. Solta mais orbes quando o burst dispara.`;
         case 'staffBurstCooldownMax':
             return `Cooldown do burst: ${ply.staffBurstCooldownMax || 0} → ${Math.max(0, (ply.staffBurstCooldownMax || 0) - value)}. Reduz o tempo entre bursts de staff.`;
+        case 'staffHomingBurst':
+            return `Ressonância Arcana: ${ply.staffHomingBurst || 0} → ${Math.max(0, (ply.staffHomingBurst || 0) + value)}. As orbes do burst ganham maior rastreamento e range, tornando o ataque muito mais preciso.`;
         case 'swordRange':
             return `Alcance da espada: ${(ply.weapon && ply.weapon.type === 'sword' ? ply.weapon.range : 0)} → ${Math.max(0, (ply.weapon && ply.weapon.type === 'sword' ? ply.weapon.range : 0) + value)}. Aumenta o alcance dos seus golpes.`;
         case 'parryMax':
@@ -8491,7 +14847,13 @@ function getUpgradeDescription(upgrade) {
         case 'parryHealOnUse':
             return `Cura de Parry: ${ply.parryHealOnUse || 0}% -> ${Math.max(0, (ply.parryHealOnUse || 0) + value)}%. Cura ao fazer parry com sucesso.`;
         case 'parryConfusionChance':
+            return `Parry Confusão: ${ply.parryConfusionChance || 0}% -> ${Math.max(0, (ply.parryConfusionChance || 0) + value)}%. Chance de confundir o inimigo ao executar um parry.`;
+        case 'attackMove':
+            return `Investida Cortante: ${Math.floor((ply.attackMove || 0) / 6)} nível(is) -> ${Math.floor(((ply.attackMove || 0) + value) / 6)}. Cada nível faz o dash da espada disparar 1 dash normal a mais.`;
+        case 'parryConfusionChance':
             return `Parry Confusao: ${ply.parryConfusionChance || 0}% -> ${Math.max(0, (ply.parryConfusionChance || 0) + value)}%. Chance de monstro atacar na direcao oposta.`;
+        case 'parryHealOverTime':
+            return `Vínculo Vital: ${ply.parryHealOverTime || 0} nível(is) -> ${Math.max(0, (ply.parryHealOverTime || 0) + value)}. Cura ${(4 * (ply.parryHealOverTime || 0))}% -> ${(4 * (ply.parryHealOverTime || 0) + value)}% da vida máxima por segundo por 3s após cada parry.`;
         case 'tornadoCount':
             return `Lanças do tornado: ${ply.tornadoBurstExtraCount || 0} → ${Math.max(0, (ply.tornadoBurstExtraCount || 0) + value)}. Gera mais lanças no ataque tornado.`;
         case 'tornadoDuration':
@@ -8504,6 +14866,11 @@ function getUpgradeDescription(upgrade) {
 }
 
 function gameLoop() {
+    gameFrameCount += 1;
+    if (typeof cameraLockTarget === 'object' && cameraLockTarget !== null) {
+        cameraLockTarget.timer--;
+        if (cameraLockTarget.timer <= 0) cameraLockTarget = null;
+    }
     let screenShakeActive = false;
     if (screenShakeTimer > 0) {
         screenShakeActive = true;
@@ -8517,11 +14884,34 @@ function gameLoop() {
 
     if (isSelectingWeapon) {
         drawWeaponSelection();
+    } else if (isDebugMenuOpen) {
+        beginCamera();
+        drawBackground();
+        player.draw();
+        currentMonster.draw();
+        drawMonsterDeathEffects();
+        drawWeaponPickups();
+        drawProjectiles();
+        drawCritEffects();
+        drawMapDecor();
+        endCamera();
+
+        updateHealthBars();
+        updateUI();
+
+        if (overlayCtx) {
+            overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+            drawDebugMenu(overlayCtx);
+        } else {
+            drawDebugMenu();
+        }
     } else if (upgradeDelayTimer > 0) {
         beginCamera();
         drawBackground();
         player.draw();
         currentMonster.draw();
+        drawMonsterDeathEffects();
+        drawWeaponPickups();
         drawProjectiles();
         drawCritEffects();
         drawMapDecor();
@@ -8542,6 +14932,8 @@ function gameLoop() {
         drawBackground();
         player.draw();
         currentMonster.draw();
+        drawMonsterDeathEffects();
+        drawWeaponPickups();
         drawProjectiles();
         drawCritEffects();
         drawMapDecor();
@@ -8565,6 +14957,8 @@ function gameLoop() {
         drawBackground();
         player.draw();
         currentMonster.draw();
+        drawMonsterDeathEffects();
+        drawWeaponPickups();
         drawProjectiles();
         drawCritEffects();
         drawMapDecor();
@@ -8581,6 +14975,9 @@ function gameLoop() {
             drawAmbientCritters();
             player.draw();
             currentMonster.draw();
+            drawGhostArmy();
+            drawMonsterDeathEffects();
+            drawWeaponPickups();
             drawProjectiles();
             drawCritEffects();
             drawMapDecor();
@@ -8606,10 +15003,14 @@ function gameLoop() {
             drawAmbientCritters();
             player.draw();
             currentMonster.draw();
+            drawGhostArmy();
+            drawMonsterDeathEffects();
+            drawWeaponPickups();
             drawProjectiles();
             drawMonsterHitscans();
             drawCritEffects();
             drawAfterImages();
+            drawAccelParticles();
             drawMapDecor();
             endCamera();
 
@@ -8644,123 +15045,220 @@ function gameLoop() {
             timeScale = 1;
         }
 
-        // Atualizar
-        player.update(keys);
-        const monsterPrevX = currentMonster.x;
-        const monsterPrevY = currentMonster.y;
-        currentMonster.update(player.x + player.width / 2, player.y + player.height / 2);
-        resolveEntityWallCollision(currentMonster, monsterPrevX, monsterPrevY);
-        clampEntityToMapCircle(currentMonster);
-        updateAmbientAnimals();
-        updateAmbientCritters();
-        updateProjectiles();
-        updateProjectiles();
-        updateMonsterHitscans();
-        updateAndDrawSwarmMarks();
-        updateDelayedShots();
-        updateSweatEffects();
-        updateAfterImages();
-
-        // Verificar colisão de contato com o monstro (AABB - Axis-Aligned Bounding Box)
-        const isColliding = 
-            player.x < currentMonster.x + currentMonster.width &&
-            player.x + player.width > currentMonster.x &&
-            player.y < currentMonster.y + currentMonster.height &&
-            player.y + player.height > currentMonster.y;
-
-        if (isColliding && currentMonster.attackCooldown === 0) {
-            if (player.dashTimer > 0 || player.postDashInvulnTimer > 0) {
-                currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
-            } else if (player.weapon && player.weapon.type === 'gun' && player.gunReloadCooldown > 0 && player.gunReloadInvulnCharges > 0) {
-                player.gunReloadInvulnCharges = 0;
-                spawnAfterImage({
-                    kind: 'player',
-                    x: player.x,
-                    y: player.y,
-                    width: player.width,
-                    height: player.height,
-                    life: 18,
-                    maxLife: 18,
-                    baseAlpha: 0.55
-                });
-                currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
-            } else {
-                let effectiveDamage = Math.max(0, currentMonster.getAttackDamage() - player.damageReduction);
-                if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
-                    effectiveDamage *= (1 - player.parryDefenseBonus / 100);
-                }
-                player.health -= effectiveDamage;
-                currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
-
-                // Aplicar efeito negativo do croc: veneno ao ser atingido
-                if (currentMonster.type === 'croc') {
-                    // veneno por 5 segundos, 2 de dano por segundo
-                    player.poisonTimer = Math.max(player.poisonTimer || 0, 5 * 60);
-                    player.poisonTickTimer = 60;
-                    player.poisonDamagePerTick = 2;
-                }
-
-                // Count attacks dealt by croc to the player and trigger throw after 2 hits
-                if (currentMonster.type === 'croc') {
-                    currentMonster.attacksDealtToPlayer = (currentMonster.attacksDealtToPlayer || 0) + 1;
-                    if (currentMonster.attacksDealtToPlayer >= 2 && !currentMonster.thrown) {
-                        const targetX = Math.random() * Math.max(0, gameWidth - currentMonster.width);
-                        const targetY = Math.random() * Math.max(0, gameHeight - currentMonster.height);
-                        const travelFrames = 50; // travel duration (~0.8s)
-                        currentMonster.thrown = true;
-                        currentMonster.thrownTimer = travelFrames;
-                        currentMonster.thrownTotalTime = travelFrames;
-                        currentMonster.thrownTargetX = targetX;
-                        currentMonster.thrownTargetY = targetY;
-                        currentMonster.thrownVx = (targetX - currentMonster.x) / travelFrames;
-                        currentMonster.thrownVy = (targetY - currentMonster.y) / travelFrames;
-                        currentMonster.thrownArcHeight = 0;
-                        currentMonster.alpha = 0.35;
-                        currentMonster.attackCooldown = 180;
-                        currentMonster.attacksDealtToPlayer = 0;
-                        crocConsecutiveHits = 0;
-                    } else if (!currentMonster.thrown) {
-                        // Contador de ataques consecutivos do croc (se não foi lançado)
-                        crocConsecutiveHits++;
-                        if (crocConsecutiveHits >= 4) {
-                            const monsterCenterX = currentMonster.x + currentMonster.width / 2;
-                            const monsterCenterY = currentMonster.y + currentMonster.height / 2;
-                            const playerCenterX = player.x + player.width / 2;
-                            const playerCenterY = player.y + player.height / 2;
-                            const knockbackDir = Math.atan2(monsterCenterY - playerCenterY, monsterCenterX - playerCenterX);
-                            const knockbackForce = 8;
-                            currentMonster.x += Math.cos(knockbackDir) * knockbackForce;
-                            currentMonster.y += Math.sin(knockbackDir) * knockbackForce;
-                            crocConsecutiveHits = 0;
-                        }
-                    }
-                }
-            }
-        } else if (currentMonster.type === 'croc') {
-            // Resetar contador quando não há colisão
-            crocConsecutiveHits = 0;
+        if (roarFreezeTimer > 0) {
+            timeScale = 0.05;
+            roarFreezeTimer--;
         }
 
-        processMeleeHit();
-        processConeHit();
+        // Atualizar
+        const transitionFrozen = isMonsterTransitionActive();
+        let canInteractWithMonster = false;
 
-        if (player.autoAttackEnabled && player.attackCooldown === 0 && currentMonster.health > 0) {
-            attemptAttack();
+        if (!transitionFrozen) {
+            player.update(keys);
+            
+            // Verificar colisão, entradas e saída de construções
+            checkConstructionCollision();
+            checkConstructionEntranceCollision();
+            checkConstructionExit();
+            
+            // Atualizar inimigos interiores
+            if (playerInsideConstruction) {
+                updateInteriorEnemies();
+            }
+
+            if (currentMonster && currentMonster.health <= 0) {
+                if (!currentMonster.isDying) {
+                    currentMonster.startDeathAnimation();
+                } else {
+                    currentMonster.updateDeathAnimation();
+                }
+            } else if (currentMonster) {
+                const monsterPrevX = currentMonster.x;
+                const monsterPrevY = currentMonster.y;
+                currentMonster.update(player.x + player.width / 2, player.y + player.height / 2);
+                resolveEntityWallCollision(currentMonster, monsterPrevX, monsterPrevY);
+                clampEntityToMapCircle(currentMonster);
+            }
+
+            updateAmbientAnimals();
+            updateAmbientCritters();
+            updateCastleBoneOrbiters();
+            updateGhostArmy();
+            updateProjectiles();
+            updateThrownExplosives();
+            updateFireZones();
+            updateGrenadeFragments();
+            updateBurningEffects();
+            updateWeaponPickups();
+            updateMonsterHitscans();
+            updateAndDrawSwarmMarks();
+            updateDelayedShots();
+            updateSweatEffects();
+            updateAfterImages();
+            updateAccelParticles();
+            updateMonsterDeathEffects();
+            updatePortalEffects();
+            updateEvaporationEffects();
+            updateTrackerProjectiles();
+            updateCastleBossSpawnTimer();
+            updateCastleBossAlert();
+
+            // Verificar colisão de contato com o monstro (AABB - Axis-Aligned Bounding Box)
+            canInteractWithMonster = currentMonster && currentMonster.health > 0 && !currentMonster.isDying;
+            if (canInteractWithMonster) {
+                const isColliding = 
+                    player.x < currentMonster.x + currentMonster.width &&
+                    player.x + player.width > currentMonster.x &&
+                    player.y < currentMonster.y + currentMonster.height &&
+                    player.y + player.height > currentMonster.y;
+
+                if (isColliding && currentMonster.attackCooldown === 0) {
+                    if (player.dashTimer > 0 || player.postDashInvulnTimer > 0 || player.slashDashInvulnTimer > 0) {
+                        currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
+                    } else if (player.weapon && player.weapon.type === 'gun' && player.gunReloadCooldown > 0 && player.gunReloadInvulnCharges > 0) {
+                        player.gunReloadInvulnCharges = 0;
+                        spawnAfterImage({
+                            kind: 'player',
+                            x: player.x,
+                            y: player.y,
+                            width: player.width,
+                            height: player.height,
+                            life: 18,
+                            maxLife: 18,
+                            baseAlpha: 0.55
+                        });
+                        currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
+                    } else {
+                        let effectiveDamage = Math.max(0, currentMonster.getAttackDamage() - player.damageReduction);
+                        if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
+                            effectiveDamage *= (1 - player.parryDefenseBonus / 100);
+                        }
+                        player.health -= effectiveDamage;
+                        if (currentMonster.type === 'simple') {
+                            tryApplyPlayerConfusionFromAttack(currentMonster.type, { chance: 2 });
+                        } else if (currentMonster.type === 'croc') {
+                            player.stunTimer = Math.max(player.stunTimer || 0, 12);
+                            tryApplyPlayerConfusionFromAttack('croc', {
+                                chance: 100,
+                                durationFrames: Math.round(0.75 * 60)
+                            });
+                            player.poisonTimer = Math.max(player.poisonTimer || 0, 5 * 60);
+                            player.poisonTickTimer = 60;
+                            player.poisonDamagePerTick = 2;
+                            currentMonster.consecutiveHitsOnPlayer = (currentMonster.consecutiveHitsOnPlayer || 0) + 1;
+                            if (currentMonster.consecutiveHitsOnPlayer >= 2) {
+                                const monsterCenterX = currentMonster.x + currentMonster.width / 2;
+                                const monsterCenterY = currentMonster.y + currentMonster.height / 2;
+                                const escapeDir = Math.atan2(
+                                    monsterCenterY - (player.y + player.height / 2),
+                                    monsterCenterX - (player.x + player.width / 2)
+                                );
+                                currentMonster.sprintEscapeDir = escapeDir;
+                                currentMonster.sprintEscapeTimer = 40;
+                                currentMonster.consecutiveHitsOnPlayer = 0;
+                            }
+                        }
+                        currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
+                    }
+                }
+            } else if (currentMonster && currentMonster.type === 'croc') {
+                currentMonster.consecutiveHitsOnPlayer = 0;
+            }
+
+            processMeleeHit();
+            processConeHit();
+
+            if (player.autoAttackEnabled && player.attackCooldown === 0 && canInteractWithMonster) {
+                attemptAttack();
+            }
+        } else {
+            if (currentMonster && currentMonster.health <= 0) {
+                if (!currentMonster.isDying) {
+                    currentMonster.startDeathAnimation();
+                } else {
+                    currentMonster.updateDeathAnimation();
+                }
+            }
+            updateMonsterDeathEffects();
         }
 
         // Verificar morte do monstro
-        if (currentMonster.health <= 0) {
-            monstersDefeated++;
-            defeatedTotal++;
-            if (monstersDefeated >= 2) {
-                phase++;
-                monstersDefeated = 0;
-                prevPhaseMonsterTypes = new Set(phaseMonsterTypes);
-                phaseMonsterTypes.clear();
-                simpleMonsterSpawnedInEarlyPhases = false;
-                healPlayer(15);
+        if (currentMonster && currentMonster.health <= 0) {
+            if (!currentMonster.isDying) {
+                currentMonster.startDeathAnimation();
+            } else if (currentMonster.deathTimer <= 0) {
+                monstersDefeated++;
+                defeatedTotal++;
+                clearUncollectedWeaponPickups();
+                weaponPickupSpawnCounter++;
+                if (weaponPickupSpawnCounter >= 5) {
+                    weaponPickupSpawnCounter = 0;
+                    spawnWeaponPickup();
+                }
+                // Unlock passives based on monster type
+                if (currentMonster.type === 'shooter' && !player.shooterMachineGunUnlocked) {
+                    player.shooterMachineGunUnlocked = true;
+                    player.shooterMachineGunCount = 0;
+                    spawnCasterPortalEffect(player.x + player.width / 2, player.y + player.height / 2 - 10, '#ffaa33');
+                    spawnEvaporationEffect(player.x + player.width / 2, player.y + player.height / 2, '#ffaa33', 20, 12);
+                }
+                if (currentMonster.type === 'swarm' && !player.swarmNubeUnlocked) {
+                    player.swarmNubeUnlocked = true;
+                    player.swarmNubeCount = 0;
+                    spawnCasterPortalEffect(player.x + player.width / 2, player.y + player.height / 2 - 10, '#9c4fff');
+                    spawnEvaporationEffect(player.x + player.width / 2, player.y + player.height / 2, '#9c4fff', 20, 12);
+                }
+                if (currentMonster.type === 'caster' && !player.casterPortalUnlocked) {
+                    player.casterPortalUnlocked = true;
+                    player.casterPortalCount = 0;
+                    spawnCasterPortalEffect(player.x + player.width / 2, player.y + player.height / 2 - 10, '#70e7ff');
+                    spawnEvaporationEffect(player.x + player.width / 2, player.y + player.height / 2, '#70e7ff', 20, 12);
+                }
+                if (currentMonster.type === 'avianightmare' && !player.avianTrackerUnlocked) {
+                    player.avianTrackerUnlocked = true;
+                    player.avianTrackerCount = 0;
+                    spawnCasterPortalEffect(player.x + player.width / 2, player.y + player.height / 2 - 10, '#ff88cc');
+                    spawnEvaporationEffect(player.x + player.width / 2, player.y + player.height / 2, '#ff88cc', 20, 12);
+                }
+                if (currentMonster.type === 'smart' && !player.smartRicochetUnlocked) {
+                    player.smartRicochetUnlocked = true;
+                    player.smartRicochetCount = 0;
+                    spawnCasterPortalEffect(player.x + player.width / 2, player.y + player.height / 2 - 10, '#88ff88');
+                    spawnEvaporationEffect(player.x + player.width / 2, player.y + player.height / 2, '#88ff88', 20, 12);
+                }
+                if (currentMonster.type === 'simple' && !player.simpleExplosiveUnlocked) {
+                    player.simpleExplosiveUnlocked = true;
+                    player.simpleExplosiveCount = 0;
+                    spawnCasterPortalEffect(player.x + player.width / 2, player.y + player.height / 2 - 10, '#ff6644');
+                    spawnEvaporationEffect(player.x + player.width / 2, player.y + player.height / 2, '#ff6644', 20, 12);
+                }
+                if (currentMonster.type === 'croc' && !player.crocFreezerUnlocked) {
+                    player.crocFreezerUnlocked = true;
+                    player.crocFreezerCount = 0;
+                    spawnCasterPortalEffect(player.x + player.width / 2, player.y + player.height / 2 - 10, '#55ddff');
+                    spawnEvaporationEffect(player.x + player.width / 2, player.y + player.height / 2, '#55ddff', 20, 12);
+                }
+                if (currentMonster.type === 'tank' && !player.tankImpulseUnlocked) {
+                    player.tankImpulseUnlocked = true;
+                    player.tankImpulseCount = 0;
+                    spawnCasterPortalEffect(player.x + player.width / 2, player.y + player.height / 2 - 10, '#ff3333');
+                    spawnEvaporationEffect(player.x + player.width / 2, player.y + player.height / 2, '#ff3333', 20, 12);
+                }
+                if (currentMonster.type === 'castle_bone_sphere') {
+                    spawnCastleBossDeathWaves();
+                    spawnCastleBossDeathSkeletons();
+                }
+                if (monstersDefeated >= 2) {
+                    phase++;
+                    monstersDefeated = 0;
+                    prevPhaseMonsterTypes = new Set(phaseMonsterTypes);
+                    phaseMonsterTypes.clear();
+                    simpleMonsterSpawnedInEarlyPhases = false;
+                    healPlayer(15);
+                }
+                spawnNewMonster();
             }
-            spawnNewMonster();
         }
 
         // Verificar morte do jogador
@@ -8769,26 +15267,64 @@ function gameLoop() {
         }
 
         // Desenhar
-        beginCamera();
-        drawBackground();
-        drawAmbientAnimals();
-        drawAmbientCritters();
-        player.draw();
-        currentMonster.draw();
-        drawProjectiles();
-        drawMonsterHitscans();
-        drawSlowdownInsects();
-        drawCritEffects();
-        drawSweatEffects();
-        drawAfterImages();
-        drawMapDecor();
-        endCamera();
+        if (playerInsideConstruction) {
+            // Renderizar interior da construção
+            drawConstructionInterior();
+            beginCamera();
+            player.draw();
+            drawConstructionExitZone();
+            drawCurrentInteriorEnemies();
+            drawProjectiles();
+            drawThrownExplosives();
+            drawFireZones();
+            drawGrenadeFragments();
+            drawEvaporationEffects();
+            drawCastleBoneOrbiters();
+            drawMonsterHitscans();
+            drawAfterImages();
+            drawCritEffects();
+            endCamera();
+        } else {
+            // Renderizar mapa normal
+            beginCamera();
+            drawBackground();
+            drawAmbientAnimals();
+            drawAmbientCritters();
+            player.draw();
+            currentMonster.draw();
+            drawGhostArmy();
+            drawMonsterDeathEffects();
+            drawWeaponPickups();
+            drawPortalEffects();
+            drawTrackerProjectiles();
+            drawProjectiles();
+            drawThrownExplosives();
+            drawFireZones();
+            drawGrenadeFragments();
+            drawEvaporationEffects();
+            drawThrownExplosives();
+            drawFireZones();
+            drawGrenadeFragments();
+            drawCastleBoneOrbiters();
+            drawMonsterHitscans();
+            drawSlowdownInsects();
+            drawCritEffects();
+            drawSweatEffects();
+            drawAfterImages();
+            drawMapDecor();
+            drawConstructionEntrancePortals();
+            endCamera();
+        }
 
+        drawPlayerConfusionOverlay();
+        drawWeaponPickupIndicators();
         drawOffscreenMonsterIndicator();
+        drawOffscreenTransitionIndicator();
         updateHealthBars();
         updateUI();
+        drawCastleBossAlertOverlay();
 
-        if (timeScale < 1) {
+        if (timeScale < 1 && roarFreezeTimer <= 0) {
             const totalSlowdownFrames = slowdownRampFrames * 2 + slowdownHoldFrames;
             const elapsed = totalSlowdownFrames - slowdownTimer;
             let flashAlpha = 0;
@@ -8829,7 +15365,6 @@ function gameLoop() {
 }
 
 // Iniciar com seleção de arma
-crocConsecutiveHits = 0;
 currentMonster = new Monster(phase, chooseMonsterType());
 isSelectingWeapon = true;
 gameLoop();
