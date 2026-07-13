@@ -32,6 +32,13 @@ let gameWidth;
 let gameHeight;
 let mapWalls = [];
 let mapDecor = [];
+// Cached canvas for map decor to avoid redrawing heavy static decorations every frame
+let decorCacheCanvas = null;
+let decorCacheCtx = null;
+let decorCacheCameraX = 0;
+let decorCacheCameraY = 0;
+let decorCacheValid = false;
+const DECOR_CACHE_MOVE_THRESHOLD = 32;
 let spawnZoneEndX;
 let upgradeZoneEndX;
 let wildZoneEndX;
@@ -372,6 +379,9 @@ function createMapDecor() {
         const pos = getRandomPointInZone('wild', 40);
         mapDecor.push(createDecorEntry(pos.x, pos.y, 1.6 + Math.random() * 0.8, 0.82, 'wild'));
     }
+
+    // Invalidate decor cache when decorations are (re)generated
+    decorCacheValid = false;
 }
 
 function drawMapTree(ctx, x, y, scale, alpha = 1, extras = []) {
@@ -1448,10 +1458,9 @@ function updateCamera() {
         targetY = currentMonster.y + currentMonster.height / 2 - viewportHeight / 2;
     }
 
-    if (roarFreezeTimer > 0 && currentMonster && currentMonster.type === 'croc') {
-        targetX = currentMonster.crocDecoyX - viewportWidth / 2;
-        targetY = currentMonster.crocDecoyY - viewportHeight / 2;
-    } else if (currentMonster && currentMonster.type === 'croc' && currentMonster.roarTimer > 0) {
+    const shouldCenterOnCroc = currentMonster && currentMonster.type === 'croc' && (roarFreezeTimer > 0 || currentMonster.roarTimer > 0);
+
+    if (shouldCenterOnCroc) {
         targetX = currentMonster.crocDecoyX - viewportWidth / 2;
         targetY = currentMonster.crocDecoyY - viewportHeight / 2;
     } else if (typeof cameraLockTarget === 'object' && cameraLockTarget !== null && cameraLockTarget.timer > 0) {
@@ -4091,6 +4100,7 @@ class Monster {
             this.confusedLevel = 0;
             this.postConfusionRoar = false;
             this.hasRoaredThisEntry = false;
+            this.lastRoarFrame = 0;
             this.crocDecoyX = this.x + this.width / 2;
             this.crocDecoyY = this.y + this.height / 2;
             this.crocDecoyAngle = Math.random() * Math.PI * 2;
@@ -4195,7 +4205,9 @@ class Monster {
 
         if (this.stunTimer > 0) {
             this.stunTimer--;
-            return;
+            if (this.type !== 'croc') {
+                return;
+            }
         }
 
         if (this.type === 'shooter') {
@@ -4879,14 +4891,18 @@ class Monster {
         } else if (this.type === 'croc') {
             this.crocDecoyWanderTimer--;
             if (this.crocDecoyWanderTimer <= 0) {
-                this.crocDecoyWanderTimer = 60 + Math.floor(Math.random() * 120);
-                this.crocDecoyAngle += (Math.random() - 0.5) * Math.PI * 1.5;
+                this.crocDecoyWanderTimer = 90 + Math.floor(Math.random() * 90);
+                this.crocDecoyAngle += (Math.random() - 0.5) * Math.PI * 0.8;
             }
+
             const decoySpeed = 1.0 * ts;
             this.crocDecoyX += Math.cos(this.crocDecoyAngle) * decoySpeed;
             this.crocDecoyY += Math.sin(this.crocDecoyAngle) * decoySpeed;
-            this.crocDecoyX = Math.max(20, Math.min(gameWidth - 20, this.crocDecoyX));
-            this.crocDecoyY = Math.max(20, Math.min(gameHeight - 20, this.crocDecoyY));
+            this.crocDecoyX = Math.max(40, Math.min(gameWidth - 40, this.crocDecoyX));
+            this.crocDecoyY = Math.max(40, Math.min(gameHeight - 40, this.crocDecoyY));
+
+            this.fakeMarkerX = this.crocDecoyX;
+            this.fakeMarkerY = this.crocDecoyY;
 
             if (this.confusedTimer > 0) {
                 this.confusedTimer--;
@@ -4894,137 +4910,77 @@ class Monster {
                     this.postConfusionRoar = false;
                     this.roarQueued = true;
                     this.roarTimer = 60;
+                    this.hasRoaredThisEntry = true;
+                    this.lastRoarFrame = gameFrameCount;
                     this.stunTimer = 0;
                     this.sprintEscapeTimer = 0;
                     this.simpleDashTimer = 0;
                     this.simpleDashWarningTimer = 0;
                     this.simpleDashPauseTimer = 0;
                     this.simpleDashCooldown = 0;
-                    this.hasRoaredThisEntry = true;
-                    const roarCenterX = this.crocDecoyX;
-                    const roarCenterY = this.crocDecoyY;
-                    cameraLockTarget = { x: roarCenterX, y: roarCenterY, timer: 60 };
+                    cameraLockTarget = { x: this.crocDecoyX, y: this.crocDecoyY, timer: 60 };
                     roarFreezeTimer = 60;
-                    slowdownTimer = 0;
                     screenShakeTimer = Math.max(screenShakeTimer, 60);
-                    if (this.isOffScreen) {
-                        const spawnAngle = this.crocOffsetAngle;
-                        const spawnDist = this.crocOffsetDist;
-                        const spawnX = Math.max(0, Math.min(gameWidth - this.width, this.crocDecoyX + Math.cos(spawnAngle) * spawnDist - this.width / 2));
-                        const spawnY = Math.max(0, Math.min(gameHeight - this.height, this.crocDecoyY + Math.sin(spawnAngle) * spawnDist - this.height / 2));
-                        this.x = spawnX;
-                        this.y = spawnY;
-                        this.isOffScreen = false;
-                        this.fakeMarkerX = this.crocDecoyX;
-                        this.fakeMarkerY = this.crocDecoyY;
+                }
+            }
+
+            if (this.roarTimer > 0) {
+                this.roarTimer--;
+                this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.25;
+                this.x = this.crocDecoyX - this.width / 2;
+                this.y = this.crocDecoyY - this.height / 2;
+                if (this.roarTimer === 20) {
+                    screenShakeTimer = Math.max(screenShakeTimer, 22);
+                    if (player) {
+                        player.stunTimer = Math.max(player.stunTimer || 0, 12);
+                        tryApplyPlayerConfusionFromAttack('croc', {
+                            chance: 100,
+                            durationFrames: Math.round(0.75 * 60)
+                        });
                     }
                 }
-            }
-
-            const isOnScreen = this.x + this.width >= cameraX &&
-                this.x <= cameraX + viewportWidth &&
-                this.y + this.height >= cameraY &&
-                this.y <= cameraY + viewportHeight;
-            const wasOffScreen = this.isOffScreen;
-            this.isOffScreen = !isOnScreen;
-
-            if (this.isOffScreen && !wasOffScreen) {
-                this.hasRoaredThisEntry = false;
-            }
-
-            if (this.isOffScreen) {
-                this.crocCircleAngle += this.crocCircleSpeed * ts * 2;
-                const orbitX = this.crocDecoyX + Math.cos(this.crocCircleAngle) * this.crocCircleRadius;
-                const orbitY = this.crocDecoyY + Math.sin(this.crocCircleAngle) * this.crocCircleRadius;
-                const angleToOrbit = Math.atan2(orbitY - this.y, orbitX - this.x);
-                const offScreenSpeed = (this.simpleDashSpeed || 16.5) * 2 * ts;
-                this.x += Math.cos(angleToOrbit) * offScreenSpeed;
-                this.y += Math.sin(angleToOrbit) * offScreenSpeed;
-                this.alpha = 0;
-                this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.25;
-
-                if (wasOffScreen && !isOnScreen) {
-                    this.fakeMarkerX = this.crocDecoyX;
-                    this.fakeMarkerY = this.crocDecoyY;
+                if (this.roarTimer <= 0) {
+                    this.roarQueued = false;
+                    this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
                 }
+            } else if (this.stunTimer > 0) {
+                this.stunTimer--;
+                this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.2;
+                this.x += (this.crocDecoyX - this.x) * 0.1;
+                this.y += (this.crocDecoyY - this.y) * 0.1;
+            } else if (this.simpleDashWarningTimer > 0) {
+                this.simpleDashWarningTimer--;
+                this.simpleDashOpen += (0.5 - this.simpleDashOpen) * 0.18;
+                if (this.simpleDashWarningTimer <= 0) {
+                    this.simpleDashTimer = 20;
+                    this.attackCooldown = 0;
+                }
+            } else if (this.simpleDashTimer > 0) {
+                this.x += this.simpleDashVx * ts;
+                this.y += this.simpleDashVy * ts;
+                this.simpleDashTimer--;
+                this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.22;
+                if (this.simpleDashTimer <= 0) {
+                    this.simpleDashPauseTimer = 20;
+                    this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
+                    this.attackCooldown = 60;
+                }
+            } else if (this.simpleDashCooldown > 0) {
+                this.simpleDashCooldown--;
+                this.attackCooldown = 1;
+                this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
+                this.x += (this.crocDecoyX - this.x) * 0.08;
+                this.y += (this.crocDecoyY - this.y) * 0.08;
             } else {
-                this.alpha = 1;
-                this.fakeMarkerX = this.crocDecoyX;
-                this.fakeMarkerY = this.crocDecoyY;
-
-                if (wasOffScreen && isOnScreen) {
-                    this.lastOnScreenFrame = gameFrameCount;
-                    if (!this.roarQueued && !this.postConfusionRoar && !this.hasRoaredThisEntry) {
-                        this.roarQueued = true;
-                        this.roarTimer = 60;
-                        this.hasRoaredThisEntry = true;
-                        const roarCenterX = this.crocDecoyX;
-                        const roarCenterY = this.crocDecoyY;
-                        cameraLockTarget = { x: roarCenterX, y: roarCenterY, timer: 60 };
-                        roarFreezeTimer = 60;
-                        screenShakeTimer = Math.max(screenShakeTimer, 60);
-                    }
-                }
-
-                if (this.roarTimer > 0) {
-                    this.roarTimer--;
-                    this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.22;
-                    this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
-                    this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
-                    if (this.roarTimer === 20) {
-                        screenShakeTimer = Math.max(screenShakeTimer, 22);
-                        if (player) {
-                            player.stunTimer = Math.max(player.stunTimer || 0, 12);
-                            tryApplyPlayerConfusionFromAttack('croc', {
-                                chance: 100,
-                                durationFrames: Math.round(0.75 * 60)
-                            });
-                        }
-                    }
-                    if (this.roarTimer <= 0) {
-                        this.roarQueued = false;
-                        this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
-                    }
-                } else if (this.sprintEscapeTimer > 0) {
-                    this.sprintEscapeTimer--;
-                    const sprintSpeed = this.simpleDashSpeed * 1.6 * ts;
-                    this.x += Math.cos(this.sprintEscapeDir) * sprintSpeed;
-                    this.y += Math.sin(this.sprintEscapeDir) * sprintSpeed;
-                    this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.24;
-                    this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
-                    this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
-                    if (this.sprintEscapeTimer <= 0) {
-                        this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
-                        this.consecutiveHitsOnPlayer = 0;
-                    }
-                } else if (this.stunTimer > 0) {
-                    this.stunTimer--;
-                    this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.2;
-                } else if (this.simpleDashPauseTimer > 0) {
-                    this.simpleDashPauseTimer--;
-                    this.attackCooldown = 1;
-                    this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
-                } else if (this.simpleDashWarningTimer > 0) {
-                    this.simpleDashWarningTimer--;
-                    this.simpleDashOpen += (0.5 - this.simpleDashOpen) * 0.18;
-                    if (this.simpleDashWarningTimer <= 0) {
-                        this.simpleDashTimer = 20;
-                        this.attackCooldown = 0;
-                    }
-                } else if (this.simpleDashTimer > 0) {
-                    this.x += this.simpleDashVx * ts;
-                    this.y += this.simpleDashVy * ts;
-                    this.simpleDashTimer--;
-                    this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.22;
-                    if (this.simpleDashTimer <= 0) {
-                        this.simpleDashPauseTimer = 30;
-                        this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
-                        this.attackCooldown = 60;
-                    }
-                } else if (this.simpleDashCooldown > 0) {
-                    this.simpleDashCooldown--;
-                    this.attackCooldown = 1;
-                    this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
+                const shouldRoar = !this.roarQueued && !this.postConfusionRoar && !this.hasRoaredThisEntry && gameFrameCount - (this.lastRoarFrame || 0) >= 220;
+                if (shouldRoar) {
+                    this.roarQueued = true;
+                    this.roarTimer = 60;
+                    this.hasRoaredThisEntry = true;
+                    this.lastRoarFrame = gameFrameCount;
+                    cameraLockTarget = { x: this.crocDecoyX, y: this.crocDecoyY, timer: 60 };
+                    roarFreezeTimer = 60;
+                    screenShakeTimer = Math.max(screenShakeTimer, 60);
                 } else {
                     let dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
                     if (this.confusedTimer > 0) dashDir += Math.PI;
@@ -5035,9 +4991,10 @@ class Monster {
                     this.attackCooldown = 1;
                     this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
                 }
-                this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
-                this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
             }
+
+            this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
+            this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
         } else {
             // Basic: fallback
             if (dist > this.attackRange) {
@@ -6882,6 +6839,8 @@ const debugMenuTabs = [
     { id: 'upgrades', label: 'MELHORIAS' },
     { id: 'invocar', label: 'INVOCAR' }
 ];
+let passiveMenuMode = false; // quando true, o menu de debug mostra todas as passivas
+let passiveMenuChoices = [];
 let selectedDebugActionIndex = 0;
 let debugMenuActionChoices = [];
 let debugMenuTabGeom = { x: 0, y: 0, tabRects: [] };
@@ -9130,6 +9089,24 @@ document.addEventListener('keydown', (e) => {
     if (e.key.toLowerCase() === 'o' && !isSelectingWeapon && !gameOver) {
         e.preventDefault();
         toggleDebugMenu();
+        return;
+    }
+    // Toggle passive debug menu with P
+    if (e.key.toLowerCase() === 'p' && !isSelectingWeapon && !gameOver) {
+        e.preventDefault();
+        if (passiveMenuMode) {
+            passiveMenuMode = false;
+            isDebugMenuOpen = false;
+            if (overlayCanvas) { overlayCanvas.style.display = 'none'; overlayCanvas.style.pointerEvents = 'none'; }
+        } else {
+            passiveMenuMode = true;
+            isDebugMenuOpen = true;
+            debugMenuUpgradeChoices = getPassiveMenuChoices();
+            selectedDebugUpgradeIndex = 0;
+            debugMenuQuantity = 1;
+            debugMenuFlashTimer = 0;
+            if (overlayCanvas) { overlayCanvas.style.display = 'block'; overlayCanvas.style.pointerEvents = 'auto'; resizeDebugOverlay(); }
+        }
         return;
     }
 
@@ -13692,7 +13669,59 @@ function getDebugUpgradeChoices() {
     const weaponSpecific = (getWeaponUpgrades() || []).map((upgrade) => ({ ...upgrade, exclusive: true }));
     const generic = upgradeOptions.map((upgrade) => ({ ...upgrade }));
     const combined = [...weaponSpecific, ...generic];
+
+    // Adicionar passivas desbloqueadas (somente informativas) ao menu de debug
+    try {
+        if (typeof player !== 'undefined' && player) {
+            const passiveDefs = [
+                { flag: 'shooterMachineGunUnlocked', countKey: 'shooterMachineGunCount', name: 'Shooter Machine Gun (passiva)' , desc: 'Atirador automático desbloqueado.' },
+                { flag: 'swarmNubeUnlocked', countKey: 'swarmNubeCount', name: 'Swarm Nube (passiva)', desc: 'Enxame auxiliar desbloqueado.' },
+                { flag: 'casterPortalUnlocked', countKey: 'casterPortalCount', name: 'Caster Portal (passiva)', desc: 'Portais de invocação desbloqueados.' },
+                { flag: 'avianTrackerUnlocked', countKey: 'avianTrackerCount', name: 'Avian Tracker (passiva)', desc: 'Rastreadores aéreos desbloqueados.' },
+                { flag: 'smartRicochetUnlocked', countKey: 'smartRicochetCount', name: 'Smart Ricochet (passiva)', desc: 'Ricochetes inteligentes desbloqueados.' },
+                { flag: 'simpleExplosiveUnlocked', countKey: 'simpleExplosiveCount', name: 'Simple Explosive (passiva)', desc: 'Explosivos simples desbloqueados.' },
+                { flag: 'crocFreezerUnlocked', countKey: 'crocFreezerCount', name: 'Croc Freezer (passiva)', desc: 'Congelador do croc desbloqueado.' },
+                { flag: 'tankImpulseUnlocked', countKey: 'tankImpulseCount', name: 'Tank Impulse (passiva)', desc: 'Impulso do tank desbloqueado.' },
+                { flag: 'castleBoneUnlocked', countKey: null, name: 'Castle Bone (passiva)', desc: 'Os ossos do castelo estão desbloqueados.' }
+            ];
+
+            for (const def of passiveDefs) {
+                if (player[def.flag]) {
+                    const count = def.countKey && typeof player[def.countKey] === 'number' ? player[def.countKey] : null;
+                    const name = count ? `${def.name} x${count}` : def.name;
+                    combined.push({ name, effect: 'unlockPassive', passive: def.flag, passiveCountKey: def.countKey || null, value: count || 1, desc: def.desc, exclusive: false });
+                }
+            }
+        }
+    } catch (e) {
+        // silencioso — não bloquear menu em caso de erro
+    }
+
     return combined.filter((choice, index, list) => index === list.findIndex((candidate) => candidate.name === choice.name && candidate.effect === choice.effect));
+}
+
+function getPassiveMenuChoices() {
+    const defs = [
+        { flag: 'shooterMachineGunUnlocked', countKey: 'shooterMachineGunCount', name: 'Shooter Machine Gun', desc: 'Desbloqueia o atirador automático.' },
+        { flag: 'swarmNubeUnlocked', countKey: 'swarmNubeCount', name: 'Swarm Nube', desc: 'Desbloqueia enxame auxiliar.' },
+        { flag: 'casterPortalUnlocked', countKey: 'casterPortalCount', name: 'Caster Portal', desc: 'Desbloqueia portais do caster.' },
+        { flag: 'avianTrackerUnlocked', countKey: 'avianTrackerCount', name: 'Avian Tracker', desc: 'Desbloqueia rastreadores aéreos.' },
+        { flag: 'smartRicochetUnlocked', countKey: 'smartRicochetCount', name: 'Smart Ricochet', desc: 'Desbloqueia ricochetes inteligentes.' },
+        { flag: 'simpleExplosiveUnlocked', countKey: 'simpleExplosiveCount', name: 'Simple Explosive', desc: 'Desbloqueia explosivos simples.' },
+        { flag: 'crocFreezerUnlocked', countKey: 'crocFreezerCount', name: 'Croc Freezer', desc: 'Desbloqueia congelador do croc.' },
+        { flag: 'tankImpulseUnlocked', countKey: 'tankImpulseCount', name: 'Tank Impulse', desc: 'Desbloqueia impulso do tank.' },
+        { flag: 'castleBoneUnlocked', countKey: 'castleBoneHitCounter', name: 'Castle Bone', desc: 'Desbloqueia habilidade do ossoboss do castelo.' }
+    ];
+
+    return defs.map(d => ({
+        name: d.name,
+        effect: 'unlockPassive',
+        passive: d.flag,
+        passiveCountKey: d.countKey || null,
+        value: (player && player[d.countKey]) ? player[d.countKey] : 1,
+        desc: d.desc,
+        exclusive: false
+    }));
 }
 
 function applyUpgradeChoice(pick, quantity = 1) {
@@ -13827,6 +13856,19 @@ function applyUpgradeChoice(pick, quantity = 1) {
                 break;
             case 'tornadoDuration':
                 player.tornadoBurstExtraDuration = (player.tornadoBurstExtraDuration || 0) + pick.value;
+                break;
+            case 'unlockPassive':
+                try {
+                    const flag = pick.passive;
+                    const countKey = pick.passiveCountKey || null;
+                    if (flag) {
+                        // Marcar como desbloqueado
+                        player[flag] = true;
+                    }
+                    if (countKey) {
+                        player[countKey] = (player[countKey] || 0) + (pick.value || 1);
+                    }
+                } catch (e) {}
                 break;
             default:
                 player[pick.effect] = (player[pick.effect] || 0) + pick.value;
@@ -13966,6 +14008,12 @@ function drawCountdownOverlay(text, subtitle = '', y = canvas.height / 2, alpha 
 }
 
 function getDebugMenuChoices() {
+    if (passiveMenuMode) {
+        // recalcula lista de passivas para permitir seleção em tempo real
+        passiveMenuChoices = getPassiveMenuChoices();
+        if (selectedDebugUpgradeIndex >= passiveMenuChoices.length) selectedDebugUpgradeIndex = Math.max(0, passiveMenuChoices.length - 1);
+        return passiveMenuChoices;
+    }
     if (debugMenuTabs[debugMenuTabIndex].id === 'invocar') {
         debugMenuActionChoices = getDebugActionChoices();
         if (selectedDebugActionIndex >= debugMenuActionChoices.length) {
@@ -13974,9 +14022,9 @@ function getDebugMenuChoices() {
         return debugMenuActionChoices;
     }
 
-    if (!debugMenuUpgradeChoices.length) {
-        debugMenuUpgradeChoices = getDebugUpgradeChoices();
-    }
+    // Recalcular sempre para garantir que mudanças em `player` (passivas desbloqueadas)
+    // sejam refletidas imediatamente no menu de debug.
+    debugMenuUpgradeChoices = getDebugUpgradeChoices();
     if (selectedDebugUpgradeIndex >= debugMenuUpgradeChoices.length) {
         selectedDebugUpgradeIndex = Math.max(0, debugMenuUpgradeChoices.length - 1);
     }
@@ -13999,7 +14047,15 @@ function getDebugChoiceCurrentValue(choice) {
     let v;
     if (e === 'swordRange') v = (player.weapon && player.weapon.range) || 0;
     else if (e === 'maxHealth') v = player.maxHealth;
-    else if (typeof player[e] !== 'undefined' && player[e] !== null) v = player[e];
+    else if (e === 'unlockPassive') {
+        if (choice.passive) {
+            const flagVal = player[choice.passive];
+            if (typeof flagVal === 'boolean') return flagVal ? 'Sim' : 'Não';
+            if (typeof flagVal === 'number') return String(flagVal);
+        }
+        if (choice.passiveCountKey && typeof player[choice.passiveCountKey] !== 'undefined') return String(player[choice.passiveCountKey]);
+        return choice.value != null ? String(choice.value) : '—';
+    } else if (typeof player[e] !== 'undefined' && player[e] !== null) v = player[e];
 
     if (typeof v === 'boolean') return v ? 'Sim' : 'Não';
     if (typeof v === 'undefined' || v === null) return '—';
@@ -14123,6 +14179,8 @@ function getDebugChoiceCategory(choice) {
         }
     }
     const e = choice.effect || '';
+    // Mostrar categoria específica para passivas
+    if (e === 'unlockPassive') return { label: 'PASSIVA', color: '#cfa8ff' };
     if (e.startsWith('gun') || e.startsWith('bow') || e.startsWith('staff') ||
         e.startsWith('bomb') || e.startsWith('tornado') || e.startsWith('hurricane') ||
         e.startsWith('sword') || e.startsWith('parry')) {
