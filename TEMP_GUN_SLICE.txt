@@ -1,0 +1,675 @@
+      const px = this.x + this.width / 2;
+        const py = this.y + this.height / 2;
+        let targetX = null, targetY = null;
+
+        const nearest = (typeof getNearestInteriorEnemy === 'function') ? getNearestInteriorEnemy() : null;
+        if (nearest) {
+            targetX = nearest.x + nearest.width / 2;
+            targetY = nearest.y + nearest.height / 2;
+        }
+        if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
+            const cmx = currentMonster.x + currentMonster.width / 2;
+            const cmy = currentMonster.y + currentMonster.height / 2;
+            if (targetX === null || Math.hypot(px - cmx, py - cmy) < Math.hypot(px - targetX, py - targetY)) {
+                targetX = cmx;
+                targetY = cmy;
+            }
+        }
+
+        if (targetX !== null) {
+            return Math.atan2(targetY - py, targetX - px);
+        }
+        const baseAim = (typeof this.swordAimAngle === 'number') ? this.swordAimAngle : (this.meleeDirection || 0);
+        return baseAim + (this.swordAimOffsetAngle || 0);
+    }
+
+    tryInvestidaDash() {
+        if (this.attackMove > 0 && this.swordDashCooldown === 0 && this.dashTimer === 0) {
+            this.performSwordDash();
+        }
+    }
+
+    performSwordDash() {
+        if (!this.weapon || this.weapon.type !== 'sword') return false;
+        if (this.dashTimer > 0) return false;
+        
+        // Verificar se já há dashes da Investida Cortante na fila
+        if (this.slashDashQueue > 0) {
+            // Executar o próximo dash da Investida Cortante
+            const dashAngle = this.computeDashAngle();
+
+            this.dashVectorX = Math.cos(dashAngle);
+            this.dashVectorY = Math.sin(dashAngle);
+            this.swordAimAngle = dashAngle;
+            if (this.slashDashIsNormal) {
+                // Investida Cortante: cada nível ativa um dash normal
+                this.dashTimer = 10;
+                this.dashSpeed = 17;
+            } else {
+                this.dashTimer = 2; // 20% do tamanho original (10 * 0.2)
+                this.dashSpeed = 3.4; // 20% da velocidade original (17 * 0.2)
+            }
+            this.dashHasHitMonster = false;
+            this.slashDashInvulnTimer = 2; // Invulnerável durante o dash
+            this.attacking = false;
+            this.meleeAttacking = false;
+            this.coneAttacking = false;
+            
+            this.slashDashQueue--;
+            this.slashDashCounter++;
+            
+            return true;
+        }
+        
+        // Verificar se pode fazer um dash normal ou iniciar Investida Cortante
+        if (this.swordDashCooldown > 0) return false;
+
+        const dashAngle = this.computeDashAngle();
+        this.swordAimAngle = dashAngle;
+
+        this.dashVectorX = Math.cos(dashAngle);
+        this.dashVectorY = Math.sin(dashAngle);
+        
+        // Verificar se tem upgrade de Investida Cortante
+        const slashUpgradeCount = Math.max(0, Math.floor((this.attackMove || 0) / 6));
+        if (slashUpgradeCount > 0) {
+            // Investida Cortante: cada nível ativa um dash normal
+            this.dashTimer = 10; // dash normal
+            this.dashSpeed = 17; // dash normal
+            this.slashDashQueue = slashUpgradeCount - 1; // Fila dos dashes normais restantes (1 por nível)
+            this.slashDashCounter = 1;
+            this.slashDashInvulnTimer = 2; // Invulnerável durante o dash
+            this.slashDashIsNormal = true;
+        } else {
+            // Dash normal
+            this.dashTimer = 10;
+            this.dashSpeed = 17;
+            this.slashDashQueue = 0;
+            this.slashDashCounter = 0;
+            this.slashDashInvulnTimer = 0;
+            this.slashDashIsNormal = false;
+        }
+        
+        this.dashHasHitMonster = false;
+        this.swordDashCooldown = this.swordDashCooldownMax;
+        this.postDashInvulnTimer = 0;
+        this.attacking = false;
+        this.meleeAttacking = false;
+        this.coneAttacking = false;
+        return true;
+    }
+
+    attack() {
+        if (this.attackCooldown === 0) {
+            this.attacking = true;
+            this.attackCooldown = 20;
+            setTimeout(() => { this.attacking = false; }, 100);
+            return true;
+        }
+        return false;
+    }
+}
+
+class Monster {
+    constructor(phase, type = null) {
+        this.phase = phase;
+        this.type = type || this.chooseType();
+        this.width = 100 + phase * 20;
+        this.height = 100 + phase * 20;
+        this.x = Math.random() * (gameWidth - this.width);
+        this.y = 50 + Math.random() * 100;
+        this.attackRange = 120;
+        this.attackCooldown = 0;
+        this.projectileAttackCooldown = 0;
+        this.areaAttackCooldown = 0;
+        this.attackEffectTimer = 0;
+        this.dashCooldown = 0;
+        this.flashTimer = 0;
+        this.dashTimer = 0;
+        this.splitAttackCooldown = 0;
+        this.stunTimer = 0;
+        this.isDying = false;
+        this.deathTimer = 0;
+        this.deathMaxTimer = 0;
+        this.deathShards = [];
+        this.tookDamage = false;
+        this.direction = Math.random() > 0.5 ? 1 : -1;
+        this.shakeTimer = 0;
+        this.impactShakeTimer = 0;
+        this.fleeTimer = 0;
+        this.fearCooldown = 0;
+        this.confusedTimer = 0;
+
+        if (this.type === 'shooter') {
+            this.health = 37.5 + phase * 11;
+            this.speed = 0.75 + phase * 0.075;
+            this.maxHealth = this.health;
+            this.desiredDistance = 1200; // aumentado drasticamente
+            this.projectileSpeed = 4.5 + phase * 0.25;
+        } else if (this.type === 'tank') {
+            this.health = 101.25 + phase * 30;
+            this.speed = 0.6 + phase * 0.075;
+            this.maxHealth = this.health;
+            this.dashCooldown = 100;
+            this.dashTimer = 0;
+            this.dashSpeed = 3.75 + phase * 0.375;
+            this.triggered75 = false;
+            this.triggered50 = false;
+            this.triggered25 = false;
+            this.rangedAttackWarningTimer = 0;
+            this.armorBarrageWarningTimer = 0;
+            this.chargeMissilesWarningTimer = 0;
+            this.burstAttackWarningTimer = 0;
+            this.shockwaveAttackWarningTimer = 0;
+            // Caster movement/teleport targets
+            this.patrolTarget = {
+                x: Math.random() * Math.max(1, gameWidth - 40) + 20,
+                y: Math.random() * Math.max(1, gameHeight - 40) + 20
+            };
+            // Teleport target: choose one of the four corners
+            const corners = [
+                { x: 50, y: 50 },
+                { x: gameWidth - 50, y: 50 },
+                { x: 50, y: gameHeight - 50 },
+                { x: gameWidth - 50, y: gameHeight - 50 }
+            ];
+            this.teleportTarget = corners[Math.floor(Math.random() * corners.length)];
+            this.reachedPatrol = false;
+            this.hasTeleported = false;
+        } else if (this.type === 'swarm') {
+            this.health = 41.25 + phase * 10;
+            this.speed = 1.35 + phase * 0.175;
+            this.maxHealth = this.health;
+            this.swarmCooldown = 0;
+            this.orbitalAngle = 0;
+            this.markSpawnCooldown = 0;
+        } else if (this.type === 'caster') {
+            this.health = 52.5 + phase * 12.5;
+            this.speed = 0.375 + phase * 0.05;
+            this.speed *= 3; // aumentar velocidade do caster em 3x (base)
+            this.maxHealth = this.health;
+            this.portalCooldown = 0;
+            this.portalWarningTimer = 0;
+            this.portalTimer = 0;
+            this.portalX = this.x + this.width / 2;
+            this.portalY = this.y + this.height / 2;
+            this.portalAttackMode = 'circular'; // 'circular', 'spiral', 'ring' ou 'aim16'
+            this.portalModeToggleCooldown = 0;
+            this.spiralProjectileCount = 0; // rastreador de projéteis da espiral
+            this.nextPortalActiveDuration = null; // custom duration for specific attack modes
+            this.remoteAttackCooldown = Math.round(1.5 * 60); // frames (~1.5s)
+            this.remoteAttackTimer = Math.round(Math.random() * this.remoteAttackCooldown);
+            // Patrol / on-fire mechanics
+            this.patrolTimer = 0; // frames gastas indo ao patrolTarget
+            this.patrolTimeout = 8 * 60; // 8 segundos em frames
+            this.onFire = false; // estado ativado se demorar muito
+            this.fireAttackBoost = 1.5; // 50% mais poder de ataque quando em chamas
+        } else if (this.type === 'smart') {
+            this.health = 54 + phase * 14;
+            this.speed = 1.2375 + phase * 0.11;
+            this.maxHealth = this.health;
+            this.hitscanCooldown = 0;
+            this.hitscanWarningTimer = 0;
+            this.hitscanTargetX = null;
+            this.hitscanTargetY = null;
+            this.predictiveCooldown = 0;
+            this.circleAngle = 0;
+            this.smartRange = 180 + phase * 6;
+        } else if (this.type === 'avianightmare') {
+            this.health = 48.75 + phase * 15;
+            this.speed = 0.7875 + phase * 0.225;
+            this.maxHealth = this.health;
+            this.attackRange = 110;
+            this.projectileSpeed = 3.75 + phase * 0.2;
+            this.areaAttackCooldown = 0;
+            this.projectileAttackCooldown = 0;
+        } else if (this.type === 'castle_bone_sphere') {
+            this.health = 120 + phase * 48;
+            this.maxHealth = this.health;
+            this.speed = 0.95 + phase * 0.05;
+            this.attackRange = 220;
+            this.rotationAngle = Math.random() * Math.PI * 2;
+            this.boneRainCooldown = 0;
+            this.boneRingCooldown = 20;
+            this.specialAttackCooldown = 120;
+            this.stunTimer = 0;
+        } else if (this.type === 'simple') {
+            this.health = 22.5 + phase * 4;
+            this.maxHealth = this.health;
+            this.attackRange = 70;
+            this.projectileAttackCooldown = 0;
+            this.areaAttackCooldown = 0;
+            this.clawAttackTimer = 0;
+            this.simpleVariant = 'default';
+            this.simpleDashOpen = 0;
+            this.simpleDashCooldown = 0;
+            this.simpleDashPauseTimer = 0;
+            this.simpleDashTimer = 0;
+            this.simpleDashSpeed = 13.5 + phase * 0.6;
+            this.simpleDashVx = 0;
+            this.simpleDashVy = 0;
+            this.simpleClawDirection = 0;
+            this.simpleClawAngle = Math.PI * 0.95;
+            this.simpleClawRange = this.attackRange * 3;
+            this.speed = 1.45 + phase * 0.18;
+        } else if (this.type === 'croc') {
+            this.health = 22.5 + phase * 4;
+            this.maxHealth = this.health;
+            this.attackRange = 70;
+            this.speed = 0;
+            this.simpleDashCooldown = 45 + Math.round(Math.random() * 30);
+            this.simpleDashPauseTimer = 0;
+            this.simpleDashWarningTimer = 0;
+            this.simpleDashWarningDuration = Math.round(0.35 * 60);
+            this.simpleDashTimer = 0;
+            this.simpleDashSpeed = 16.5 + phase * 0.7;
+            this.simpleDashDistance = 35;
+            this.simpleDashDirection = 0;
+            this.simpleDashVx = 0;
+            this.simpleDashVy = 0;
+            this.simpleDashOpen = 0;
+            this.attackCooldown = 1;
+            this.simpleVariant = 'croc';
+            this.isOffScreen = false;
+            this.lastOnScreenFrame = 0;
+            this.roarQueued = false;
+            this.roarTimer = 0;
+            this.sprintEscapeTimer = 0;
+            this.sprintEscapeDir = 0;
+            this.crocCircleAngle = Math.random() * Math.PI * 2;
+            this.crocCircleRadius = 90 + Math.random() * 120;
+            this.crocCircleSpeed = 0.035 + Math.random() * 0.02;
+            this.hitsTakenThisLife = 0;
+            this.lastHitFrame = -999;
+            this.consecutiveHitsOnPlayer = 0;
+            this.confusedTimer = 0;
+            this.confusedLevel = 0;
+            this.postConfusionRoar = false;
+            this.hasRoaredThisEntry = false;
+            this.lastRoarFrame = 0;
+            this.crocDecoyX = this.x + this.width / 2;
+            this.crocDecoyY = this.y + this.height / 2;
+            this.crocDecoyAngle = Math.random() * Math.PI * 2;
+            this.crocDecoyWanderTimer = 60 + Math.floor(Math.random() * 120);
+            this.crocOffsetAngle = Math.random() * Math.PI * 2;
+            this.crocOffsetDist = 60 + Math.random() * 80;
+            this.x = Math.max(0, Math.min(gameWidth - this.width, this.crocDecoyX + Math.cos(this.crocOffsetAngle) * this.crocOffsetDist - this.width / 2));
+            this.y = Math.max(0, Math.min(gameHeight - this.height, this.crocDecoyY + Math.sin(this.crocOffsetAngle) * this.crocOffsetDist - this.height / 2));
+            this.fakeMarkerX = this.crocDecoyX;
+            this.fakeMarkerY = this.crocDecoyY;
+        } else {
+            this.health = 56.25 + phase * 22.5;
+            this.speed = 1.0875 + phase * 0.3625;
+            this.maxHealth = this.health;
+        }
+    }
+
+    chooseType() {
+        return chooseMonsterType();
+    }
+
+    startDeathAnimation() {
+        if (this.isDying || this.deathTimer > 0) return;
+        this.isDying = true;
+        this.deathTimer = 24;
+        this.deathMaxTimer = 24;
+        this.deathShards = [];
+        spawnMonsterDeathEffect(this);
+
+        const centerX = this.x + this.width / 2;
+        const centerY = this.y + this.height / 2;
+        const shardCount = 16 + Math.floor(Math.random() * 8);
+
+        for (let i = 0; i < shardCount; i++) {
+            const angle = (Math.PI * 2 / shardCount) * i + (Math.random() - 0.5) * 0.35;
+            const speed = 1.2 + Math.random() * 4.4;
+            this.deathShards.push({
+                x: centerX,
+                y: centerY,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed * 0.7,
+                size: 4 + Math.random() * 8,
+                rotation: Math.random() * Math.PI * 2,
+                spin: (Math.random() - 0.5) * 0.18,
+                life: 18 + Math.floor(Math.random() * 12)
+            });
+        }
+    }
+
+    updateDeathAnimation() {
+        if (!this.isDying || this.deathTimer <= 0) return;
+        this.deathTimer--;
+        const progress = 1 - this.deathTimer / this.deathMaxTimer;
+
+        for (let i = this.deathShards.length - 1; i >= 0; i--) {
+            const shard = this.deathShards[i];
+            shard.x += shard.vx;
+            shard.y += shard.vy;
+            shard.vy += 0.08 + progress * 0.03;
+            shard.vx *= 0.96;
+            shard.vy *= 0.98;
+            shard.rotation += shard.spin;
+            shard.life--;
+            if (shard.life <= 0) {
+                this.deathShards.splice(i, 1);
+            }
+        }
+
+        if (this.deathTimer <= 0) {
+            this.deathShards = [];
+        }
+    }
+
+    update(playerX, playerY) {
+        if (this.isDying) {
+            this.updateDeathAnimation();
+            return;
+        }
+
+        const ts = timeScale || 1;
+        const monsterCenterX = this.x + this.width / 2;
+        const monsterCenterY = this.y + this.height / 2;
+        const dx = playerX - monsterCenterX;
+        const dy = playerY - monsterCenterY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const safeDist = Math.max(dist, 0.0001);
+
+        if (this.flashTimer > 0) {
+            this.flashTimer--;
+        }
+        if (this.fallStarsTimer > 0) {
+            this.fallStarsTimer--;
+        }
+
+        if (this.impactShakeTimer > 0) {
+            this.impactShakeTimer--;
+        }
+
+        if (this.confusedTimer > 0) {
+            this.confusedTimer--;
+        }
+
+        if (this.stunTimer > 0) {
+            this.stunTimer--;
+            if (this.type !== 'croc') {
+                return;
+            }
+        }
+
+        if (this.type === 'shooter') {
+            const fearRange = this.desiredDistance * 2;
+            const trembleDuration = 60; // 1 segundo em 60fps
+            const fleeDuration = 50;
+
+            if (this.fearCooldown > 0) {
+                this.fearCooldown--;
+            }
+
+            if (dist < fearRange && this.shakeTimer === 0 && this.fleeTimer === 0 && this.fearCooldown === 0) {
+                this.shakeTimer = trembleDuration;
+            }
+
+            if (this.shakeTimer > 0) {
+                this.shakeTimer--;
+                if (this.shakeTimer === 0) {
+                    this.fleeTimer = fleeDuration;
+                    this.fearCooldown = 90;
+                }
+            }
+
+            if (this.shakeTimer > 0 || this.fleeTimer > 0) {
+                if (Math.random() < 0.45) {
+                    const sweatX = this.x + Math.random() * this.width;
+                    const sweatY = this.y + this.height * 0.16;
+                    spawnSweatEffect(sweatX, sweatY);
+                }
+            }
+
+            if (this.fleeTimer > 0) {
+                this.fleeTimer--;
+                const awayX = (monsterCenterX - playerX) / safeDist;
+                const awayY = (monsterCenterY - playerY) / safeDist;
+                const fleeSpeed = this.speed * 1.8;
+                this.x += awayX * fleeSpeed * ts;
+                this.y += awayY * fleeSpeed * ts;
+            } else if (dist < this.desiredDistance * 0.8) {
+                const awayX = (monsterCenterX - playerX) / safeDist;
+                const awayY = (monsterCenterY - playerY) / safeDist;
+                this.x += awayX * this.speed * ts;
+                this.y += awayY * this.speed * ts;
+            } else if (dist > this.desiredDistance + 40) {
+                this.x += (dx / safeDist) * this.speed * 0.6 * ts;
+                this.y += (dy / safeDist) * this.speed * 0.6 * ts;
+            } else {
+                this.x += this.speed * (Math.random() > 0.5 ? 1 : -1) * ts;
+            }
+
+            if (this.fleeTimer <= 0) {
+                if (this.projectileAttackCooldown <= 0) {
+                    const attackPool = [
+                        { name: 'sprayAttack', cooldown: Math.max(60, 100 - this.phase * 10) },
+                        { name: 'flareAttack', cooldown: Math.max(65, 105 - this.phase * 10) },
+                        { name: 'spiralWaveAttack', cooldown: Math.max(70, 110 - this.phase * 10) },
+                        { name: 'burstArc', cooldown: Math.max(60, 100 - this.phase * 10) }
+                    ];
+
+                    const comboChance = Math.random();
+                    let comboCount = 1;
+                    if (comboChance < 0.25) comboCount = 4;
+                    else if (comboChance < 0.45) comboCount = 3;
+                    else if (comboChance < 0.65) comboCount = 2;
+
+                    const selectedIndices = [];
+                    let maxCooldown = 0;
+
+                    for (let i = 0; i < comboCount; i++) {
+                        let randomIndex = Math.floor(Math.random() * attackPool.length);
+                        while (selectedIndices.includes(randomIndex) && selectedIndices.length < attackPool.length) {
+                            randomIndex = Math.floor(Math.random() * attackPool.length);
+                        }
+                        if (!selectedIndices.includes(randomIndex)) {
+                            selectedIndices.push(randomIndex);
+                            const attack = attackPool[randomIndex];
+                            this[attack.name](playerX, playerY);
+                            maxCooldown = Math.max(maxCooldown, attack.cooldown);
+                        }
+                    }
+
+                    this.projectileAttackCooldown = maxCooldown + (comboCount - 1) * 5;
+                } else {
+                    this.projectileAttackCooldown--;
+                }
+
+                if (dist < this.attackRange + 40 && this.areaAttackCooldown <= 0) {
+                    this.burstAttack();
+                    this.areaAttackCooldown = Math.max(140, 180 - this.phase * 10);
+                } else if (this.areaAttackCooldown > 0) {
+                    this.areaAttackCooldown--;
+                }
+            } else {
+                if (this.projectileAttackCooldown > 0) {
+                    this.projectileAttackCooldown--;
+                }
+                if (this.areaAttackCooldown > 0) {
+                    this.areaAttackCooldown--;
+                }
+            }
+        } else if (this.type === 'tank') {
+            // Verificar milestones de vida para spawnar counter attack
+            const healthPercent = this.health / this.maxHealth;
+            if (healthPercent <= 0.75 && !this.triggered75) {
+                this.triggered75 = true;
+                spawnTankCounterAttack();
+            }
+            if (healthPercent <= 0.50 && !this.triggered50) {
+                this.triggered50 = true;
+                spawnTankCounterAttack();
+            }
+            if (healthPercent <= 0.25 && !this.triggered25) {
+                this.triggered25 = true;
+                spawnTankCounterAttack();
+            }
+            
+            if (this.dashTimer > 0) {
+                this.x += (dx / dist) * this.dashSpeed * ts;
+                this.y += (dy / dist) * this.dashSpeed * ts;
+                this.dashTimer--;
+            } else {
+                if (dist > this.attackRange) {
+                    this.x += (dx / dist) * this.speed * ts;
+                    this.y += (dy / dist) * this.speed * ts;
+                }
+
+                if (this.projectileAttackCooldown <= 0 && dist < 400) {
+                    const attackChoice = Math.random();
+                    if (attackChoice < 0.33) {
+                        if (this.rangedAttackWarningTimer <= 0) {
+                            this.rangedAttackWarningTimer = 12;
+                        }
+                    } else if (attackChoice < 0.7) {
+                        if (this.armorBarrageWarningTimer <= 0) {
+                            this.armorBarrageWarningTimer = 12;
+                        }
+                    } else {
+                        if (this.chargeMissilesWarningTimer <= 0) {
+                            this.chargeMissilesWarningTimer = 12;
+                        }
+                    }
+                } else if (this.projectileAttackCooldown > 0) {
+                    this.projectileAttackCooldown--;
+                }
+                
+                // Process warning timers for ranged attacks
+                if (this.rangedAttackWarningTimer > 0) {
+                    this.rangedAttackWarningTimer--;
+                    if (this.rangedAttackWarningTimer === 0) {
+                        this.rangedAttack(playerX, playerY);
+                        this.projectileAttackCooldown = Math.max(70, 100 - this.phase * 8);
+                    }
+                }
+                if (this.armorBarrageWarningTimer > 0) {
+                    this.armorBarrageWarningTimer--;
+                    if (this.armorBarrageWarningTimer === 0) {
+                        this.armorBarrage(playerX, playerY);
+                        this.projectileAttackCooldown = Math.max(90, 110 - this.phase * 8);
+                    }
+                }
+                if (this.chargeMissilesWarningTimer > 0) {
+                    this.chargeMissilesWarningTimer--;
+                    if (this.chargeMissilesWarningTimer === 0) {
+                        this.chargeMissiles(playerX, playerY);
+                        this.projectileAttackCooldown = Math.max(100, 120 - this.phase * 8);
+                    }
+                }
+
+                if (this.areaAttackCooldown <= 0 && dist < this.attackRange + 30) {
+                    if (Math.random() < 0.5) {
+                        if (this.burstAttackWarningTimer <= 0) {
+                            this.burstAttackWarningTimer = 12;
+                        }
+                    } else {
+                        if (this.shockwaveAttackWarningTimer <= 0) {
+                            this.shockwaveAttackWarningTimer = 12;
+                        }
+                    }
+                } else if (this.areaAttackCooldown > 0) {
+                    this.areaAttackCooldown--;
+                }
+                
+                // Process warning timers for area attacks
+                if (this.burstAttackWarningTimer > 0) {
+                    this.burstAttackWarningTimer--;
+                    if (this.burstAttackWarningTimer === 0) {
+                        this.burstAttack();
+                        this.areaAttackCooldown = Math.max(160, 200 - this.phase * 12);
+                    }
+                }
+                if (this.shockwaveAttackWarningTimer > 0) {
+                    this.shockwaveAttackWarningTimer--;
+                    if (this.shockwaveAttackWarningTimer === 0) {
+                        this.shockwaveAttack();
+                        this.areaAttackCooldown = Math.max(160, 200 - this.phase * 12);
+                    }
+                }
+
+                if (this.dashCooldown <= 0) {
+                    this.dashTimer = 18;
+                    this.dashCooldown = 140 - this.phase * 10;
+                } else {
+                    this.dashCooldown--;
+                }
+            }
+        } else if (this.type === 'swarm') {
+            // Swarm: se move rapidamente e spawna enxames de projéteis homing
+            this.x += (dx / dist) * this.speed * 0.8 * ts;
+            this.y += (dy / dist) * this.speed * 0.8 * ts;
+            
+            this.orbitalAngle += 0.15 * ts;
+            
+            if (this.swarmCooldown <= 0) {
+                // Spawna 3 projéteis em formação giratória
+                for (let i = 0; i < 3; i++) {
+                    const angle = this.orbitalAngle + (i * Math.PI * 2 / 3);
+                    const spawnX = this.x + this.width / 2 + Math.cos(angle) * 60;
+                    const spawnY = this.y + this.height / 2 + Math.sin(angle) * 60;
+                    
+                    // 25% chance for the projectile to be homing (was usually homing); prefer marks still makes it non-homing
+                    let targetX = playerX;
+                    let targetY = playerY;
+                    let homingOpt = (Math.random() < 0.25) ? { homing: true, homingTarget: player, homingStrength: 0.08 } : {};
+                    if (Math.random() < 0.2 && swarmMarks.length > 0) {
+                        const mk = swarmMarks[Math.floor(Math.random() * swarmMarks.length)];
+                        targetX = mk.x;
+                        targetY = mk.y;
+                        homingOpt = {}; // go straight to the mark (non-homing)
+                    }
+                    const baseDamage = this.getAttackDamage() * 0.6;
+                    const projDamage = homingOpt.homing ? Math.max(1, Math.round(baseDamage * 0.75)) : Math.max(1, Math.round(baseDamage));
+                    spawnMonsterProjectile(
+                        spawnX, spawnY,
+                        targetX, targetY,
+                        projDamage,
+                        '#9c4fff',
+                        6 + this.phase * 0.35,
+                        Object.assign({ monsterType: this.type, size: 7, style: 'swarmBug', afterImageTrail: true, afterImageInterval: 3 }, homingOpt)
+                    );
+                }
+                this.swarmCooldown = Math.max(50, 80 - this.phase * 6);
+            } else {
+                this.swarmCooldown--;
+            }
+            
+            // Spawnar marcas a cada 1.75 segundos (105 frames)
+            if (this.markSpawnCooldown <= 0) {
+                const markX = Math.random() * (gameWidth - 40) + 20;
+                const markY = Math.random() * (gameHeight - 40) + 20;
+                swarmMarks.push({
+                    x: markX,
+                    y: markY,
+                    radius: 15 * 1.5, // aumentar 50%
+                    active: false,
+                    lifetime: 300 // 5 segundos
+                });
+                this.markSpawnCooldown = 105; // 1.75 segundos a 60 fps
+            } else {
+                this.markSpawnCooldown--;
+            }
+        } else if (this.type === 'caster') {
+            // Caster: patrulha até um ponto aleatório e pode teletransportar quando ferido
+            // Teleporte quando ficar abaixo de 35% de vida (uma única vez)
+            const healthPercent = this.health / this.maxHealth;
+            if (healthPercent <= 0.35 && !this.hasTeleported) {
+                // guard against missing teleportTarget
+                if (!this.teleportTarget || typeof this.teleportTarget.x !== 'number' || typeof this.teleportTarget.y !== 'number') {
+                    const corners = [
+                        { x: 50, y: 50 },
+                        { x: Math.max(1, gameWidth - 50), y: 50 },
+                        { x: 50, y: Math.max(1, gameHeight - 50) },
+                        { x: Math.max(1, gameWidth - 50), y: Math.max(1, gameHeight - 50) }
+                    ];
+                    this.teleportTarget = corners[Math.floor(Math.random() * corners.length)];
+                }
+                try {
+                    try { spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#ffffff', 18, 18); } catch (e) {}
+                    // Teleportar para o teleportTarget
+                    this.x = Math.max(0, Math.min(gameWidth - this.width, this.teleportTarget.x - 

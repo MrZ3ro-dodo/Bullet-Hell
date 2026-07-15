@@ -1,0 +1,249 @@
+ 4 - monstersDefeated : 2 - monstersDefeated;
+        if (remainingEarlyEncounters <= 1) {
+            simpleMonsterSpawnedInEarlyPhases = true;
+            return 'simple';
+        }
+    }
+    let allowedTypes = getAllowedMonsterTypes();
+    if (allowedTypes.length === 0) return 'shooter';
+
+    const excludedTypes = new Set([...phaseMonsterTypes, ...prevPhaseMonsterTypes]);
+    let remainingTypes = allowedTypes.filter(type => !excludedTypes.has(type));
+    if (remainingTypes.length === 0) {
+        remainingTypes = allowedTypes;
+    }
+
+    let chosen;
+    if (lastMonsterType && remainingTypes.includes(lastMonsterType) && remainingTypes.length > 1) {
+        const sameTypeWeight = 0.2;
+        let totalWeight = 0;
+        const weights = remainingTypes.map(type => {
+            const weight = type === lastMonsterType ? sameTypeWeight : 1;
+            totalWeight += weight;
+            return weight;
+        });
+
+        let roll = Math.random() * totalWeight;
+        for (let i = 0; i < remainingTypes.length; i++) {
+            roll -= weights[i];
+            if (roll <= 0) {
+                chosen = remainingTypes[i];
+                break;
+            }
+        }
+    }
+
+    if (!chosen) {
+        chosen = remainingTypes[Math.floor(Math.random() * remainingTypes.length)];
+    }
+
+    if (chosen === 'simple') {
+        simpleMonsterSpawnedInEarlyPhases = true;
+    }
+    return chosen;
+}
+
+function getPredictedPlayerPosition(frames = 24) {
+    let moveX = 0;
+    let moveY = 0;
+    if (keys['d'] || keys['arrowright']) moveX += 1;
+    if (keys['a'] || keys['arrowleft']) moveX -= 1;
+    if (keys['s'] || keys['arrowdown']) moveY += 1;
+    if (keys['w'] || keys['arrowup']) moveY -= 1;
+
+    const magnitude = Math.sqrt(moveX * moveX + moveY * moveY);
+    if (magnitude > 0) {
+        moveX /= magnitude;
+        moveY /= magnitude;
+    }
+
+    const predictedX = player.x + player.width / 2 + moveX * player.speed * frames;
+    const predictedY = player.y + player.height / 2 + moveY * player.speed * frames;
+
+    return { x: predictedX, y: predictedY };
+}
+
+function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    if (dx === 0 && dy === 0) return Math.hypot(px - x1, py - y1);
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
+    const projX = x1 + t * dx;
+    const projY = y1 + t * dy;
+    return Math.hypot(px - projX, py - projY);
+}
+
+function spawnMonsterHitscan(startX, startY, targetX, targetY, damage, color, thickness = 42, duration = 60) {
+    const beam = {
+        x: startX,
+        y: startY,
+        targetX,
+        targetY,
+        damage,
+        color,
+        thickness,
+        lifetime: duration,
+        maxLifetime: duration,
+        alpha: 1,
+        hitChecked: false
+    };
+
+    monsterHitscans.push(beam);
+    return beam;
+}
+
+const weapons = [
+    { name: 'Revolver 🔫', type: 'gun', color: '#ffff00', cooldown: 12, range: 50, damage: 4, speed: 50 },
+    { name: 'Arco 🏹', type: 'bow', color: '#00ff00', cooldown: 110, range: 37.5, damage: 18, speed: 65 },
+    { name: 'Varinha 🔮', type: 'staff', color: '#ff00ff', cooldown: 35, range: 25, damage: 22, speed: 0.75 },
+    { name: 'Espada ⚔️', type: 'sword', color: '#ffaa00', cooldown: 0, range: 90, damage: 14 },
+    { name: 'Granada & Bomba 💣', type: 'grenade', color: '#ff8c1a', cooldown: 26, range: 80, damage: 10 },
+    { name: 'Lança Tornado 🌪️', type: 'cone', color: '#83bfd3', cooldown: 35, range: 80, damage: 1, coneAngle: Math.PI / 3 }
+];
+
+const upgradeOptions = [
+    { name: 'Vida Máxima +20', effect: 'maxHealth', value: 20, desc: 'Aumenta sua vida máxima em 20. Agora você pode absorver mais dano antes de ser derrotado.', exclusive: true },
+    { name: 'Dano +1', effect: 'baseDamage', value: 1, desc: 'Aumenta seu dano base em 1. Seus ataques físicos e de arma causam mais dano.' },
+    { name: 'Velocidade +1', effect: 'speed', value: 1, desc: 'Aumenta sua velocidade de movimento em 1. Você se desloca mais rápido pelo campo de batalha.' },
+    { name: 'Regeneração +1', effect: 'healthRegen', value: 1, desc: 'Restaura 1 ponto de vida por segundo. Recupera saúde automaticamente entre combates.' },
+    { name: 'Proteção +2', effect: 'damageReduction', value: 2, desc: 'Reduz o dano recebido em 2. Cada ataque inimigo causa menos ferimentos.' },
+    { name: 'Recarga Rápida -2', effect: 'cooldownReduction', value: 2, desc: 'Reduz o cooldown dos seus ataques em 2. Você pode atacar com mais frequência.' },
+    { name: 'Força de Arma +3', effect: 'weaponDamage', value: 3, desc: 'Aumenta o dano extra das armas em 3. Todas as armas causam mais dano adicional.' },
+    { name: 'Crítico +8%', effect: 'critChance', value: 8, desc: 'Aumenta sua chance de crítico em 8%. Seus ataques têm mais chance de causar dano elevado.', exclusive: true },
+    { name: 'Dano Crítico +20%', effect: 'critDamage', value: 0.2, desc: 'Aumenta o multiplicador de críticos em 20%. Quando acerta crítico, você causa ainda mais dano.', exclusive: true },
+    { name: 'Projéteis +0.5', effect: 'extraProjectiles', value: 0.5, desc: 'Adiciona projéteis extras aos ataques à distância. Mais tiros significam maior cobertura.' },
+    { name: 'Tiro em Cone +0.5', effect: 'spreadProjectiles', value: 0.5, desc: 'Aumenta a largura de dispersão dos seus projéteis. Cobre uma área maior com cada ataque.' },
+    { name: 'Tiro Tardio +1', effect: 'lateShots', value: 1, desc: 'Adiciona um projétil tardio após cada ataque. O disparo extra aparece depois do ataque inicial.' },
+    { name: 'Ataque Triplo', effect: 'spinAttack', value: 1, desc: 'Ativa o ataque triplo automático no começo do combate. Níveis extras adicionam projéteis adicionais.', exclusive: true },
+    { name: 'Ataque Rápido +10%', effect: 'attackSpeed', value: 0.1, desc: 'Aumenta a velocidade de ataque em 10%. Seus cooldowns efetivos ficam menores.' },
+    { name: 'Tiro Veloz +2', effect: 'projectileSpeedBonus', value: 2, desc: 'Aumenta a velocidade dos projéteis em 2. Seus tiros chegam mais rápido ao alvo.' }
+];
+
+// Chance de obter uma versão EXTREMA de um upgrade (3 níveis aplicados)
+const EXTREME_CHANCE = 0.05;
+
+const weaponUpgradeOptions = {
+    gun: [
+        { name: 'Câmara Extra +4', effect: 'gunAmmoMax', value: 4, desc: 'Aumenta a capacidade de munição do revólver. Mais tiros antes de precisar recarregar.' },
+        { name: 'Rajada de Choque +1', effect: 'gunBurstFire', value: 1, desc: 'Cada disparo do revólver também solta um projétil adicional em ângulo levemente variado, transformando o tiro em rajada.' },
+        { name: 'Munição Explosiva', effect: 'gunExplosiveAmmo', value: 1, desc: 'Os projéteis detonam ao atingir o inimigo, causando dano extra em uma pequena área.' }
+    ],
+    grenade: [
+        { name: 'Atordoar Bombas +0.5s', effect: 'bombStunPerHitSeconds', value: 0.5, desc: 'A bomba padrão atordoa o alvo por 0.5s por nível ao acertar.' },
+        { name: 'Fragmentos Confundem +0.05s', effect: 'bombFragmentConfusionSeconds', value: 0.05, desc: 'Cada fragmento causa confusão por 0.1s no primeiro nível e 0.05s a mais por nível seguinte.' },
+        { name: 'Fragmentos +2', effect: 'bombFragmentCountBonus', value: 2, desc: 'Adiciona 2 fragmentos extras por explosão de bomba/granada.' },
+        { name: 'Chama Persistente +1', effect: 'bombBurnDamagePerSecond', value: 1, desc: 'A zona de fogo causa 1 de dano por segundo por nível e dura 3s + 0.5s por nível.' },
+        { name: 'Fragmentos Velozes +0.25', effect: 'bombFragmentSpeedBonus', value: 0.25, desc: 'Aumenta a velocidade dos fragmentos e concede 1 ponto de perfuração extra por nível.' },
+        { name: 'Velocidade de Arremesso +0.2', effect: 'bombThrowSpeedBonus', value: 0.2, desc: 'Aumenta a velocidade das bombas e granadas, fazendo-as chegar mais rápido.' },
+        { name: 'Fogo Mais Duradouro +0.5s', effect: 'bombFireZoneDurationBonusSeconds', value: 0.5, desc: 'Aumenta a duração do círculo de fogo em 0.5s por nível.' },
+        { name: 'Passo de Fogo +15%', effect: 'bombFireZoneMoveSpeedBonus', value: 0.15, desc: 'Enquanto estiver dentro da zona de fogo, você se move 15% mais rápido.' },
+        { name: 'Corrida de Reposição +20%', effect: 'bombCooldownMoveSpeedBonus', value: 0.2, desc: 'Enquanto a bomba estiver em cooldown, você se movimenta 20% mais rápido.' },
+        { name: 'Raio de Fogo +12.5%', effect: 'bombFireZoneRadiusBonus', value: 0.125, desc: 'Aumenta o raio do círculo de fogo da bomba em 12.5% por nível.' },
+        { name: 'Estilhaços +20%', effect: 'bombFragmentSizeBonus', value: 0.2, desc: 'Aumenta o tamanho dos fragmentos em 20% por nível.' }
+    ],
+    bow: [
+        { name: 'Bota Leve +1', effect: 'bowDashMax', value: 1, desc: 'Concede 1 carga extra de dash ao usar o arco. Permite reposicionamento adicional durante o combate.' },
+        { name: 'Ricochete de Flecha +1', effect: 'bowRicochet', value: 1, desc: 'Adiciona projéteis auxiliares ao disparo do arco que podem destruir tiros inimigos e seguir alvos próximos.' },
+        { name: 'Postura Firme +15%', effect: 'bowReadyStance', value: 15, desc: 'Quando parado, suas flechas ganham mais chance de crítico e causam mais dano em viagens precisas.' }
+    ],
+    staff: [
+        { name: 'Energia Arcanista +2', effect: 'staffChargeMax', value: 2, desc: 'Aumenta a carga máxima para o burst de orbes, permitindo cargas mais poderosas.' },
+        { name: 'Rajada Extra +1', effect: 'staffBurstCount', value: 1, desc: 'Aumenta o número de orbes liberadas no burst, transformando o ataque em uma tempestade mágica.' },
+        { name: 'Ressonância Arcana', effect: 'staffHomingBurst', value: 1, desc: 'As orbes do burst ganham força e rastreiam ferozmente o alvo, tornando o ataque mais difícil de evitar.' }
+    ],
+    sword: [
+        { name: 'Investida Cortante +6', effect: 'attackMove', value: 6, desc: 'A cada nível, o dash da espada dispara um dash normal a mais mirando no monstro mais próximo. Com a melhoria ativa, o dash acontece sozinho ao encostar a espada em um monstro.' },
+        { name: 'Parry Veloz -40', effect: 'parryMax', value: 40, desc: 'Reduz o cooldown do parry, permitindo contra-ataques muito mais frequentes.' },
+        { name: 'Parry Confusão +12.5%', effect: 'parryConfusionChance', value: 12.5, desc: 'Parrys bem-sucedidos têm chance de confundir o inimigo, fazendo-o atacar na direção errada.' },
+        { name: 'Vínculo Vital +4%', effect: 'parryHealOverTime', value: 1, desc: 'Ao causar um parry, cura 4% da vida máxima por segundo pelos próximos 3 segundos. Cada nível adiciona +4% de cura por segundo.' }
+    ],
+    cone: [
+        { name: 'Fúria do Tornado +1', effect: 'tornadoCount', value: 1, desc: 'Adiciona uma lança extra à rajada do tornado, aumentando o volume de projéteis.' },
+        { name: 'Tempo de Tornado +10', effect: 'tornadoDuration', value: 10, desc: 'Aumenta a duração do ataque tornado, prolongando o caos no campo de batalha.' },
+        { name: 'Cone Mais Largo +0.1', effect: 'coneAngleBonus', value: 0.1, desc: 'Aumenta a abertura do cone tornado, permitindo cobrir uma área muito maior.' }
+    ]
+};
+
+// ===== EVENT LISTENERS =====
+document.addEventListener('keydown', (e) => {
+    keys[e.key.toLowerCase()] = true;
+    const transitionLocked = isMonsterTransitionActive();
+
+    if (e.key.toLowerCase() === 'o' && !isSelectingWeapon && !gameOver) {
+        e.preventDefault();
+        toggleDebugMenu();
+        return;
+    }
+    // Toggle passive debug menu with P
+    if (e.key.toLowerCase() === 'p' && !isSelectingWeapon && !gameOver) {
+        e.preventDefault();
+        if (passiveMenuMode) {
+            passiveMenuMode = false;
+            isDebugMenuOpen = false;
+            if (overlayCanvas) { overlayCanvas.style.display = 'none'; overlayCanvas.style.pointerEvents = 'none'; }
+        } else {
+            passiveMenuMode = true;
+            isDebugMenuOpen = true;
+            debugMenuUpgradeChoices = getPassiveMenuChoices();
+            selectedDebugUpgradeIndex = 0;
+            debugMenuQuantity = 1;
+            debugMenuFlashTimer = 0;
+            if (overlayCanvas) { overlayCanvas.style.display = 'block'; overlayCanvas.style.pointerEvents = 'auto'; resizeDebugOverlay(); }
+        }
+        return;
+    }
+
+    if (isDebugMenuOpen) {
+        const choices = getDebugMenuChoices();
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            debugMenuTabIndex = (debugMenuTabIndex + 1) % debugMenuTabs.length;
+            selectedDebugUpgradeIndex = 0;
+            selectedDebugActionIndex = 0;
+            return;
+        }
+        if (choices.length > 0) {
+            const selectedIndexKey = debugMenuTabs[debugMenuTabIndex].id === 'invocar' ? 'selectedDebugActionIndex' : 'selectedDebugUpgradeIndex';
+            if (e.key === 'ArrowUp' || e.key === 'w') {
+                e.preventDefault();
+                if (debugMenuTabs[debugMenuTabIndex].id === 'invocar') {
+                    selectedDebugActionIndex = (selectedDebugActionIndex - 1 + choices.length) % choices.length;
+                } else {
+                    selectedDebugUpgradeIndex = (selectedDebugUpgradeIndex - 1 + choices.length) % choices.length;
+                }
+            } else if (e.key === 'ArrowDown' || e.key === 's') {
+                e.preventDefault();
+                if (debugMenuTabs[debugMenuTabIndex].id === 'invocar') {
+                    selectedDebugActionIndex = (selectedDebugActionIndex + 1) % choices.length;
+                } else {
+                    selectedDebugUpgradeIndex = (selectedDebugUpgradeIndex + 1) % choices.length;
+                }
+            } else if (e.key === 'ArrowLeft' || e.key === 'a') {
+                e.preventDefault();
+                debugMenuQuantity = Math.max(1, debugMenuQuantity - 1);
+            } else if (e.key === 'ArrowRight' || e.key === 'd') {
+                e.preventDefault();
+                debugMenuQuantity = Math.min(99, debugMenuQuantity + 1);
+            } else if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                applyDebugUpgrade();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                isDebugMenuOpen = false;
+            }
+        }
+        return;
+    }
+    
+    if (isSelectingWeapon) {
+        if (e.key === 'ArrowLeft' || e.key === 'a') {
+            selectedWeaponIndex = (selectedWeaponIndex - 1 + weapons.length) % weapons.length;
+        }
+        if (e.key === 'ArrowRight' || e.key === 'd') {
+            selectedWeaponIndex = (selectedWeaponIndex + 1) % weapons.length;
+        }
+        if (e.key === ' ' || e.key === 'Enter') {
+            e.preventDefault();
+            selectWeapon(selectedWeaponIndex);
+        }
+  
