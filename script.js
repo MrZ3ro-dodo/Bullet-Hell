@@ -4237,7 +4237,7 @@ class Monster {
         } else if (this.type === 'croc') {
             this.health = (22.5 + phase * 4) * 3;
             this.maxHealth = this.health;
-            this.attackRange = 70;
+            this.attackRange = 50;
             this.speed = 0;
             this.simpleDashCooldown = 45 + Math.round(Math.random() * 30);
             this.simpleDashPauseTimer = 0;
@@ -4287,9 +4287,9 @@ class Monster {
             this.stalkingModeTimer = 300 + Math.floor(Math.random() * 1500);
             this.stalkingModeExitTimer = 300 + Math.floor(Math.random() * 300);
             this.stalkingModeCooldown = 0;
-            this.stalkingModeRadius = 1200 + Math.random() * 800;
+            this.stalkingModeRadius = 1800 + Math.random() * 800;
             this.stalkingModeAngle = Math.random() * Math.PI * 2;
-            this.stalkingModeSpeed = 0.015 + Math.random() * 0.01;
+            this.stalkingModeSpeed = 0.00375 + Math.random() * 0.01;
             this.biteAnimationTimer = 0;
             this.biteAnimationDuration = 20;
             this.isBiting = false;
@@ -4297,7 +4297,7 @@ class Monster {
             this.jawOpen = 0;
         } else {
             this.health = 56.25 + phase * 22.5;
-            this.speed = 1.0875 + phase * 0.3625;
+            this.speed = 0.90875 + phase * 0.3625;
             this.maxHealth = this.health;
         }
     }
@@ -5118,7 +5118,7 @@ class Monster {
                         if (this.biteAnimationTimer <= 0) {
                             this.isBiting = false;
                             this.jawOpen = 0;
-                            this.biteCooldown = 30;
+                            this.biteCooldown = 60;
                         }
                     } else if (this.biteCooldown > 0) {
                         this.biteCooldown--;
@@ -5250,7 +5250,7 @@ class Monster {
                 if (this.biteAnimationTimer <= 0) {
                     this.isBiting = false;
                     this.jawOpen = 0;
-                    this.biteCooldown = 30;
+                    this.biteCooldown = 60;
                     if (player) {
                         const isStillColliding = player.x < this.x + this.width && player.x + player.width > this.x && player.y < this.y + this.height && player.y + player.height > this.y;
                         if (isStillColliding) {
@@ -5261,7 +5261,7 @@ class Monster {
                             tryApplyPlayerConfusionFromAttack('croc', { chance: 100, durationFrames: Math.round(0.75 * 60) });
                             player.poisonTimer = Math.max(player.poisonTimer || 0, 5 * 60);
                             player.poisonTickTimer = 60;
-                            player.poisonDamagePerTick = 2;
+                            player.poisonDamagePerTick = 1;
                         }
                     }
                 }
@@ -7185,7 +7185,7 @@ class Monster {
         if (this.type === 'caster') return 5.25 + this.phase * 1.5;
         if (this.type === 'avianightmare') return 2.25 + this.phase * 0.75;
         if (this.type === 'simple') return 2.25 + this.phase * 0.75;
-        if (this.type === 'croc') return (12 + this.phase * 5) * 0.5; // croc now deals much less damage
+        if (this.type === 'croc') return (6 + this.phase * 2) * 0.25; // croc now deals much less damage
         return 3.75 + this.phase * 1.5;
     }
 
