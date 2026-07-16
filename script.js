@@ -39,9 +39,6 @@ let decorCacheCameraX = 0;
 let decorCacheCameraY = 0;
 let decorCacheValid = false;
 const DECOR_CACHE_MOVE_THRESHOLD = 32;
-// Extra room around the viewport so the cache stays valid while the camera drifts
-// within DECOR_CACHE_MOVE_THRESHOLD and large decorations near the edges are covered.
-const DECOR_CACHE_MARGIN = 512;
 let spawnZoneEndX;
 let upgradeZoneEndX;
 let wildZoneEndX;
@@ -673,63 +670,14 @@ function drawMapConstruction(ctx, decor, x, y, scale, alpha = 1) {
     ctx.restore();
 }
 
-function ensureDecorCache() {
-    if (!decorCacheCanvas) {
-        decorCacheCanvas = document.createElement('canvas');
-        decorCacheCanvas.id = 'decorCacheCanvas';
-        decorCacheCtx = decorCacheCanvas.getContext('2d');
-    }
-    const w = viewportWidth + DECOR_CACHE_MARGIN * 2;
-    const h = viewportHeight + DECOR_CACHE_MARGIN * 2;
-    if (decorCacheCanvas.width !== w || decorCacheCanvas.height !== h) {
-        decorCacheCanvas.width = w;
-        decorCacheCanvas.height = h;
-    }
-}
-
-function rebuildDecorCache() {
-    ensureDecorCache();
-    const w = decorCacheCanvas.width;
-    const h = decorCacheCanvas.height;
-    decorCacheCtx.clearRect(0, 0, w, h);
-
-    const originX = cameraX - DECOR_CACHE_MARGIN;
-    const originY = cameraY - DECOR_CACHE_MARGIN;
-    decorCacheCameraX = cameraX;
-    decorCacheCameraY = cameraY;
-
-    const viewLeft = originX - 200;
-    const viewTop = originY - 200;
-    const viewRight = cameraX + viewportWidth + DECOR_CACHE_MARGIN + 200;
-    const viewBottom = cameraY + viewportHeight + DECOR_CACHE_MARGIN + 200;
-
-    decorCacheCtx.save();
-    decorCacheCtx.translate(-originX, -originY);
-    for (const decor of mapDecor) {
-        const margin = (decor.kind === 'construction' ? 200 : 120) * decor.scale;
-        if (decor.x + margin < viewLeft || decor.x - margin > viewRight ||
-            decor.y + margin < viewTop || decor.y - margin > viewBottom) {
-            continue;
-        }
-        if (decor.kind === 'construction') {
-            drawMapConstruction(decorCacheCtx, decor, decor.x, decor.y, decor.scale, decor.alpha);
-        } else {
-            drawMapTree(decorCacheCtx, decor.x, decor.y, decor.scale, decor.alpha, decor.extras);
-        }
-    }
-    decorCacheCtx.restore();
-    decorCacheValid = true;
-}
-
 function drawMapDecor() {
-    if (!decorCacheValid ||
-        Math.abs(cameraX - decorCacheCameraX) > DECOR_CACHE_MOVE_THRESHOLD ||
-        Math.abs(cameraY - decorCacheCameraY) > DECOR_CACHE_MOVE_THRESHOLD) {
-        rebuildDecorCache();
+    for (const decor of mapDecor) {
+        if (decor.kind === 'construction') {
+            drawMapConstruction(ctx, decor, decor.x, decor.y, decor.scale, decor.alpha);
+        } else {
+            drawMapTree(ctx, decor.x, decor.y, decor.scale, decor.alpha, decor.extras);
+        }
     }
-    // Blit the cached decoration layer. The cache is rendered around the camera
-    // position, so it is drawn in world coordinates at its cached origin.
-    ctx.drawImage(decorCacheCanvas, decorCacheCameraX - DECOR_CACHE_MARGIN, decorCacheCameraY - DECOR_CACHE_MARGIN);
 }
 
 function initializeMapDecor() {
@@ -1564,11 +1512,7 @@ class Projectile {
         this.x = x;
         this.y = y;
         this.size = size;
-        this.spawnFrame = gameFrameCount;
-        this.attackId = opts.attackId || 0;
-        this.ghostCopyProcessed = false;
-        // Apply global speed reduction: reduce by 50%
-        const actualSpeed = (typeof speed === 'number') ? speed * 0.5 : 0;
+        const actualSpeed = (typeof speed === 'number') ? speed : 0;
         this.speed = actualSpeed;
         this.baseActualSpeed = actualSpeed;
         const dx = targetX - x;
@@ -1599,10 +1543,6 @@ class Projectile {
         this.hitTarget = opts.hitTarget || false;
         this.ignoreCollision = opts.ignoreCollision || false;
         this.isGunOriginal = opts.isGunOriginal || false;
-        this.isPlayerOriginal = opts.isPlayerOriginal || false;
-        this.tracer = opts.tracer || false;
-        this.tracerColor = opts.tracerColor || null;
-        this.tracerLife = typeof opts.tracerLife === 'number' ? opts.tracerLife : 0;
         this.pullStrength = opts.pullStrength || 0;
         this.pullRadius = opts.pullRadius || 0;
         this.lifetime = opts.lifetime || null;
@@ -1821,9 +1761,6 @@ class Projectile {
         if (this.shakeTimer > 0) {
             this.shakeTimer -= 1;
         }
-        if (this.tracer && this.tracerLife > 0) {
-            this.tracerLife--;
-        }
     }
 
     draw() {
@@ -1848,19 +1785,6 @@ class Projectile {
             ctx.fillText(this.projectileEmoji, 0, 0);
             ctx.restore();
             return;
-        }
-
-        if (this.tracer && this.tracerLife > 0 && this.tracerColor) {
-            ctx.save();
-            ctx.globalAlpha = Math.max(0, this.tracerLife / 12) * 0.6;
-            ctx.strokeStyle = this.tracerColor;
-            ctx.lineWidth = Math.max(1, this.size * 0.5);
-            ctx.lineCap = 'round';
-            ctx.beginPath();
-            ctx.moveTo(this.x - this.vx * 1.8, this.y - this.vy * 1.8);
-            ctx.lineTo(this.x, this.y);
-            ctx.stroke();
-            ctx.restore();
         }
 
         if (style === 'tankOrbit') {
@@ -2074,6 +1998,47 @@ class Projectile {
             ctx.beginPath();
             ctx.moveTo(-this.size * 1.3, 0);
             ctx.lineTo(-this.size * 2.3, 0);
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
+
+        if (style === 'gunBulletBoosted') {
+            // Tiro turbinado (pós-giro): núcleo branco-aranha, aura laranja e
+            // brilho forte, com um leve rastro de faíscas.
+            ctx.translate(this.x, this.y);
+            ctx.rotate(angle);
+            ctx.shadowColor = 'rgba(255, 160, 40, 0.95)';
+            ctx.shadowBlur = 22;
+            // aura quente
+            ctx.fillStyle = 'rgba(255, 138, 28, 0.55)';
+            ctx.beginPath();
+            ctx.ellipse(0, 0, this.size * 1.9, this.size * 1.1, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // corpo do projétil (maior)
+            ctx.fillStyle = '#ff8a1c';
+            ctx.beginPath();
+            ctx.moveTo(-this.size * 1.5, -this.size * 0.7);
+            ctx.lineTo(this.size * 1.2, -this.size * 0.7);
+            ctx.arc(this.size * 1.2, 0, this.size * 0.7, -Math.PI / 2, Math.PI / 2);
+            ctx.lineTo(-this.size * 1.5, this.size * 0.7);
+            ctx.arc(-this.size * 1.5, 0, this.size * 0.7, Math.PI / 2, -Math.PI / 2);
+            ctx.closePath();
+            ctx.fill();
+            // núcleo branco
+            ctx.fillStyle = '#fff7ed';
+            ctx.shadowColor = '#ffffff';
+            ctx.shadowBlur = 12;
+            ctx.beginPath();
+            ctx.ellipse(this.size * 0.2, 0, this.size * 0.95, this.size * 0.42, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // fagulhas
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = 'rgba(255, 220, 150, 0.85)';
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.moveTo(-this.size * 1.6, 0);
+            ctx.lineTo(-this.size * 2.7, 0);
             ctx.stroke();
             ctx.restore();
             return;
@@ -2500,7 +2465,7 @@ class Projectile {
             return;
         }
 
-        if (style === 'casterShard' || style === 'casterBurst') {
+        if (style === 'casterBurst') {
             ctx.translate(this.x, this.y);
             ctx.rotate(angle);
             ctx.fillStyle = this.color;
@@ -2517,32 +2482,10 @@ class Projectile {
             ctx.strokeStyle = 'rgba(255,255,255,0.88)';
             ctx.lineWidth = 1.8;
             ctx.stroke();
-            if (style === 'casterBurst') {
-                ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.arc(0, 0, this.size * 1.8, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-            ctx.restore();
-            return;
-        }
-
-        if (style === 'casterSniper') {
-            ctx.translate(this.x, this.y);
-            ctx.rotate(angle);
-            ctx.fillStyle = this.color;
-            ctx.shadowColor = this.color;
-            ctx.shadowBlur = 26;
+            ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+            ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.moveTo(-this.size * 2.2, 0);
-            ctx.lineTo(this.size * 1.6, -this.size * 0.35);
-            ctx.lineTo(this.size * 2.4, 0);
-            ctx.lineTo(this.size * 1.6, this.size * 0.35);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-            ctx.lineWidth = 1.6;
+            ctx.arc(0, 0, this.size * 1.8, 0, Math.PI * 2);
             ctx.stroke();
             ctx.restore();
             return;
@@ -2654,7 +2597,7 @@ class Projectile {
             return;
         }
 
-        if (style === 'casterFlameCircle' || style === 'casterFlameSpiral' || style === 'casterFlameRing' || style === 'casterFlameVolley' || style === 'casterShard' || style === 'casterBurst') {
+        if (style === 'casterFlameCircle' || style === 'casterFlameSpiral' || style === 'casterFlameRing' || style === 'casterFlameVolley') {
             ctx.fillStyle = '#ff9e3c';
             ctx.shadowColor = '#ff9e3c';
             ctx.shadowBlur = 20;
@@ -2703,9 +2646,6 @@ class Player {
         this.health = 100;
         this.maxHealth = 100;
         this.attackCooldown = 0;
-        this.gunSpinTimer = 0;
-        this.gunRechargeBoost = false;
-        this.gunSpinBurnChance = 0;
         this.attacking = false;
         this.meleeAttacking = false;
         this.coneAttacking = false;
@@ -2740,7 +2680,7 @@ class Player {
         this.parryConfusionDuration = 0;
         this.spinAttackLevel = 0;
         this.spinAttack = false;
-        this.spinAttackCharges = false;
+        this.spinAttackCharges = 0;
         this.attackSpeed = 0;
         this.projectileSpeedBonus = 0;
         this.bombStunPerHitSeconds = 0;
@@ -2759,16 +2699,13 @@ class Player {
         this.bombFragmentSizeBonus = 0;
         this.bombCooldown = 0;
         this.grenadeCooldown = 0;
-        this.landmineCooldown = 0;
-        this.landmineCooldownMax = 12 * 60;
         this.gunAmmo = 6;
         this.gunMaxAmmo = 6;
-        this.kickbackVX = 0;
-        this.kickbackVY = 0;
         this.gunReloadCooldown = 0;
         this.gunReloadCooldownMax = 120;
-        this.gunBurstMidpointTimer = 0;
-        this.gunExtraPowder = 0;
+        this.gunBurstFire = 0;
+        this.gunBurstEndPending = false;
+        this.gunExplosiveAmmo = 0;
         this.staffHomingBurst = 0;
         this.gunReloadHitCount = 0;
         this.gunReloadHitMax = 13;
@@ -2789,20 +2726,22 @@ class Player {
         this.crocFreezerCount = 0;
         this.tankImpulseUnlocked = false;
         this.tankImpulseCount = 0;
-        this._ghostCopyFrame = -999;
-        this.shooterMachineGunTrigger = 'onHit';
-        this.swarmNubeTrigger = 'onHit';
-        this.casterPortalTrigger = 'onHit';
-        this.avianTrackerTrigger = 'onKill';
-        this.smartRicochetTrigger = 'onCrit';
-        this.simpleExplosiveTrigger = 'onKill';
-        this.crocFreezerTrigger = 'onDash';
-        this.tankImpulseTrigger = 'onTakeDamage';
-        this.castleBoneTrigger = 'onKill';
-        this.mansionGhostCopyTrigger = 'onCrit';
         this.gunReloadHitsToTrigger = 12;
         this.gunReloadInvulnCharges = 0;
         this.gunReloadFlashTicker = 0;
+        // Mecânica de giro/recarga do revólver
+        this.gunSpinTimer = 0;
+        this.gunSpinLockTimer = 0;
+        this.gunStopFlashTimer = 0;
+        this.gunSpinAfterImageTimer = 0;
+        this.gunSpinAfterImageCount = 0;
+        this.gunFireQueued = false;
+        this.gunRechargeBoost = false;
+        this.gunSpinBurnChance = 0;
+        this.gunExtraPowder = 0;
+        this.kickbackVX = 0;
+        this.kickbackVY = 0;
+        this.kickbackTimer = 0;
         this.gunReloadMoveBonus = 0;
         this.gunReloadAfterImageTimer = 0;
         this.gunReloadMoveBonusMax = 1.8;
@@ -2878,9 +2817,9 @@ class Player {
         this.confusedLevel = 0;
         this.confusedTimer = 0;
         this.mansionGhostCopyUnlocked = false;
-        this.mansionGhostCopyChance = 0.45;
-        this.mansionGhostCopyDamageRatio = 0.7;
-        this.mansionGhostCopyStunFrames = 32;
+        this.mansionGhostCopyChance = 0.33;
+        this.mansionGhostCopyDamageRatio = 0.5;
+        this.mansionGhostCopyStunFrames = 24;
         
         // Sistema de aceleração por cooldown de dash
         this.dashAccelerationTimer = 0; // contador para 0.5s (30 frames)
@@ -2981,8 +2920,8 @@ class Player {
             return {
                 offsetX,
                 offsetY,
-                tipX: px + Math.cos(targetAngle) * 30,
-                tipY: py + Math.sin(targetAngle) * 30,
+                tipX: px + Math.cos(targetAngle) * 22,
+                tipY: py + Math.sin(targetAngle) * 22,
                 aimAngle: targetAngle
             };
         }
@@ -3348,43 +3287,51 @@ class Player {
         }
         if (this.bombCooldown > 0) this.bombCooldown--;
         if (this.grenadeCooldown > 0) this.grenadeCooldown--;
-        if (this.landmineCooldown > 0) this.landmineCooldown--;
         if (this.gunSpinTimer > 0) {
             this.gunSpinTimer = Math.max(0, this.gunSpinTimer - ts);
-            // Quando o spin terminar, disparar automaticamente
-            if (this.gunSpinTimer === 0 && this.weapon && this.weapon.type === 'gun' && this.attackCooldown === 0) {
-                // O cooldown acabou junto com o spin — atirar automaticamente
-                if (typeof attemptAttack === 'function') {
-                    attemptAttack('spin');
+            // Quando o spin terminar: o tiro NÃO é automático.
+            // O giro apenas prepara um tiro turbinado (com mira pior) e libera
+            // o jogador para atirar novamente ao apertar ataque outra vez.
+            if (this.gunSpinTimer === 0) {
+                this.gunSpinLockTimer = 30; // bloqueia novo giro por 0.5s
+                if (this.weapon && this.weapon.type === 'gun') {
+                    // Libera o próximo disparo (manual) com o boost do giro.
+                    this.attackCooldown = 0;
+                    // Piscar + after images leves ao parar o giro.
+                    this.gunStopFlashTimer = 16;
+                    this.gunSpinAfterImageTimer = 0;
+                    this.gunSpinAfterImageCount = 4;
+                    // Rajada de Choque: solta `gunBurstFire` tiros ao FIM do giro.
+                    if (this.gunBurstEndPending) {
+                        this.gunBurstEndPending = false;
+                        try { fireGunBurst(this.gunBurstFire); } catch (e) {}
+                    }
+                    // Se o jogador clicou nos últimos instantes do giro, dispara agora.
+                    if (this.gunFireQueued && typeof attemptAttack === 'function') {
+                        this.gunFireQueued = false;
+                        attemptAttack('spin');
+                    }
                 }
             }
+        } else if (this.gunSpinLockTimer > 0) {
+            this.gunSpinLockTimer = Math.max(0, this.gunSpinLockTimer - ts);
         }
-        if (this.gunBurstMidpointTimer > 0) {
-            this.gunBurstMidpointTimer--;
-            if (this.gunBurstMidpointTimer === 0 && this.gunBurstFire > 0 && this.weapon && this.weapon.type === 'gun') {
-                const preferred = getPreferredTarget();
-                const targetX = preferred.x;
-                const targetY = preferred.y;
-                const baseAngle = Math.atan2(targetY - (this.y + this.height / 2), targetX - (this.x + this.width / 2));
-                const weaponInfo = this.getWeaponMountPoint(baseAngle);
-                const baseWeaponDamage = this.weapon.damage + this.weaponDamage + this.baseDamage;
-                const critRoll = Math.random() * 100;
-                const totalCritChance = this.critChance;
-                const critMultiplier = critRoll < totalCritChance ? 1 + this.critDamage : 1;
-                const gunPowderMult = (1 + 0.2 * (this.gunExtraPowder || 0));
-                const burstDamage = Math.max(1, Math.round(baseWeaponDamage * critMultiplier * (this.damageOutputMultiplier || 1) * gunPowderMult));
-                const burstSpeed = (this.weapon.speed + this.projectileSpeedBonus) * getPlayerInteriorScale();
-                const burstRange = this.weapon.range * getPlayerInteriorScale();
-                for (let burstIndex = 0; burstIndex < this.gunBurstFire; burstIndex++) {
-                    const extraAngle = baseAngle + ((burstIndex + 1) - (this.gunBurstFire + 1) / 2) * 0.14;
-                    const burstTargetX = this.x + this.width / 2 + Math.cos(extraAngle) * burstRange * 0.9;
-                    const burstTargetY = this.y + this.height / 2 + Math.sin(extraAngle) * burstRange * 0.9;
-                    spawnPlayerProjectile(weaponInfo.tipX, weaponInfo.tipY, burstTargetX, burstTargetY, Math.max(1, Math.round(burstDamage * 0.75)), this.weapon.color, burstSpeed * 0.95, {
-                        critPercent: critMultiplier > 1 ? this.critDamage : 0,
-                        explosive: this.gunExplosiveAmmo > 0,
-                        isGunOriginal: false
+        if (this.gunStopFlashTimer > 0) this.gunStopFlashTimer = Math.max(0, this.gunStopFlashTimer - ts);
+        if (this.gunSpinAfterImageCount > 0) {
+            this.gunSpinAfterImageTimer -= ts;
+            if (this.gunSpinAfterImageTimer <= 0) {
+                this.gunSpinAfterImageTimer = 4;
+                this.gunSpinAfterImageCount--;
+                try {
+                    spawnAfterImage({
+                        kind: 'player',
+                        variant: 'gunSpin',
+                        x: this.x, y: this.y,
+                        width: this.width, height: this.height,
+                        angle: this.swordAimAngle || 0,
+                        life: 16, maxLife: 16, baseAlpha: 0.28
                     });
-                }
+                } catch (e) {}
             }
         }
         if (this.gunReloadCooldown > 0) {
@@ -3691,15 +3638,34 @@ class Player {
             if (weapon.type === 'gun') {
                 ctx.rotate(weaponInfo.aimAngle);
                 if (this.gunSpinTimer > 0) {
-                    // Recharge spin: smooth eased rotation over the 0.35s animation
-                    const GUN_SPIN_FRAMES = 21;
+                    // Recharge spin: giro mais rápido e suave (eased) com rastro de
+                    // motion-blur ao redor do cano.
+                    const GUN_SPIN_FRAMES = 13;
                     const spinT = Math.max(0, Math.min(1, (GUN_SPIN_FRAMES - this.gunSpinTimer) / GUN_SPIN_FRAMES));
                     const eased = spinT < 0.5 ? 2 * spinT * spinT : 1 - Math.pow(-2 * spinT + 2, 2) / 2; // easeInOutQuad
-                    const spinAngle = eased * Math.PI * 2 * 2; // 2 smooth turns
+                    const spinAngle = eased * Math.PI * 2 * 2; // 2 voltas completas e suaves
+                    // Rastro do giro (arco de motion-blur)
+                    ctx.save();
                     ctx.rotate(spinAngle);
-                    ctx.globalAlpha = 0.96 + 0.04 * Math.sin(spinT * Math.PI);
-                    ctx.shadowColor = 'rgba(255, 200, 80, 0.8)';
-                    ctx.shadowBlur = 16;
+                    const trail = 10;
+                    for (let t = 0; t < trail; t++) {
+                        const ta = -spinAngle * (t / trail) * 0.5;
+                        ctx.save();
+                        ctx.rotate(ta);
+                        ctx.globalAlpha = (0.18 * (1 - t / trail)) * (0.6 + 0.4 * Math.sin(spinT * Math.PI));
+                        ctx.fillStyle = '#fbbf24';
+                        ctx.shadowColor = 'rgba(251, 191, 36, 0.9)';
+                        ctx.shadowBlur = 14;
+                        ctx.beginPath();
+                        ctx.ellipse(6, 0, 12, 3.2, 0, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.restore();
+                    }
+                    ctx.restore();
+                    ctx.rotate(spinAngle);
+                    ctx.globalAlpha = 0.92 + 0.08 * Math.sin(spinT * Math.PI);
+                    ctx.shadowColor = 'rgba(255, 200, 80, 0.9)';
+                    ctx.shadowBlur = 20;
                 }
                 ctx.fillStyle = '#0f172a';
                 ctx.shadowColor = 'rgba(255,255,255,0.35)';
@@ -3720,8 +3686,22 @@ class Player {
                 ctx.arc(8.2, 0, 2.8, 0, Math.PI * 2);
                 ctx.fill();
 
+                // Piscar branco ao parar o giro (gunStopFlashTimer)
+                if (this.gunStopFlashTimer > 0) {
+                    const flash = 0.45 + 0.4 * Math.abs(Math.sin(performance.now() * 0.05));
+                    ctx.globalAlpha = flash;
+                    ctx.fillStyle = '#ffffff';
+                    ctx.shadowColor = 'rgba(255,255,255,0.6)';
+                    ctx.shadowBlur = 8;
+                    ctx.fillRect(-10, -5.5, 18, 11);
+                    ctx.fillRect(-10, -3.5, 8, 7);
+                    ctx.fillRect(8.8, -4, 7.2, 8);
+                    ctx.fillRect(12.4, -2.6, 3.4, 5.2);
+                    ctx.fillRect(4.2, -2.8, 4.4, 5.6);
+                    ctx.globalAlpha = 0.96;
+                }
                 // White flash blink while the gun is on cooldown (not spinning)
-                if (this.attackCooldown > 0 && this.gunSpinTimer <= 0) {
+                if (this.attackCooldown > 0 && this.gunSpinTimer <= 0 && this.gunStopFlashTimer <= 0) {
                     const blink = 0.3 + 0.35 * Math.abs(Math.sin(performance.now() * 0.012));
                     ctx.globalAlpha = blink;
                     ctx.fillStyle = '#ffffff';
@@ -4098,7 +4078,6 @@ class Player {
         this.attacking = false;
         this.meleeAttacking = false;
         this.coneAttacking = false;
-        chargePassives('onDash');
         return true;
     }
 
@@ -4166,21 +4145,6 @@ class Monster {
             this.chargeMissilesWarningTimer = 0;
             this.burstAttackWarningTimer = 0;
             this.shockwaveAttackWarningTimer = 0;
-            // Caster movement/teleport targets
-            this.patrolTarget = {
-                x: Math.random() * Math.max(1, gameWidth - 40) + 20,
-                y: Math.random() * Math.max(1, gameHeight - 40) + 20
-            };
-            // Teleport target: choose one of the four corners
-            const corners = [
-                { x: 50, y: 50 },
-                { x: gameWidth - 50, y: 50 },
-                { x: 50, y: gameHeight - 50 },
-                { x: gameWidth - 50, y: gameHeight - 50 }
-            ];
-            this.teleportTarget = corners[Math.floor(Math.random() * corners.length)];
-            this.reachedPatrol = false;
-            this.hasTeleported = false;
         } else if (this.type === 'swarm') {
             this.health = 41.25 + phase * 10;
             this.speed = 1.35 + phase * 0.175;
@@ -4209,11 +4173,19 @@ class Monster {
             this.patrolTimeout = 8 * 60; // 8 segundos em frames
             this.onFire = false; // estado ativado se demorar muito
             this.fireAttackBoost = 1.5; // 50% mais poder de ataque quando em chamas
+            this.patrolTarget = {
+                x: Math.random() * Math.max(1, gameWidth - 40) + 20,
+                y: Math.random() * Math.max(1, gameHeight - 40) + 20
+            };
+            const corners = [
+                { x: 50, y: 50 },
+                { x: gameWidth - 50, y: 50 },
+                { x: 50, y: gameHeight - 50 },
+                { x: gameWidth - 50, y: gameHeight - 50 }
+            ];
+            this.teleportTarget = corners[Math.floor(Math.random() * corners.length)];
             this.reachedPatrol = false;
-            this.sniperCooldown = 0;
-            this.sniperMode = false;
-            this.portalProjectiles = [];
-            this.portalLingerMode = false;
+            this.hasTeleported = false;
         } else if (this.type === 'smart') {
             this.health = 54 + phase * 14;
             this.speed = 1.2375 + phase * 0.11;
@@ -4263,7 +4235,7 @@ class Monster {
             this.simpleClawRange = this.attackRange * 3;
             this.speed = 1.45 + phase * 0.18;
         } else if (this.type === 'croc') {
-            this.health = 22.5 + phase * 4;
+            this.health = (22.5 + phase * 4) * 3;
             this.maxHealth = this.health;
             this.attackRange = 70;
             this.speed = 0;
@@ -4297,42 +4269,32 @@ class Monster {
             this.postConfusionRoar = false;
             this.hasRoaredThisEntry = false;
             this.lastRoarFrame = 0;
-            this.boulderAttackCooldown = 0;
-            this.boulderState = 'idle';
-            this.boulderMark = null;
-            this.boulderProjectile = null;
             this.crocDecoyX = this.x + this.width / 2;
             this.crocDecoyY = this.y + this.height / 2;
             this.crocDecoyAngle = Math.random() * Math.PI * 2;
             this.crocDecoyWanderTimer = 60 + Math.floor(Math.random() * 120);
             this.crocOffsetAngle = Math.random() * Math.PI * 2;
-            this.crocOffsetDist = 350 + Math.random() * 250;
+            this.crocOffsetDist = 60 + Math.random() * 80;
             this.x = Math.max(0, Math.min(gameWidth - this.width, this.crocDecoyX + Math.cos(this.crocOffsetAngle) * this.crocOffsetDist - this.width / 2));
             this.y = Math.max(0, Math.min(gameHeight - this.height, this.crocDecoyY + Math.sin(this.crocOffsetAngle) * this.crocOffsetDist - this.height / 2));
-            const fakeMarkerStart = getRandomPointInZone('upgrade', 0);
-            this.fakeMarkerX = fakeMarkerStart.x;
-            this.fakeMarkerY = fakeMarkerStart.y;
-            this.fakeMarkerTargetX = fakeMarkerStart.x;
-            this.fakeMarkerTargetY = fakeMarkerStart.y;
-            this.fakeMarkerAngle = Math.random() * Math.PI * 2;
-            this.fakeMarkerSpeed = 2.4 + Math.random() * 2.6;
-            this.fakeMarkerWanderTimer = 40 + Math.floor(Math.random() * 80);
-            this.fakeMarkerJitterTimer = 0;
-            this.fakeMarkerJitterAngle = 0;
-            this.fakeMarkerDashTimer = 0;
-            this.fakeMarkerDashCooldown = 60 + Math.floor(Math.random() * 120);
-            this.fakeMarkerDashVx = 0;
-            this.fakeMarkerDashVy = 0;
+            this.fakeMarkerX = this.crocDecoyX;
+            this.fakeMarkerY = this.crocDecoyY;
+            this.boulderAttackCooldown = 0;
+            this.boulderState = 'idle';
+            this.boulderMark = null;
+            this.boulderProjectile = null;
+            this.stalkingMode = true;
+            this.stalkingModeTimer = 300 + Math.floor(Math.random() * 1500);
+            this.stalkingModeExitTimer = 300 + Math.floor(Math.random() * 300);
+            this.stalkingModeCooldown = 0;
+            this.stalkingModeRadius = 1200 + Math.random() * 800;
+            this.stalkingModeAngle = Math.random() * Math.PI * 2;
+            this.stalkingModeSpeed = 0.015 + Math.random() * 0.01;
             this.biteAnimationTimer = 0;
             this.biteAnimationDuration = 20;
             this.isBiting = false;
             this.biteCooldown = 0;
             this.jawOpen = 0;
-            this.stalkingMode = true;
-            this.stalkingModeTimer = 300 + Math.floor(Math.random() * 1500);
-            this.stalkingModeRadius = 300 + Math.random() * 200;
-            this.stalkingModeAngle = Math.random() * Math.PI * 2;
-            this.stalkingModeSpeed = 0.015 + Math.random() * 0.01;
         } else {
             this.health = 56.25 + phase * 22.5;
             this.speed = 1.0875 + phase * 0.3625;
@@ -4350,13 +4312,6 @@ class Monster {
         this.deathTimer = 24;
         this.deathMaxTimer = 24;
         this.deathShards = [];
-        if (this.type === 'caster') {
-            this.portalLingerMode = false;
-            this.portalProjectiles = [];
-            this.portalWarningTimer = 0;
-            this.portalTimer = 0;
-            this.portalCooldown = 0;
-        }
         spawnMonsterDeathEffect(this);
 
         const centerX = this.x + this.width / 2;
@@ -4436,35 +4391,6 @@ class Monster {
             this.stunTimer--;
             if (this.type !== 'croc') {
                 return;
-            }
-        }
-
-        if ((this.freezeTimer || 0) > 0) {
-            this.freezeTimer--;
-            if (Math.random() < 0.12) {
-                spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#aaeeff', 6, 3);
-            }
-            return;
-        }
-
-        if ((this.mansionGhostCopyMark || 0) > 0) {
-            this.mansionGhostCopyMark--;
-            if (this.mansionGhostCopyMark <= 0) {
-                this.mansionGhostCopyDamageAmp = 0;
-            }
-        }
-
-        if ((this.avianMarkTimer || 0) > 0) {
-            this.avianMarkTimer--;
-            if (this.avianMarkTimer <= 0) {
-                this.avianMarkDamageBonus = 0;
-            }
-        }
-
-        if ((this.boneCurseTimer || 0) > 0) {
-            this.boneCurseTimer--;
-            if (this.boneCurseTimer <= 0) {
-                this.boneCurseDamageBonus = 0;
             }
         }
 
@@ -4771,7 +4697,6 @@ class Monster {
                         this.onFire = true;
                         // Aumentar muito a velocidade quando em chamas
                         this.speed = (this.speed || 0.5) * 6.0;
-                        this.fireAttackCooldown = 0;
                     }
                 }
 
@@ -4781,41 +4706,6 @@ class Monster {
                 } else {
                     this.reachedPatrol = true;
                 }
-            }
-
-            if (this.reachedPatrol) {
-                this.sniperMode = true;
-            }
-
-            if (this.sniperMode && this.sniperCooldown <= 0) {
-                const px = player.x + player.width / 2;
-                const py = player.y + player.height / 2;
-                const sx = this.x + this.width / 2;
-                const sy = this.y + this.height / 2;
-                const speed = 7 + this.phase * 0.3;
-                spawnMonsterProjectile(
-                    sx, sy,
-                    px, py,
-                    Math.max(2, Math.round(this.getAttackDamage() * 0.6)),
-                    '#ff3333',
-                    speed,
-                {
-                    monsterType: this.type,
-                    size: 10,
-                    style: 'casterSniper',
-                    homing: true,
-                    homingStrength: 0.04,
-                    homingDuration: 180,
-                    maxDistance: 5000,
-                    afterImageTrail: false,
-                    afterImageInterval: 0,
-                    offscreenLimit: 300
-                }
-                );
-                this.sniperCooldown = Math.max(45, 90 - this.phase * 5);
-            }
-            if (this.sniperCooldown > 0) {
-                this.sniperCooldown--;
             }
             
             const portalWarningDuration = 30; // 0.5 segundos
@@ -4893,7 +4783,7 @@ class Monster {
                             const angle = (Math.PI * 2 * i) / rayCount;
                             const targetX = this.portalX + Math.cos(angle) * 1200;
                             const targetY = this.portalY + Math.sin(angle) * 1200;
-                            const proj = spawnMonsterProjectile(
+                            spawnMonsterProjectile(
                                 this.portalX, this.portalY,
                                 targetX, targetY,
                                 Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)),
@@ -4901,7 +4791,6 @@ class Monster {
                                 4.5 + this.phase * 0.2,
                                 { monsterType: this.type, size: 16, style: 'casterFlameCircle', homing: false, afterImageTrail: false, afterImageInterval: 5 }
                             );
-                            if (proj) this.portalProjectiles.push(proj);
                         }
                     } else if (this.portalAttackMode === 'spiral') {
                         // Ataque em espiral de chamas
@@ -4912,7 +4801,7 @@ class Monster {
                             const angle = (Math.PI * 2 * i) / spiralCount + this.spiralProjectileCount * spiralSpacing;
                             const targetX = this.portalX + Math.cos(angle) * 1200;
                             const targetY = this.portalY + Math.sin(angle) * 1200;
-                            const proj = spawnMonsterProjectile(
+                            spawnMonsterProjectile(
                                 this.portalX, this.portalY,
                                 targetX, targetY,
                                 Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)),
@@ -4920,7 +4809,6 @@ class Monster {
                                 4.5 + this.phase * 0.2,
                                 { monsterType: this.type, size: 16, style: 'casterFlameSpiral', homing: false, afterImageTrail: false, afterImageInterval: 5 }
                             );
-                            if (proj) this.portalProjectiles.push(proj);
                         }
                         this.spiralProjectileCount++; // Incrementa para próxima rodada
                     } else if (this.portalAttackMode === 'ring' && this.portalTimer === portalActiveDuration) {
@@ -4932,21 +4820,11 @@ class Monster {
                     }
                 }
                 this.portalTimer--;
-                if (this.portalTimer === 0) {
-                    this.portalLingerMode = true;
-                    this.portalCooldown = 0;
+                    if (this.portalTimer === 0) {
+                    this.portalCooldown = portalIdleAfterActive;
                 }
             } else if (this.portalCooldown > 0) {
                 this.portalCooldown--;
-            }
-
-            if (this.portalLingerMode) {
-                this.portalProjectiles = this.portalProjectiles.filter(p => p && p.isAlive());
-                if (this.portalProjectiles.length === 0) {
-                    this.portalLingerMode = false;
-                    this.portalWarningTimer = 0;
-                    this.portalCooldown = Math.max(portalInterval - portalActiveDuration - portalWarningDuration, 0);
-                }
             }
         } else if (this.type === 'smart') {
             const predicted = getPredictedPlayerPosition(24);
@@ -4984,7 +4862,34 @@ class Monster {
             }
         } else if (this.type === 'simple') {
             if (this.simpleVariant === 'croc') {
-                this.boulderAttackCooldown = (this.boulderAttackCooldown || 0) - 1;
+                if (this.simpleDashPauseTimer > 0) {
+                    this.simpleDashPauseTimer--;
+                    this.attackCooldown = 1;
+                } else if (this.simpleDashTimer > 0) {
+                    this.x += this.simpleDashVx * ts;
+                    this.y += this.simpleDashVy * ts;
+                    this.simpleDashTimer--;
+                    if (this.simpleDashTimer <= 0) {
+                        this.simpleDashPauseTimer = 30;
+                        this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
+                        this.attackCooldown = 60;
+                    }
+                } else if (this.simpleDashCooldown > 0) {
+                    this.simpleDashCooldown--;
+                    this.attackCooldown = 1;
+                } else {
+                    let dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                    if (this.confusedTimer > 0) dashDir += Math.PI;
+                    this.simpleDashDirection = dashDir;
+                    this.simpleDashVx = Math.cos(dashDir) * this.simpleDashSpeed;
+                    this.simpleDashVy = Math.sin(dashDir) * this.simpleDashSpeed;
+                    this.simpleDashTimer = 12;
+                    this.attackCooldown = 0;
+                }
+                const targetOpen = this.simpleDashTimer > 0 ? 1 : 0;
+                this.simpleDashOpen += (targetOpen - this.simpleDashOpen) * 0.18;
+                this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
+                this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
             } else {
                 const approachSpeed = this.speed * 1.05 * ts;
 
@@ -5176,58 +5081,12 @@ class Monster {
                 this.boulderAttackCooldown--;
             }
 
-            if ((this.stalkingMode || !isOnScreen) && this.boulderAttackCooldown <= 0 && this.boulderState === 'idle' && !this.isBiting && this.biteCooldown <= 0) {
-                this.boulderState = 'warning';
-                this.boulderMark = {
-                    x: playerX + (Math.random() - 0.5) * 60,
-                    y: playerY + (Math.random() - 0.5) * 60,
-                    radius: 5,
-                    maxRadius: 50 + Math.random() * 20,
-                    growTimer: 0,
-                    growDuration: 90
-                };
-                boulderMarks.push(this.boulderMark);
-                this.boulderAttackCooldown = 180;
-            }
-
-            if (this.boulderState === 'warning' && this.boulderMark) {
-                this.boulderMark.growTimer++;
-                const progress = Math.min(1, this.boulderMark.growTimer / this.boulderMark.growDuration);
-                this.boulderMark.radius = this.boulderMark.maxRadius * progress;
-
-                if (progress >= 1) {
-                    const mark = this.boulderMark;
-                    const newProj = {
-                        x: this.x + this.width / 2,
-                        y: this.y + this.height / 2,
-                        startX: this.x + this.width / 2,
-                        startY: this.y + this.height / 2,
-                        targetX: mark.x,
-                        targetY: mark.y,
-                        travelTime: 28 + Math.random() * 10,
-                        elapsed: 0,
-                        arcHeight: 120 + Math.random() * 60,
-                        markRef: mark
-                    };
-                    boulderProjectiles.push(newProj);
-                    this.boulderProjectile = newProj;
-                    this.boulderState = 'active';
-                    this.boulderMark = null;
-                }
-            }
-
-            if (this.boulderState === 'active') {
-                const stillExists = boulderProjectiles.includes(this.boulderProjectile);
-                if (!stillExists) {
-                    this.boulderState = 'idle';
-                    this.boulderProjectile = null;
-                }
-            }
-
             if (this.stalkingMode) {
                 this.stalkingModeTimer--;
-                if (this.stalkingModeTimer <= 0) {
+                this.stalkingModeExitTimer--;
+                if (this.stalkingModeTimer <= 0 || this.stalkingModeExitTimer <= 0) {
                     this.stalkingMode = false;
+                    this.stalkingModeCooldown = 1800 + Math.floor(Math.random() * 1200);
                 } else {
                     this.stalkingModeAngle += this.stalkingModeSpeed * ts;
                     const targetX = playerX + Math.cos(this.stalkingModeAngle) * this.stalkingModeRadius;
@@ -5244,9 +5103,9 @@ class Monster {
 
                     if (isOnScreen && dist < 260) {
                         this.stalkingModeAngle += Math.PI * 0.02;
-                        this.stalkingModeRadius = Math.min(this.stalkingModeRadius + 0.5, 500);
+                        this.stalkingModeRadius = Math.min(this.stalkingModeRadius + 0.5, 2000);
                     } else if (!isOnScreen && dist > this.stalkingModeRadius + 120) {
-                        this.stalkingModeRadius = Math.max(this.stalkingModeRadius - 0.3, 300);
+                        this.stalkingModeRadius = Math.max(this.stalkingModeRadius - 0.3, 1200);
                     }
 
                     this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
@@ -5271,8 +5130,6 @@ class Monster {
                         if (this.roarTimer <= 0) {
                             this.roarQueued = false;
                             this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
-                            this.stalkingMode = true;
-                            this.stalkingModeTimer = 180 + Math.floor(Math.random() * 180);
                         }
                     } else if (this.stunTimer > 0) {
                         this.stunTimer--;
@@ -5293,8 +5150,6 @@ class Monster {
                             this.simpleDashPauseTimer = 20;
                             this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
                             this.attackCooldown = 60;
-                            this.stalkingMode = true;
-                            this.stalkingModeTimer = 180 + Math.floor(Math.random() * 180);
                         }
                     } else if (this.simpleDashCooldown > 0) {
                         this.simpleDashCooldown--;
@@ -5329,94 +5184,69 @@ class Monster {
                         }
                     }
                 }
+            } else if (this.stalkingModeCooldown > 0) {
+                this.stalkingModeCooldown--;
             }
 
-                return;
-            }
-
-        this.crocDecoyWanderTimer--;
-            if (this.crocDecoyWanderTimer <= 0) {
-                this.crocDecoyWanderTimer = 90 + Math.floor(Math.random() * 90);
-                this.crocDecoyAngle += (Math.random() - 0.5) * Math.PI * 0.8;
-            }
-
-            const decoySpeed = 2.5 * ts;
-            const nextDecoyX = this.crocDecoyX + Math.cos(this.crocDecoyAngle) * decoySpeed;
-            const nextDecoyY = this.crocDecoyY + Math.sin(this.crocDecoyAngle) * decoySpeed;
-            const decoyRect = { x: nextDecoyX - 16, y: nextDecoyY - 16, width: 32, height: 32 };
-            const decoyWallHit = mapWalls.some(wall => isRectOverlap(decoyRect.x, decoyRect.y, decoyRect.width, decoyRect.height, wall.x, wall.y, wall.width, wall.height));
-            if (!decoyWallHit) {
-                this.crocDecoyX = nextDecoyX;
-                this.crocDecoyY = nextDecoyY;
-            } else {
-                this.crocDecoyAngle += Math.PI * (0.5 + Math.random() * 0.5);
-            }
-            this.crocDecoyX = Math.max(40, Math.min(gameWidth - 40, this.crocDecoyX));
-            this.crocDecoyY = Math.max(40, Math.min(gameHeight - 40, this.crocDecoyY));
-
-            this.fakeMarkerX = this.crocDecoyX;
-            this.fakeMarkerY = this.crocDecoyY;
-
-            if (this.boulderAttackCooldown > 0) {
-                this.boulderAttackCooldown--;
-            }
-
-            if (!isOnScreen && this.boulderAttackCooldown <= 0 && this.boulderState === 'idle' && !this.isBiting && this.biteCooldown <= 0) {
-                this.boulderState = 'warning';
-                this.boulderMark = {
-                    x: playerX + (Math.random() - 0.5) * 60,
-                    y: playerY + (Math.random() - 0.5) * 60,
-                    radius: 5,
-                    maxRadius: 50 + Math.random() * 20,
-                    growTimer: 0,
-                    growDuration: 90
-                };
-                boulderMarks.push(this.boulderMark);
-                this.boulderAttackCooldown = 180;
-            }
-
-            if (this.boulderState === 'warning' && this.boulderMark) {
-                this.boulderMark.growTimer++;
-                const progress = Math.min(1, this.boulderMark.growTimer / this.boulderMark.growDuration);
-                this.boulderMark.radius = this.boulderMark.maxRadius * progress;
-
-                if (progress >= 1) {
-                    const mark = this.boulderMark;
-                    const newProj = {
-                        x: this.x + this.width / 2,
-                        y: this.y + this.height / 2,
-                        startX: this.x + this.width / 2,
-                        startY: this.y + this.height / 2,
-                        targetX: mark.x,
-                        targetY: mark.y,
-                        travelTime: 28 + Math.random() * 10,
-                        elapsed: 0,
-                        arcHeight: 120 + Math.random() * 60,
-                        markRef: mark
+            if (this.stalkingModeCooldown <= 0) {
+                if ((this.stalkingMode || !isOnScreen) && this.boulderAttackCooldown <= 0 && this.boulderState === 'idle' && !this.isBiting && this.biteCooldown <= 0) {
+                    const boulderCooldown = this.stalkingMode ? 540 : 180;
+                    this.boulderState = 'warning';
+                    this.boulderMark = {
+                        x: playerX + (Math.random() - 0.5) * 60,
+                        y: playerY + (Math.random() - 0.5) * 60,
+                        radius: 5,
+                        maxRadius: 50 + Math.random() * 20,
+                        growTimer: 0,
+                        growDuration: 90
                     };
-                    boulderProjectiles.push(newProj);
-                    this.boulderProjectile = newProj;
-                    this.boulderState = 'active';
-                    this.boulderMark = null;
+                    boulderMarks.push(this.boulderMark);
+                    this.boulderAttackCooldown = boulderCooldown;
                 }
-            }
 
-            if (this.boulderState === 'active') {
-                const stillExists = boulderProjectiles.includes(this.boulderProjectile);
-                if (!stillExists) {
-                    this.boulderState = 'idle';
-                    this.boulderProjectile = null;
+                if (this.boulderState === 'warning' && this.boulderMark) {
+                    this.boulderMark.growTimer++;
+                    const progress = Math.min(1, this.boulderMark.growTimer / this.boulderMark.growDuration);
+                    this.boulderMark.radius = this.boulderMark.maxRadius * progress;
+
+                    if (progress >= 1) {
+                        const mark = this.boulderMark;
+                        const newProj = {
+                            x: this.x + this.width / 2,
+                            y: this.y + this.height / 2,
+                            startX: this.x + this.width / 2,
+                            startY: this.y + this.height / 2,
+                            targetX: mark.x,
+                            targetY: mark.y,
+                            travelTime: 28 + Math.random() * 10,
+                            elapsed: 0,
+                            arcHeight: 120 + Math.random() * 60,
+                            markRef: mark
+                        };
+                        boulderProjectiles.push(newProj);
+                        this.boulderProjectile = newProj;
+                        this.boulderState = 'active';
+                        this.boulderMark = null;
+                    }
                 }
+
+                if (this.boulderState === 'active') {
+                    const stillExists = boulderProjectiles.includes(this.boulderProjectile);
+                    if (!stillExists) {
+                        this.boulderState = 'idle';
+                        this.boulderProjectile = null;
+                    }
+                }
+            } else {
+                this.boulderState = 'idle';
+                this.boulderMark = null;
+                this.boulderProjectile = null;
             }
 
             if (this.isBiting) {
                 this.biteAnimationTimer--;
                 const biteProgress = 1 - this.biteAnimationTimer / this.biteAnimationDuration;
-                if (biteProgress < 0.4) {
-                    this.jawOpen = biteProgress / 0.4;
-                } else {
-                    this.jawOpen = 1 - (biteProgress - 0.4) / 0.6;
-                }
+                this.jawOpen = biteProgress < 0.4 ? biteProgress / 0.4 : 1 - (biteProgress - 0.4) / 0.6;
                 if (this.biteAnimationTimer <= 0) {
                     this.isBiting = false;
                     this.jawOpen = 0;
@@ -5515,7 +5345,7 @@ class Monster {
                     this.y += (this.crocDecoyY - this.y) * 0.08;
                 }
             } else {
-                const shouldRoar = !this.roarQueued && !this.postConfusionRoar && !this.hasRoaredThisEntry && gameFrameCount - (this.lastRoarFrame || 0) >= 220;
+                const shouldRoar = !this.roarQueued && !this.postConfusionRoar && !this.hasRoaredThisEntry && isOnScreen && gameFrameCount - (this.lastRoarFrame || 0) >= 220;
                 if (shouldRoar) {
                     this.roarQueued = true;
                     this.roarTimer = 60;
@@ -5670,7 +5500,7 @@ class Monster {
                 const angle = (Math.PI * 2 / ringCount) * i + wave * 0.1;
                 const targetX = this.portalX + Math.cos(angle) * radius;
                 const targetY = this.portalY + Math.sin(angle) * radius;
-                projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 16, style: 'casterFlameRing', afterImageTrail: false });
+                projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 16, style: 'casterFlameRing' });
             }
 
             delayedProjectileSpawns.push({
@@ -5678,8 +5508,7 @@ class Monster {
                 kind: 'monsterRing',
                 srcX: this.portalX,
                 srcY: this.portalY,
-                projectiles: projectilesForWave,
-                casterRef: this
+                projectiles: projectilesForWave
             });
         }
     }
@@ -5693,7 +5522,7 @@ class Monster {
             const angle = baseAngle + spread;
             const targetX = srcX + Math.cos(angle) * 480;
             const targetY = srcY + Math.sin(angle) * 480;
-            const proj = spawnMonsterProjectile(
+            spawnMonsterProjectile(
                 srcX,
                 srcY,
                 targetX,
@@ -5709,11 +5538,9 @@ class Monster {
                     homingStrength: 0.05,
                     homingDuration: 140,
                     explodeOnExpire: true,
-                    explodeCount: 3,
-                    afterImageTrail: false
+                    explodeCount: 3
                 }
             );
-            if (proj) this.portalProjectiles.push(proj);
         }
         this.attackEffectTimer = 12;
     }
@@ -5751,9 +5578,7 @@ class Monster {
                 size: 16,
                 style: 'casterFlameVolley',
                 explodeOnExpire: true,
-                explodeCount: 3,
-                afterImageTrail: false,
-                casterRef: this
+                explodeCount: 3
             });
         }
 
@@ -5769,7 +5594,7 @@ class Monster {
         const fireBoost = this.onFire ? this.fireAttackBoost : 1;
 
         // choose attack mode
-        const modes = ['circular', 'spiral', 'ring', 'aim16', 'ember'];
+        const modes = ['circular', 'spiral', 'ring', 'aim16'];
         const mode = modes[Math.floor(Math.random() * modes.length)];
 
         if (mode === 'circular') {
@@ -5808,9 +5633,9 @@ class Monster {
                     const angle = (Math.PI * 2 / ringCount) * i + wave * 0.1;
                     const targetX = srcX + Math.cos(angle) * radius;
                     const targetY = srcY + Math.sin(angle) * radius;
-                    projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 16, style: 'casterFlameRing', explodeOnExpire: true, explodeCount: 4, afterImageTrail: false });
+                    projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 16, style: 'casterFlameRing', explodeOnExpire: true, explodeCount: 4 });
                 }
-                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterRing', srcX, srcY, projectiles: projectilesForWave, casterRef: this });
+                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterRing', srcX, srcY, projectiles: projectilesForWave });
             }
         } else if (mode === 'aim16') {
             const shots = 16;
@@ -5821,7 +5646,7 @@ class Monster {
                 const targetX = playerX + Math.cos(offset) * 27;
                 const targetY = playerY + Math.sin(offset) * 27;
                 const delay = i * framesPerShot;
-                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterAimed', srcX, srcY, targetX, targetY, damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64 * fireBoost)), color: this.confusedTimer > 0 ? '#ffd880' : '#ffb14a', speed, monsterType: this.type, size: 16, style: 'casterFlameVolley', explodeOnExpire: true, explodeCount: 3, afterImageTrail: false, casterRef: this });
+                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterAimed', srcX, srcY, targetX, targetY, damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64 * fireBoost)), color: this.confusedTimer > 0 ? '#ffd880' : '#ffb14a', speed, monsterType: this.type, size: 16, style: 'casterFlameVolley', explodeOnExpire: true, explodeCount: 3 });
             }
         }
     }
@@ -6259,78 +6084,6 @@ class Monster {
         ctx.fillStyle = overrideFillColor !== null ? overrideFillColor : gradient;
         ctx.shadowColor = strokeColor;
         ctx.shadowBlur = 26;
-
-        // Aura visual da marca do Avian Tracker
-        if (this.avianMarkTimer > 0 && this.avianMarkDamageBonus > 0) {
-            const markPulse = 0.85 + 0.2 * Math.sin(performance.now() * 0.04);
-            ctx.save();
-            ctx.globalAlpha = 0.35;
-            ctx.fillStyle = '#ff88cc';
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, radius * 1.25 * markPulse, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = '#ffaadd';
-            ctx.lineWidth = 2.5;
-            ctx.globalAlpha = 0.55;
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, radius * 1.35 * markPulse, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-        }
-
-        // Aura visual do eco fantasma da mansão
-        if ((this.mansionGhostCopyMark || 0) > 0) {
-            const ghostPulse = 0.7 + 0.35 * Math.sin(performance.now() * 0.05);
-            ctx.save();
-            ctx.globalAlpha = 0.3;
-            ctx.fillStyle = '#f4e2ff';
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, radius * 1.3 * ghostPulse, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = '#d4b8ff';
-            ctx.lineWidth = 2;
-            ctx.globalAlpha = 0.5;
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, radius * 1.4 * ghostPulse, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-        }
-
-        // Aura visual da maldição do Castle Bone
-        if (this.boneCurseTimer > 0 && this.boneCurseDamageBonus > 0) {
-            const cursePulse = 0.8 + 0.25 * Math.sin(performance.now() * 0.03);
-            ctx.save();
-            ctx.globalAlpha = 0.3;
-            ctx.fillStyle = '#ffaa44';
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, radius * 1.2 * cursePulse, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = '#ffcc66';
-            ctx.lineWidth = 2;
-            ctx.globalAlpha = 0.5;
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, radius * 1.3 * cursePulse, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-        }
-
-        // Aura visual de congelamento
-        if ((this.freezeTimer || 0) > 0) {
-            const freezePulse = 0.75 + 0.3 * Math.sin(performance.now() * 0.06);
-            ctx.save();
-            ctx.globalAlpha = 0.4;
-            ctx.fillStyle = '#aaeeff';
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, radius * 1.15 * freezePulse, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 2.5;
-            ctx.globalAlpha = 0.6;
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, radius * 1.25 * freezePulse, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-        }
 
         if (this.type === 'tank') {
             const tankRadius = Math.max(this.width, this.height) * 0.45;
@@ -7285,90 +7038,35 @@ class Monster {
         }
 
         if (this.type === 'caster') {
-            const isActive = this.portalWarningTimer > 0 || this.portalTimer > 0 || this.portalLingerMode;
-            if (!isActive) return;
-
-            const baseAlpha = this.portalLingerMode ? 0.55 : 1;
-            const radius = 44;
-            const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.004);
-            const rotation = performance.now() * 0.001;
-
             if (this.portalWarningTimer > 0) {
+                const warningRadius = 42;
                 const warningProgress = 1 - this.portalWarningTimer / 30;
-                const warningAlpha = baseAlpha * (0.6 + 0.4 * warningProgress);
 
-                ctx.save();
-                ctx.translate(this.portalX, this.portalY);
-                ctx.rotate(rotation);
-                ctx.strokeStyle = `rgba(0, 255, 255, ${warningAlpha})`;
-                ctx.lineWidth = 3;
-                for (let i = 0; i < 6; i++) {
-                    const a = (Math.PI * 2 / 6) * i;
-                    ctx.beginPath();
-                    ctx.arc(Math.cos(a) * radius, Math.sin(a) * radius, 5, 0, Math.PI * 2);
-                    ctx.stroke();
-                }
-                ctx.restore();
-
-                ctx.strokeStyle = `rgba(0, 255, 255, ${warningAlpha})`;
+                ctx.strokeStyle = 'rgba(0, 255, 255, 0.35)';
                 ctx.lineWidth = 4;
                 ctx.beginPath();
-                ctx.arc(this.portalX, this.portalY, radius, 0, Math.PI * 2);
+                ctx.arc(this.portalX, this.portalY, warningRadius, 0, Math.PI * 2);
                 ctx.stroke();
 
-                ctx.strokeStyle = `rgba(255, 255, 255, ${warningAlpha})`;
+                ctx.strokeStyle = 'rgba(0, 255, 255, 0.95)';
                 ctx.lineWidth = 3;
                 ctx.beginPath();
-                ctx.arc(this.portalX, this.portalY, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * warningProgress);
+                ctx.arc(this.portalX, this.portalY, warningRadius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * warningProgress);
                 ctx.stroke();
 
-                ctx.fillStyle = `rgba(255, 255, 255, ${warningAlpha})`;
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
                 ctx.font = 'bold 14px sans-serif';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.fillText((this.portalWarningTimer / 60).toFixed(1), this.portalX, this.portalY);
-            } else {
-                ctx.save();
-                ctx.translate(this.portalX, this.portalY);
-                ctx.rotate(rotation);
-
-                const glowGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
-                glowGrad.addColorStop(0, `rgba(0, 255, 255, ${0.35 * baseAlpha})`);
-                glowGrad.addColorStop(0.5, `rgba(0, 200, 255, ${0.15 * baseAlpha})`);
-                glowGrad.addColorStop(1, 'rgba(0, 255, 255, 0)');
-                ctx.fillStyle = glowGrad;
+            } else if (this.portalTimer > 0) {
+                ctx.fillStyle = 'rgba(0, 255, 255, 0.25)';
                 ctx.beginPath();
-                ctx.arc(0, 0, radius, 0, Math.PI * 2);
+                ctx.arc(this.portalX, this.portalY, 42, 0, Math.PI * 2);
                 ctx.fill();
-
-                ctx.strokeStyle = `rgba(0, 255, 255, ${0.9 * baseAlpha})`;
+                ctx.strokeStyle = '#00ffff';
                 ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.arc(0, 0, radius, 0, Math.PI * 2);
                 ctx.stroke();
-
-                ctx.strokeStyle = `rgba(255, 255, 255, ${0.6 * baseAlpha})`;
-                ctx.lineWidth = 1.5;
-                ctx.beginPath();
-                ctx.arc(0, 0, radius * 0.65, 0, Math.PI * 2);
-                ctx.stroke();
-
-                ctx.strokeStyle = `rgba(0, 255, 255, ${0.35 * baseAlpha})`;
-                ctx.lineWidth = 1;
-                for (let i = 0; i < 8; i++) {
-                    const a = (Math.PI * 2 / 8) * i;
-                    ctx.beginPath();
-                    ctx.moveTo(Math.cos(a) * radius * 0.3, Math.sin(a) * radius * 0.3);
-                    ctx.lineTo(Math.cos(a) * radius * 0.9, Math.sin(a) * radius * 0.9);
-                    ctx.stroke();
-                }
-
-                ctx.fillStyle = `rgba(255, 255, 255, ${0.9 * baseAlpha})`;
-                ctx.beginPath();
-                ctx.arc(0, 0, 4 + pulse * 3, 0, Math.PI * 2);
-                ctx.fill();
-
-                ctx.restore();
             }
         }
 
@@ -7492,25 +7190,14 @@ class Monster {
     }
 
     takeDamage(amount) {
-        let finalDamage = this.type === 'tank'
+        const finalDamage = this.type === 'tank'
             ? Math.max(0, amount * 0.85)
             : amount;
-        const ampSources = [];
-        if (this.mansionGhostCopyDamageAmp > 0 && !this.isDying) {
-            ampSources.push(this.mansionGhostCopyDamageAmp);
-        }
-        if (this.avianMarkDamageBonus > 0 && !this.isDying) {
-            ampSources.push(this.avianMarkDamageBonus);
-        }
-        if (this.boneCurseDamageBonus > 0 && !this.isDying) {
-            ampSources.push(this.boneCurseDamageBonus);
-        }
-        const totalAmp = ampSources.reduce((sum, v) => sum + v, 0);
-        if (totalAmp > 0) {
-            finalDamage = Math.round(finalDamage * (1 + totalAmp));
-        }
         this.health -= finalDamage;
         this.tookDamage = true;
+        if (this.health > 0 && !this.isDying) {
+            maybeSpawnMansionGhostCopy(this, finalDamage);
+        }
         return finalDamage;
     }
 }
@@ -7558,7 +7245,6 @@ let projectiles = [];
 let thrownExplosives = [];
 let fireZones = [];
 let grenadeFragments = [];
-let landmines = [];
 let critEffects = [];
 let sweatEffects = [];
 let evaporationEffects = [];
@@ -7601,13 +7287,16 @@ let cameraLockTarget = null;
 let roarFreezeTimer = 0;
 let afterImages = [];
 let accelParticles = [];
+// Controla o glow (shadowBlur) global dos projéteis/afterimages.
+// É desligado automaticamente quando há muitos projéteis na tela para manter o desempenho.
+let projectileGlowEnabled = true;
+const PROJECTILE_GLOW_DISABLE_THRESHOLD = 90;
 let weaponPickups = [];
 let weaponPickupSpawnCounter = 0;
 let monsterDeathEffects = [];
 let portalEffects = [];
 let machineGunEffects = [];
 let explosionEffects = [];
-let passiveImpactEffects = [];
 let trackerProjectiles = [];
 let ghostArmyUnlocked = false;
 let ghostArmyEntities = [];
@@ -8036,30 +7725,20 @@ function spawnCastleBoneOrbiters() {
 
     const centerX = player.x + player.width / 2;
     const centerY = player.y + player.height / 2;
-    const baseCount = 3;
-    const extraBones = Math.floor((player.baseDamage + player.weaponDamage) / 8);
-    const boneCount = Math.min(8, baseCount + extraBones);
+    const boneCount = 3;
     const baseAngle = Math.random() * Math.PI * 2;
-    const damageScaling = 1 + (player.castleBoneKills || 0) * 0.15;
 
     for (let i = 0; i < boneCount; i += 1) {
         const angle = baseAngle + (i / boneCount) * Math.PI * 2;
         player.castleBoneOrbiters.push({
             angle,
-            radius: 36 + i * 8 + Math.random() * 5,
-            orbitSpeed: 0.028 + Math.random() * 0.012,
-            size: 8 + Math.random() * 3,
-            spin: (Math.random() - 0.5) * 0.15,
+            radius: 34 + i * 7 + Math.random() * 4,
+            orbitSpeed: 0.024 + Math.random() * 0.008,
+            size: 7 + Math.random() * 2,
+            spin: (Math.random() - 0.5) * 0.12,
             hitCooldown: 0,
             x: centerX,
-            y: centerY,
-            damage: Math.round(10 * damageScaling),
-            explodeOnKill: true,
-            explosionRadius: 50,
-            explosionDamage: Math.round(6 * damageScaling),
-            curse: true,
-            curseDamageBonus: 0.2,
-            curseDuration: 300
+            y: centerY
         });
     }
 }
@@ -8083,7 +7762,6 @@ function updateCastleBoneOrbiters() {
                 if (enemy.isDying || bone.hitCooldown > 0) continue;
                 if (bone.x + boneHalf > enemy.x && bone.x - boneHalf < enemy.x + enemy.width && bone.y + boneHalf > enemy.y && bone.y - boneHalf < enemy.y + enemy.height) {
                     applyDamageToCastleEnemy(enemy, 10);
-                    spawnPassiveImpactEffect(bone.x, bone.y, 'boneCrack', '#aaaaaa', { maxRadius: 28, particleCount: 8, particleSpeed: 2, particleSize: 2.5, lineWidth: 2.5 });
                     bone.hitCooldown = 14;
                     break;
                 }
@@ -8092,14 +7770,8 @@ function updateCastleBoneOrbiters() {
             const mx = currentMonster.x + currentMonster.width / 2;
             const my = currentMonster.y + currentMonster.height / 2;
             if (Math.hypot(bone.x - mx, bone.y - my) <= (currentMonster.width + currentMonster.height) / 4 + boneHalf) {
-                const boneDamage = bone.damage || 10;
-                currentMonster.takeDamage(boneDamage);
-                spawnPassiveImpactEffect(bone.x, bone.y, 'boneCrack', '#aaaaaa', { maxRadius: 32, particleCount: 10, particleSpeed: 2.5, particleSize: 3, lineWidth: 3 });
-                bone.hitCooldown = 12;
-                if (bone.curse && !currentMonster.isDying) {
-                    currentMonster.boneCurseTimer = Math.max(currentMonster.boneCurseTimer || 0, bone.curseDuration || 300);
-                    currentMonster.boneCurseDamageBonus = Math.max(currentMonster.boneCurseDamageBonus || 0, bone.curseDamageBonus || 0.2);
-                }
+                currentMonster.takeDamage(10);
+                bone.hitCooldown = 14;
             }
         }
     }
@@ -8629,7 +8301,6 @@ function applyDamageToCastleEnemy(enemy, damage) {
     if (!enemy || enemy.isDying) return;
     enemy.health = Math.max(0, enemy.health - damage);
     enemy.flashTimer = 10;
-    enemy.impactShakeTimer = 12;
     if (enemy.health <= 0) {
         enemy.isDying = true;
         enemy.deathTimer = enemy.deathMaxTimer;
@@ -8640,20 +8311,17 @@ function applyDamageToCastleEnemy(enemy, damage) {
 function maybeSpawnMansionGhostCopy(target, originalDamage) {
     if (!player || !player.mansionGhostCopyUnlocked || !target || target.isDying) return false;
     if (typeof target.health !== 'number' || target.health <= 0) return false;
-    if (Math.random() >= (player.mansionGhostCopyChance || 0.45)) return false;
+    if (Math.random() >= (player.mansionGhostCopyChance || 0.33)) return false;
 
-    const ghostDamage = Math.max(1, Math.round((originalDamage || 0) * (player.mansionGhostCopyDamageRatio || 0.7)));
-    const stunFrames = Math.max(6, Math.round(player.mansionGhostCopyStunFrames || 32));
+    const ghostDamage = Math.max(1, Math.round((originalDamage || 0) * (player.mansionGhostCopyDamageRatio || 0.5)));
+    const stunFrames = Math.max(6, Math.round(player.mansionGhostCopyStunFrames || 24));
     const targetCenterX = (target.x || 0) + (target.width || 0) / 2;
     const targetCenterY = (target.y || 0) + (target.height || 0) / 2;
 
     target.health = Math.max(0, target.health - ghostDamage);
     target.tookDamage = true;
-    target.flashTimer = Math.max(target.flashTimer || 0, 18);
-    target.impactShakeTimer = 16;
+    target.flashTimer = Math.max(target.flashTimer || 0, 12);
     target.stunTimer = Math.max(target.stunTimer || 0, stunFrames);
-    target.mansionGhostCopyMark = Math.max(target.mansionGhostCopyMark || 0, 5);
-    target.mansionGhostCopyDamageAmp = Math.max(target.mansionGhostCopyDamageAmp || 0, 0.35);
 
     if (target.health <= 0) {
         target.isDying = true;
@@ -8661,47 +8329,19 @@ function maybeSpawnMansionGhostCopy(target, originalDamage) {
         spawnMonsterDeathEffect(target);
     }
 
-    screenShakeTimer = Math.max(screenShakeTimer, 8);
-    frameFreeze = Math.max(frameFreeze || 0, 3);
-    spawnEvaporationEffect(targetCenterX, targetCenterY, '#f7eaff', 24, 20);
+    spawnEvaporationEffect(targetCenterX, targetCenterY, '#f7eaff', 16, 12);
     spawnAfterImage({
         kind: 'monster',
-        x: targetCenterX - 16,
-        y: targetCenterY - 16,
-        width: 32,
-        height: 32,
-        life: 20,
-        maxLife: 20,
-        baseAlpha: 0.55,
+        x: targetCenterX - 12,
+        y: targetCenterY - 12,
+        width: 24,
+        height: 24,
+        life: 14,
+        maxLife: 14,
+        baseAlpha: 0.42,
         color: '#f4e2ff',
         type: target.type || 'ghost'
     });
-    spawnPassiveImpactEffect(targetCenterX, targetCenterY, 'ghostEcho', '#f4e2ff', { maxRadius: 45, particleCount: 16, particleSpeed: 2.5, particleSize: 4, lineWidth: 3 });
-
-    if (player.mansionGhostCopyChain && currentMonster && !currentMonster.isDying) {
-        const chainRadius = 220;
-        const mx = currentMonster.x + currentMonster.width / 2;
-        const my = currentMonster.y + currentMonster.height / 2;
-        const chainTargets = [];
-        for (const other of projectiles) {
-            if (other.owner === 'monster' && !other.isDying) {
-                const ox = other.x + other.width / 2;
-                const oy = other.y + other.height / 2;
-                if (Math.hypot(ox - mx, oy - my) <= chainRadius) {
-                    chainTargets.push({ x: ox, y: oy });
-                }
-            }
-        }
-        for (let c = 0; c < Math.min(3, chainTargets.length); c++) {
-            const ct = chainTargets[c];
-            spawnEvaporationEffect(ct.x, ct.y, '#f4e2ff', 12, 8);
-            spawnPassiveImpactEffect(ct.x, ct.y, 'ghostEcho', '#f4e2ff', { maxRadius: 28, particleCount: 8, particleSpeed: 2, particleSize: 2.5, lineWidth: 2 });
-        }
-        if (chainTargets.length > 0) {
-            frameFreeze = Math.max(frameFreeze || 0, 2);
-        }
-    }
-
     return true;
 }
 
@@ -8747,6 +8387,8 @@ function applyDamageToInteriorEnemy(enemy, damage) {
         enemy.isDying = true;
         enemy.deathTimer = enemy.deathMaxTimer;
         spawnMonsterDeathEffect(enemy);
+    } else {
+        maybeSpawnMansionGhostCopy(enemy, damage);
     }
 }
 
@@ -9259,6 +8901,20 @@ function drawPlayerAfterImage(effect) {
         ctx.restore();
         return;
     }
+    if (effect.variant === 'gunSpin') {
+        ctx.rotate(effect.angle || 0);
+        ctx.fillStyle = '#fbbf24';
+        ctx.shadowColor = 'rgba(251, 191, 36, 0.9)';
+        ctx.shadowBlur = 12;
+        ctx.fillRect(-10, -5.5, 18, 11);
+        ctx.fillRect(-10, -3.5, 8, 7);
+        ctx.fillStyle = '#fde68a';
+        ctx.fillRect(8.8, -4, 7.2, 8);
+        ctx.fillRect(12.4, -2.6, 3.4, 5.2);
+        ctx.fillRect(4.2, -2.8, 4.4, 5.6);
+        ctx.restore();
+        return;
+    }
     ctx.scale(1.7, 1.7);
     ctx.fillStyle = '#55ff7f';
     ctx.beginPath();
@@ -9296,8 +8952,11 @@ function drawProjectileAfterImage(effect) {
     const size = effect.size || 8;
     const color = effect.color || '#ffffff';
     ctx.fillStyle = color;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 14;
+    // Respeita o glow global: com muitos projéteis na tela, desliga o blur do afterimage também.
+    if (projectileGlowEnabled) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 14;
+    }
     ctx.beginPath();
     ctx.arc(effect.x, effect.y, size * 0.8, 0, Math.PI * 2);
     ctx.fill();
@@ -9384,7 +9043,7 @@ function spawnAmbientAnimal() {
         idleOffset: Math.random() * Math.PI * 2,
         driftX: (Math.random() - 0.5) * 0.12,
         driftY: (Math.random() - 0.5) * 0.12,
-        appearTimer: 18
+        appearTimer: 18 + Math.floor(Math.random() * 18)
     });
 }
 
@@ -9762,8 +9421,8 @@ function spawnMonsterHitscan(startX, startY, targetX, targetY, damage, color, th
 }
 
 const weapons = [
-    { name: 'Revolver 🔫', type: 'gun', color: '#ffff00', cooldown: 12, range: 50, damage: 4, speed: 50 },
-    { name: 'Arco 🏹', type: 'bow', color: '#00ff00', cooldown: 110, range: 37.5, damage: 18, speed: 65 },
+    { name: 'Revolver 🔫', type: 'gun', color: '#ffff00', cooldown: 12, range: 50, damage: 2, speed: 10 },
+    { name: 'Arco 🏹', type: 'bow', color: '#00ff00', cooldown: 110, range: 37.5, damage: 18, speed: 15 },
     { name: 'Varinha 🔮', type: 'staff', color: '#ff00ff', cooldown: 35, range: 25, damage: 22, speed: 0.75 },
     { name: 'Espada ⚔️', type: 'sword', color: '#ffaa00', cooldown: 0, range: 90, damage: 14 },
     { name: 'Granada & Bomba 💣', type: 'grenade', color: '#ff8c1a', cooldown: 26, range: 80, damage: 10 },
@@ -9794,7 +9453,7 @@ const EXTREME_CHANCE = 0.05;
 const weaponUpgradeOptions = {
     gun: [
         { name: 'Câmara Extra +4', effect: 'gunAmmoMax', value: 4, desc: 'Aumenta a capacidade de munição do revólver. Mais tiros antes de precisar recarregar.' },
-        { name: 'Rajada de Choque +1', effect: 'gunBurstFire', value: 1, desc: 'O revólver só dispara enquanto você gira a arma (recarregando). Cada nível adiciona um projétil extra à rajada durante o giro.' },
+        { name: 'Rajada de Choque +1', effect: 'gunBurstFire', value: 1, desc: 'Cada disparo do revólver também solta um projétil adicional em ângulo levemente variado, transformando o tiro em rajada.' },
         { name: 'Munição Explosiva', effect: 'gunExplosiveAmmo', value: 1, desc: 'Os projéteis detonam ao atingir o inimigo, causando dano extra em uma pequena área.' },
         { name: 'Pólvora Extra', effect: 'gunExtraPowder', value: 1, desc: 'Adiciona 20% mais dano, 20% mais recuo e 20% mais fumaça nos disparos do revólver.' }
     ],
@@ -9837,6 +9496,8 @@ const weaponUpgradeOptions = {
 // ===== EVENT LISTENERS =====
 document.addEventListener('keydown', (e) => {
     keys[e.key.toLowerCase()] = true;
+    const transitionLocked = isMonsterTransitionActive();
+
     if (e.key.toLowerCase() === 'o' && !isSelectingWeapon && !gameOver) {
         e.preventDefault();
         toggleDebugMenu();
@@ -9852,10 +9513,8 @@ document.addEventListener('keydown', (e) => {
         } else {
             passiveMenuMode = true;
             isDebugMenuOpen = true;
-            debugMenuTabIndex = 0;
             debugMenuUpgradeChoices = getPassiveMenuChoices();
             selectedDebugUpgradeIndex = 0;
-            selectedDebugActionIndex = 0;
             debugMenuQuantity = 1;
             debugMenuFlashTimer = 0;
             if (overlayCanvas) { overlayCanvas.style.display = 'block'; overlayCanvas.style.pointerEvents = 'auto'; resizeDebugOverlay(); }
@@ -9948,7 +9607,7 @@ document.addEventListener('keydown', (e) => {
             e.preventDefault();
             applyUpgrade(selectedUpgradeIndex);
         }
-    } else if (isMonsterTransitionActive()) {
+    } else if (transitionLocked) {
         // Ignorar ações de movimento e ataque durante a animação de morte/upgrade.
     } else {
         if (e.key === 'i') {
@@ -9959,6 +9618,8 @@ document.addEventListener('keydown', (e) => {
             createConstructionEntrancePortalsAroundPlayer();
         } else if (e.key === ' ') {
             e.preventDefault();
+            // Ignorar auto-repeat do teclado: segurar o botão não deve atacar repetidamente.
+            if (e.repeat) return;
             if (player && player.weapon && player.weapon.type === 'sword') {
                 player.performSwordDash();
             } else {
@@ -10054,23 +9715,6 @@ canvas.addEventListener('click', (e) => {
     }
 });
 
-canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-
-canvas.addEventListener('mousedown', (e) => {
-    if (e.button !== 2) return;
-    e.preventDefault();
-    if (!gameStarted || !player || !player.weapon) return;
-    if (isSelectingWeapon || isUpgrading || isMonsterTransitionActive()) return;
-    if (player.weapon.type === 'sword') {
-        player.performSwordDash();
-    } else if (player.weapon.type === 'grenade') {
-        attemptAttack('rightClick');
-    } else {
-        attemptAttack('space');
-    }
-});
-
-
 function applyCooldownBarBaseBackground() {
     try {
         const bar = document.getElementById('cooldownBar');
@@ -10133,31 +9777,6 @@ function selectWeapon(index) {
     initializeMapDecor();
 }
 
-function chargePassives(trigger = 'onHit') {
-    const shouldCharge = (flag, countKey, threshold) => {
-        if (!player[flag]) return false;
-        const passiveTrigger = getPassiveTrigger(player, flag);
-        if (passiveTrigger !== trigger) return false;
-        if (countKey) {
-            player[countKey] = (player[countKey] || 0) + 1;
-            if (player[countKey] >= threshold) {
-                player[countKey] = 0;
-                return true;
-            }
-        }
-        return false;
-    };
-
-    if (shouldCharge('shooterMachineGunUnlocked', 'shooterMachineGunCount', 4)) triggerShooterMachineGun();
-    if (shouldCharge('swarmNubeUnlocked', 'swarmNubeCount', 3)) triggerSwarmNube();
-    if (shouldCharge('casterPortalUnlocked', 'casterPortalCount', 5)) triggerCasterPortalBurst();
-    if (shouldCharge('avianTrackerUnlocked', 'avianTrackerCount', 5)) triggerAvianTracker();
-    if (shouldCharge('smartRicochetUnlocked', 'smartRicochetCount', 4)) triggerSmartRicochet();
-    if (shouldCharge('simpleExplosiveUnlocked', 'simpleExplosiveCount', 3)) triggerSimpleExplosive();
-    if (shouldCharge('crocFreezerUnlocked', 'crocFreezerCount', 4)) triggerCrocFreezer();
-    if (shouldCharge('tankImpulseUnlocked', 'tankImpulseCount', 5)) triggerTankImpulse();
-}
-
 function registerPlayerHit() {
     if (player.castleBoneUnlocked) {
         player.castleBoneHitCounter = (player.castleBoneHitCounter || 0) + 1;
@@ -10188,8 +9807,6 @@ function registerPlayerHit() {
     if (player.parryChargePerHit > 0 && player.parryCooldown === 0) {
         player.parryChargeAccumulator += player.parryChargePerHit;
     }
-
-    chargePassives();
 }
 
 function updateCooldownBar() {
@@ -10382,120 +9999,16 @@ function spawnGrenadeFragments(x, y) {
     }
 }
 
-function placeLandmine() {
-    const centerX = player.x + player.width / 2;
-    const centerY = player.y + player.height / 2;
-    const aim = typeof player.swordAimAngle === 'number' ? player.swordAimAngle : 0;
-    const offset = 44;
-    const x = centerX + Math.cos(aim) * offset;
-    const y = centerY + Math.sin(aim) * offset;
-    const weapon = player.weapon;
-    const baseDamage = (weapon.damage || 1) + (player.weaponDamage || 0) + (player.baseDamage || 0);
-    const damage = Math.max(1, Math.round(baseDamage * 2 * (player.damageOutputMultiplier || 1)));
-    landmines.push({
-        x,
-        y,
-        radius: 15,
-        armTimer: 16,
-        life: 25 * 60,
-        damage: damage
-    });
-    spawnBombThrowEffect(centerX, centerY, x, y);
-}
-
-function detonateLandmine(mine) {
-    spawnFireZone(mine.x, mine.y, { applyStun: true });
-    applyAreaDamageAt(mine.x, mine.y, 60, mine.damage);
-    spawnGrenadeFragments(mine.x, mine.y);
-    spawnEvaporationEffect(mine.x, mine.y, '#ff7a00', 18, 12);
-    spawnSmokeBurst(mine.x, mine.y, 60);
-    explosionEffects.push({
-        x: mine.x,
-        y: mine.y,
-        radius: 0,
-        maxRadius: 60,
-        life: 20,
-        maxLife: 20,
-        damage: mine.damage
-    });
-    screenShakeTimer = Math.max(screenShakeTimer, 20);
-    frameFreeze = Math.max(frameFreeze || 0, 4);
-    if (player) {
-        player.health -= mine.damage;
-        player.hitFlash = Math.max(player.hitFlash || 0, 1);
-    }
-}
-
-function updateLandmines() {
-    if (!player) return;
-    for (let i = landmines.length - 1; i >= 0; i--) {
-        const mine = landmines[i];
-        if (mine.armTimer > 0) {
-            mine.armTimer -= 1;
-        } else {
-            const px = player.x + player.width / 2;
-            const py = player.y + player.height / 2;
-            const reach = mine.radius + Math.max(player.width, player.height) * 0.5;
-            if (Math.hypot(px - mine.x, py - mine.y) <= reach) {
-                detonateLandmine(mine);
-                landmines.splice(i, 1);
-                continue;
-            }
-        }
-        mine.life -= 1;
-        if (mine.life <= 0) {
-            detonateLandmine(mine);
-            landmines.splice(i, 1);
-        }
-    }
-}
-
-function drawLandmines() {
-    for (const mine of landmines) {
-        ctx.save();
-        ctx.translate(mine.x, mine.y);
-        const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.01);
-        ctx.fillStyle = 'rgba(0,0,0,0.35)';
-        ctx.beginPath();
-        ctx.ellipse(0, mine.radius * 0.5, mine.radius * 1.1, mine.radius * 0.5, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = mine.armTimer > 0 ? 'rgba(120,120,130,0.95)' : 'rgba(40,40,48,0.98)';
-        ctx.beginPath();
-        ctx.arc(0, 0, mine.radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = 'rgba(70,70,80,0.98)';
-        for (let a = 0; a < 6; a++) {
-            const ang = (Math.PI * 2 / 6) * a;
-            ctx.beginPath();
-            ctx.moveTo(Math.cos(ang) * mine.radius, Math.sin(ang) * mine.radius);
-            ctx.lineTo(Math.cos(ang) * (mine.radius + 5), Math.sin(ang) * (mine.radius + 5));
-            ctx.lineTo(Math.cos(ang + 0.4) * mine.radius, Math.sin(ang + 0.4) * mine.radius);
-            ctx.closePath();
-            ctx.fill();
-        }
-        const lightColor = mine.armTimer > 0
-            ? 'rgba(180,180,180,0.9)'
-            : `rgba(255,${Math.round(60 + 120 * (1 - pulse))},0,${0.6 + 0.4 * pulse})`;
-        ctx.fillStyle = lightColor;
-        ctx.shadowColor = lightColor;
-        ctx.shadowBlur = mine.armTimer > 0 ? 0 : 10;
-        ctx.beginPath();
-        ctx.arc(0, 0, mine.radius * 0.4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-    }
-}
-
 function launchThrowingExplosive(attackType = 'bomb') {
     const startX = player.x + player.width / 2;
     const startY = player.y + player.height / 2;
     const targetX = mouseX + cameraX;
     const targetY = mouseY + cameraY;
     const baseTravelTime = attackType === 'bomb' ? 38 : 32;
-    const travelSpeedMultiplier = 1 + Math.max(0, player?.bombThrowSpeedBonus || 0) + Math.max(0, player?.projectileSpeedBonus || 0);
+    const travelSpeedMultiplier = 1 + Math.max(0, player?.bombThrowSpeedBonus || 0);
     const travelTime = Math.max(10, Math.round(baseTravelTime / travelSpeedMultiplier));
     const arcHeight = attackType === 'bomb' ? 180 : 150;
-
+    
     spawnBombThrowEffect(startX, startY, targetX, targetY);
 
     thrownExplosives.push({
@@ -10510,27 +10023,6 @@ function launchThrowingExplosive(attackType = 'bomb') {
         arcHeight,
         type: attackType
     });
-
-    const extraCount = Math.floor(Math.max(0, player?.extraProjectiles || 0));
-    const spread = player?.spreadProjectiles || 0;
-    for (let i = 0; i < extraCount; i++) {
-        const angleOffset = ((i + 1) * spread * 0.5) * (i % 2 === 0 ? 1 : -1);
-        const baseAngle = Math.atan2(targetY - startY, targetX - startX);
-        const tX = startX + Math.cos(baseAngle + angleOffset) * 400;
-        const tY = startY + Math.sin(baseAngle + angleOffset) * 400;
-        thrownExplosives.push({
-            x: startX,
-            y: startY,
-            startX,
-            startY,
-            targetX: tX,
-            targetY: tY,
-            travelTime,
-            elapsed: 0,
-            arcHeight,
-            type: attackType
-        });
-    }
 }
 
 function updateThrownExplosives() {
@@ -10551,24 +10043,6 @@ function updateThrownExplosives() {
                 spawnGrenadeFragments(projectile.targetX, projectile.targetY);
                 spawnEvaporationEffect(projectile.targetX, projectile.targetY, '#ff7a00', 18, 12);
                 spawnSmokeBurst(projectile.targetX, projectile.targetY, 20);
-            }
-            const lateCount = Math.floor(Math.max(0, player?.lateShots || 0));
-            for (let li = 0; li < lateCount; li++) {
-                delayedProjectileSpawns.push({
-                    kind: 'bombLateShot',
-                    timer: 20 + li * 12,
-                    srcX: projectile.targetX,
-                    srcY: projectile.targetY,
-                    targetX: projectile.targetX,
-                    targetY: projectile.targetY,
-                    damage: 0,
-                    color: projectile.type === 'bomb' ? '#ff8c1a' : '#ff7a00',
-                    size: 6,
-                    maxDistance: 0,
-                    style: 'bombLateShot',
-                    baseActualSpeed: 0,
-                    attackType: projectile.type
-                });
             }
             thrownExplosives.splice(i, 1);
         }
@@ -10750,15 +10224,19 @@ function drawBoulderProjectiles() {
     for (const proj of boulderProjectiles) {
         ctx.save();
         ctx.translate(proj.x, proj.y);
+        const progress = Math.min(1, proj.elapsed / proj.travelTime);
+        const targetRadius = proj.markRef ? proj.markRef.maxRadius : 50;
+        const startRadius = 6;
+        const currentRadius = startRadius + (targetRadius - startRadius) * progress;
         ctx.fillStyle = '#5a3d2b';
         ctx.shadowColor = '#3e2723';
         ctx.shadowBlur = 10;
         ctx.beginPath();
-        ctx.arc(0, 0, 12, 0, Math.PI * 2);
+        ctx.arc(0, 0, currentRadius, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = '#7d5a3c';
         ctx.beginPath();
-        ctx.arc(-3, -3, 4, 0, Math.PI * 2);
+        ctx.arc(-currentRadius * 0.25, -currentRadius * 0.25, currentRadius * 0.35, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
     }
@@ -10896,29 +10374,6 @@ function attemptAttack(source = 'mouse') {
                 const miniSpeed = ((player.weapon && player.weapon.speed) || 12) * 3;
                 const burstCount = player.staffChargeBurstCount || 5;
                 spawnStaffBurst(centerX, centerY, player.weapon.color || '#ff00ff', miniDamage, miniSpeed, burstCount);
-                const staffLateCount = Math.floor(Math.max(0, player.lateShots || 0));
-                if (staffLateCount > 0) {
-                    const staffCritRoll = Math.random() * 100;
-                    const staffTotalCritChance = player.critChance;
-                    const staffCritMultiplier = staffCritRoll < staffTotalCritChance ? 1 + player.critDamage : 1;
-                    const staffCritPercent = staffCritMultiplier > 1 ? player.critDamage : 0;
-                    for (let li = 0; li < staffLateCount; li++) {
-                        delayedProjectileSpawns.push({
-                            kind: 'lateShot',
-                            timer: 45 + li * 12,
-                            srcX: centerX,
-                            srcY: centerY,
-                            targetX: centerX + Math.cos(Math.random() * Math.PI * 2) * 300,
-                            targetY: centerY + Math.sin(Math.random() * Math.PI * 2) * 300,
-                            damage: miniDamage,
-                            color: player.weapon.color || '#ff00ff',
-                            speed: miniSpeed,
-                            style: 'staffOrb',
-                            maxDistance: 1100 * getPlayerInteriorScale(),
-                            critPercent: staffCritPercent
-                        });
-                    }
-                }
                 // limpar barra imediata
                 try { const fill = document.getElementById('cooldownBarFill'); if (fill) fill.style.width = `0%`; } catch (e) {}
             }
@@ -10928,14 +10383,7 @@ function attemptAttack(source = 'mouse') {
 
     const weapon = player.weapon;
     if (weapon.type === 'grenade') {
-        if (source === 'rightClick') {
-            const cooldownFrames = Math.max(60, (player.landmineCooldownMax || 12 * 60) - player.cooldownReduction);
-            if (player.landmineCooldown > 0) return;
-            placeLandmine();
-            player.landmineCooldown = cooldownFrames;
-            return;
-        }
-        const attackType = source === 'mouse' ? 'grenade' : 'bomb';
+        const attackType = source === 'space' ? 'bomb' : 'grenade';
         const cooldownFrames = 5 * 60;
         if (attackType === 'bomb') {
             if (player.bombCooldown > 0) return;
@@ -10973,11 +10421,13 @@ function attemptAttack(source = 'mouse') {
 
     if (player.stunTimer > 0) return;
 
-    // Gun recharging mechanic: a 0.8s cooldown between shots that the
-    // player can skip by trying to shoot again, which spins the gun for
-    // 0.35s; after the spin the player is allowed to shoot again.
-    const GUN_RECHARGE_FRAMES = 96; // 1.6s @ 60fps (base cooldown, 2x larger)
-    const GUN_SPIN_FRAMES = 21; // 0.35s @ 60fps (recharge spin animation)
+    // Mecânica de skill do revólver: entre tiros há 1.2s de espera.
+    // O jogador pode esperar, OU apertar ataque de novo para GIRAR (0.35s):
+    // o giro prepara um tiro turbinado (2x dano/velocidade/alcance) porém com
+    // mira pior. Esse tiro NÃO é automático — o jogador precisa apertar ataque
+    // outra vez para dispará-lo (segurar o botão não conta).
+    const GUN_RECHARGE_FRAMES = 72; // 1.2s @ 60fps (cooldown entre tiros normais)
+    const GUN_SPIN_FRAMES = 13; // ~0.22s @ 60fps (recharge spin animation, mais rápida)
     if (weapon.type === 'gun') {
         if (player.gunReloadCooldown > 0) return;
         if (player.gunAmmo <= 0) {
@@ -10985,6 +10435,16 @@ function attemptAttack(source = 'mouse') {
             return;
         }
         if (player.attackCooldown > 0) {
+            // Se o giro ainda está rolando: enfileira o disparo do jogador para
+            // acontecer assim que o giro terminar (evita perder o clique).
+            if (player.gunSpinTimer > 0) {
+                if (source !== 'spin') player.gunFireQueued = true;
+                return;
+            }
+            // Depois do giro, ainda há 0.5s de bloqueio antes de poder girar de novo.
+            if (player.gunSpinLockTimer > 0) {
+                return;
+            }
             // Recharge spin. Each consecutive spin performed without firing a
             // regular shot doubles the chance of "burning through" 4 bullets.
             if (player.gunRechargeBoost) {
@@ -10993,36 +10453,15 @@ function attemptAttack(source = 'mouse') {
                 player.gunSpinBurnChance = 0.05;
                 player.gunRechargeBoost = true;
             }
-            // Rajada de Choque: dispara um tiro ao começar o giro
+            // Rajada de Choque: solta `gunBurstFire` tiros no INÍCIO do giro
+            // e mais `gunBurstFire` tiros no FIM do giro (1 tiro por nível em cada ponta).
             if (player.gunBurstFire > 0) {
-                const preferred = getPreferredTarget();
-                const targetX = preferred.x;
-                const targetY = preferred.y;
-                const baseAngle = Math.atan2(targetY - (player.y + player.height / 2), targetX - (player.x + player.width / 2));
-                const weaponInfo = player.getWeaponMountPoint(baseAngle);
-                const baseWeaponDamage = weapon.damage + player.weaponDamage + player.baseDamage;
-                const critRoll = Math.random() * 100;
-                const totalCritChance = player.critChance;
-                const critMultiplier = critRoll < totalCritChance ? 1 + player.critDamage : 1;
-                const gunPowderMult = (1 + 0.2 * (player.gunExtraPowder || 0));
-                const burstDamage = Math.max(1, Math.round(baseWeaponDamage * critMultiplier * (player.damageOutputMultiplier || 1) * gunPowderMult));
-                const burstSpeed = (weapon.speed + player.projectileSpeedBonus) * getPlayerInteriorScale();
-                const burstRange = weapon.range * getPlayerInteriorScale();
-                for (let burstIndex = 0; burstIndex < player.gunBurstFire; burstIndex++) {
-                    const extraAngle = baseAngle + ((burstIndex + 1) - (player.gunBurstFire + 1) / 2) * 0.14;
-                    const burstTargetX = player.x + player.width / 2 + Math.cos(extraAngle) * burstRange * 0.9;
-                    const burstTargetY = player.y + player.height / 2 + Math.sin(extraAngle) * burstRange * 0.9;
-                    spawnPlayerProjectile(weaponInfo.tipX, weaponInfo.tipY, burstTargetX, burstTargetY, Math.max(1, Math.round(burstDamage * 0.75)), weapon.color, burstSpeed * 0.95, {
-                        critPercent: critMultiplier > 1 ? player.critDamage : 0,
-                        explosive: player.gunExplosiveAmmo > 0,
-                        isGunOriginal: false
-                    });
-                }
-                // Agendar o tiro da metade do cooldown
-                player.gunBurstMidpointTimer = Math.floor(GUN_SPIN_FRAMES / 2);
+                fireGunBurst(player.gunBurstFire);
+                player.gunBurstEndPending = true;
             }
             // Iniciar a animação de giro do revólver
             player.gunSpinTimer = GUN_SPIN_FRAMES;
+            player.gunFireQueued = false;
             // Skip most of the cooldown, leaving a short window to shoot
             // (or to spin again and stack the burn chance).
             player.attackCooldown = GUN_SPIN_FRAMES;
@@ -11132,9 +10571,14 @@ function attemptAttack(source = 'mouse') {
             let lastProjY = player.y + player.height / 2;
 
             for (let i = 0; i < shots; i++) {
-                // Tiros sem spin (revolver) são bem retos; com spin ou outras armas têm spread normal
-                const isGunNoSpin = weapon.type === 'gun' && player.gunSpinTimer === 0;
-                const spread = isGunNoSpin ? (Math.random() - 0.5) * 0.04 : (Math.random() - 0.5) * 0.2 * shots;
+                // Revólver: tiro normal é bem reto (0.04); o tiro turbinado pós-giro
+                // tem mira bem pior (0.28). Outras armas usam o spread padrão.
+                let spread;
+                if (weapon.type === 'gun') {
+                    spread = gunRechargeBoosted ? (Math.random() - 0.5) * 0.45 : (Math.random() - 0.5) * 0.04;
+                } else {
+                    spread = (Math.random() - 0.5) * 0.2 * shots;
+                }
                 const angle = baseAngle + spread;
                 const projTargetX = player.x + player.width / 2 + Math.cos(angle) * effectiveRange;
                 const projTargetY = player.y + player.height / 2 + Math.sin(angle) * effectiveRange;
@@ -11144,6 +10588,9 @@ function attemptAttack(source = 'mouse') {
                     isPlayerOriginal: i === 0,
                     explosive: weapon.type === 'gun' && player.gunExplosiveAmmo > 0,
                     maxDistance: gunRechargeBoosted ? 1960 : undefined,
+                    style: (weapon.type === 'gun' && gunRechargeBoosted) ? 'gunBulletBoosted' : undefined,
+                    afterImageTrail: (weapon.type === 'gun' && gunRechargeBoosted),
+                    afterImageInterval: 2,
                 };
                 // Smoke + kickback only for the "original" revolver shot
                 if (projOpts && projOpts.isGunOriginal) {
@@ -11153,15 +10600,15 @@ function attemptAttack(source = 'mouse') {
                         // Extra smoke from Pólvora Extra
                         const smokeCount = Math.round(5 * powderMult);
                         for (let si = 0; si < smokeCount; si++) {
-                            const spread = (Math.random() - 0.5) * 0.6;
-                            const dir = recoilAngle + spread;
-                            const speed = 0.4 + Math.random() * 0.9;
+                            const smokeSpread = (Math.random() - 0.5) * 0.6;
+                            const dir = recoilAngle + smokeSpread;
+                            const smokeSpeed = 0.4 + Math.random() * 0.9;
                             const gray = 70 + Math.floor(Math.random() * 30);
                             evaporationEffects.push({
                                 x: weaponInfo.tipX + Math.cos(recoilAngle) * (2 + Math.random() * 2),
                                 y: weaponInfo.tipY + Math.sin(recoilAngle) * (2 + Math.random() * 2),
-                                vx: Math.cos(dir) * speed,
-                                vy: Math.sin(dir) * speed - 0.4 - Math.random() * 0.3,
+                                vx: Math.cos(dir) * smokeSpeed,
+                                vy: Math.sin(dir) * smokeSpeed - 0.4 - Math.random() * 0.3,
                                 life: 22 + Math.floor(Math.random() * 8),
                                 alpha: 0.5,
                                 size: 3 + Math.random() * 3,
@@ -11170,46 +10617,20 @@ function attemptAttack(source = 'mouse') {
                             });
                         }
 
-                        const recoilStrength = 10 * powderMult;
+                        const recoilStrength = 10 * powderMult * (gunRechargeBoosted ? 2.2 : 1);
                         player.kickbackVX = Math.cos(recoilAngle) * recoilStrength;
                         player.kickbackVY = Math.sin(recoilAngle) * recoilStrength;
                         player.kickbackTimer = 4;
 
-                        screenShakeTimer = Math.max(screenShakeTimer || 0, 7);
+                        screenShakeTimer = Math.max(screenShakeTimer || 0, gunRechargeBoosted ? 14 : 7);
                     } catch (e) {}
                 }
 
                 spawnPlayerProjectile(weaponInfo.tipX, weaponInfo.tipY, projTargetX, projTargetY, attackDamage, weapon.color, speed, projOpts);
             }
 
-            const lateCount = Math.floor(Math.max(0, player.lateShots || 0));
-            if (lateCount > 0) {
-                const startX = player.x + player.width / 2;
-                const startY = player.y + player.height / 2;
-                const lateStyle = getPlayerProjectileStyle(weapon.type);
-                for (let li = 0; li < lateCount; li++) {
-                    const lateAngle = baseAngle + (Math.random() - 0.5) * 0.35;
-                    const lateTargetX = startX + Math.cos(lateAngle) * effectiveRange;
-                    const lateTargetY = startY + Math.sin(lateAngle) * effectiveRange;
-                    delayedProjectileSpawns.push({
-                        kind: 'lateShot',
-                        timer: 45 + li * 12,
-                        srcX: startX,
-                        srcY: startY,
-                        targetX: lateTargetX,
-                        targetY: lateTargetY,
-                        damage: attackDamage,
-                        color: weapon.color,
-                        speed: speed,
-                        style: lateStyle,
-                        maxDistance: effectiveRange,
-                        critPercent: critPercent
-                    });
-                }
-            }
-
             if (weapon.type === 'gun') {
-                // Gun uses a fixed 1.6s recharging cooldown between shots
+                // Gun uses a fixed recharging cooldown between shots
                 player.attackCooldown = GUN_RECHARGE_FRAMES;
             } else {
                 player.attackCooldown = Math.max(1, cooldown - Math.round(cooldown * player.attackSpeed));
@@ -11229,11 +10650,14 @@ function attemptAttack(source = 'mouse') {
                     player.gunReloadCooldown = player.gunReloadCooldownMax;
                 }
                 spawnGunMuzzleSmoke(weaponInfo.tipX, weaponInfo.tipY, baseAngle, player.gunExtraPowder || 0);
-                const kickbackPower = 6 * (1 + 0.2 * (player.gunExtraPowder || 0));
+                const kickbackPower = 6 * (1 + 0.2 * (player.gunExtraPowder || 0)) * (gunRechargeBoosted ? 2.2 : 1);
                 player.kickbackVX = -Math.cos(baseAngle) * kickbackPower;
                 player.kickbackVY = -Math.sin(baseAngle) * kickbackPower;
                 player.gunRechargeBoost = false;
                 player.gunSpinBurnChance = 0;
+                // Um disparo real limpa o bloqueio de giro e a fila de disparo.
+                player.gunSpinLockTimer = 0;
+                player.gunFireQueued = false;
             }
 
             if (player.spinAttackLevel > 1 && player.spinAttackCharges > 0) {
@@ -11616,9 +11040,6 @@ function updateProjectiles() {
 
         if (!projectiles[i].isAlive()) {
             const p = projectiles[i];
-            if (p.owner === 'monster' && (p.monsterType === 'caster' || p.style === 'casterFlameCircle' || p.style === 'casterFlameSpiral' || p.style === 'casterFlameRing' || p.style === 'casterFlameVolley' || p.style === 'casterBurst' || p.style === 'casterShard') && p.explodeOnExpire && !p._casterBurstTriggered) {
-                spawnCasterProjectileBurst(p);
-            }
             if (p.style === 'tornadoHurricane') {
                 player.hurricaneCooldown = player.hurricaneCooldownMax || 360;
             }
@@ -11722,8 +11143,6 @@ function updateProjectiles() {
                     }
                     registerPlayerHit();
                     if (didCrit) {
-                        chargePassives('onCrit');
-                        player._ghostCopyFrame = gameFrameCount;
                         critEffects.push({
                             x: enemy.x + enemy.width / 2,
                             y: enemy.y - 20,
@@ -11739,12 +11158,6 @@ function updateProjectiles() {
                             text: `⭐ +${Math.round(p.critPercent * 100)}%`,
                             rise: 0
                         });
-                    }
-                    if (p.pierce) {
-                        p.pierceRemaining = Math.max(0, (p.pierceRemaining || 1) - 1);
-                        if (p.pierceRemaining > 0) {
-                            continue;
-                        }
                     }
                     projectiles.splice(i, 1);
                 }
@@ -11778,16 +11191,9 @@ function updateProjectiles() {
 
                     currentMonster.takeDamage(finalDamage);
                     
-                    if (p.owner === 'monster' && (p.monsterType === 'caster' || p.style === 'casterFlameCircle' || p.style === 'casterFlameSpiral' || p.style === 'casterFlameRing' || p.style === 'casterFlameVolley' || p.style === 'casterBurst' || p.style === 'casterShard') && !p._casterBurstTriggered) {
-                        spawnCasterProjectileBurst(p);
-                    }
-                    
                     // Apply special projectile effects
                     if (p.ricochet && p.ricochetCount > 0) {
                         p.ricochetCount--;
-                        if (p.ricochetDamageScale && p.ricochetDamageScale !== 1) {
-                            p.damage = Math.round(p.damage * p.ricochetDamageScale);
-                        }
                         const wallOffsets = [{x: 1, y: 0}, {x: -1, y: 0}, {x: 0, y: 1}, {x: 0, y: -1}];
                         const randomWall = wallOffsets[Math.floor(Math.random() * wallOffsets.length)];
                         p.vx = randomWall.x * Math.abs(p.vx);
@@ -11798,111 +11204,21 @@ function updateProjectiles() {
                     if (p.explosive && p.explosiveRadius) {
                         const explosionX = currentMonster.x + currentMonster.width / 2;
                         const explosionY = currentMonster.y + currentMonster.height / 2;
-                        spawnEvaporationEffect(explosionX, explosionY, '#ff6644', 28, 24);
+                        spawnEvaporationEffect(explosionX, explosionY, '#ff6644', 24, 20);
                         explosionEffects.push({
                             x: explosionX,
                             y: explosionY,
                             radius: 0,
                             maxRadius: p.explosiveRadius,
-                            life: 14,
-                            maxLife: 14,
-                            damage: Math.round(finalDamage * 0.7),
-                            burn: p.burn || false,
-                            burnDamage: p.burnDamage || 0,
-                            burnDuration: p.burnDuration || 0,
-                            secondary: p.secondaryExplosion || false,
-                            secondaryRadius: p.secondaryRadius || 0,
-                            secondaryDamage: p.secondaryDamage || 0
+                            life: 12,
+                            maxLife: 12,
+                            damage: Math.round(finalDamage * 0.6)
                         });
-                        if (p.burn && p.burnDamage > 0 && currentMonster) {
-                            applyBurnToTarget(currentMonster, p.burnDamage, (p.burnDuration || 180) / 60);
-                        }
-                        if (p.secondaryExplosion && p.secondaryRadius > 0 && currentMonster && currentMonster.health <= 0 && !currentMonster.isDying) {
-                            const sx = currentMonster.x + currentMonster.width / 2;
-                            const sy = currentMonster.y + currentMonster.height / 2;
-                            spawnEvaporationEffect(sx, sy, '#ff8855', 20, 14);
-                            explosionEffects.push({
-                                x: sx,
-                                y: sy,
-                                radius: 0,
-                                maxRadius: p.secondaryRadius,
-                                life: 10,
-                                maxLife: 10,
-                                damage: p.secondaryDamage || 0,
-                                burn: true,
-                                burnDamage: Math.round((p.secondaryDamage || 0) * 0.3),
-                                burnDuration: 120
-                            });
-                        }
-                    }
-                    
-                    if (p.chainLightningOnFinalBounce && p.ricochetCount <= 0 && currentMonster) {
-                        const chainRadius = p.chainLightningRadius || 160;
-                        const chainDamage = p.chainLightningDamage || Math.round(finalDamage * 0.8);
-                        const mx = currentMonster.x + currentMonster.width / 2;
-                        const my = currentMonster.y + currentMonster.height / 2;
-                        const targets = [];
-                        if (currentMonster.health > 0 && !currentMonster.isDying) {
-                            targets.push({ x: mx, y: my, damage: chainDamage });
-                        }
-                        for (const other of projectiles) {
-                            if (other === p || other.owner !== 'monster' || other.isDying) continue;
-                            const ox = other.x + other.width / 2;
-                            const oy = other.y + other.height / 2;
-                            if (Math.hypot(ox - mx, oy - my) <= chainRadius) {
-                                targets.push({ x: ox, y: oy, damage: Math.round(chainDamage * 0.5) });
-                            }
-                        }
-                        for (const t of targets) {
-                            spawnEvaporationEffect(t.x, t.y, '#aaffaa', 10, 6);
-                            if (t !== targets[0]) {
-                                screenShakeTimer = Math.max(screenShakeTimer, 4);
-                            }
-                        }
-                        if (targets.length > 1) {
-                            frameFreeze = Math.max(frameFreeze || 0, 3);
-                        }
                     }
                     
                     if (p.freezer && p.freezeDuration) {
-                        currentMonster.freezeTimer = Math.max(currentMonster.freezeTimer || 0, p.freezeDuration);
-                        currentMonster.frozenByPassive = true;
-                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#55ddff', 24, 16);
-                        screenShakeTimer = Math.max(screenShakeTimer, 6);
-                        frameFreeze = Math.max(frameFreeze || 0, 2);
-                        if (p.iceShards && p.iceShardCount > 0) {
-                            const cx = currentMonster.x + currentMonster.width / 2;
-                            const cy = currentMonster.y + currentMonster.height / 2;
-                            for (let s = 0; s < p.iceShardCount; s++) {
-                                const sAngle = Math.random() * Math.PI * 2;
-                                const sDist = 20 + Math.random() * (p.iceShardRadius || 100);
-                                const sx = cx + Math.cos(sAngle) * sDist;
-                                const sy = cy + Math.sin(sAngle) * sDist;
-                                spawnPlayerProjectile(cx, cy, sx, sy, p.iceShardDamage || 2, '#aaeeff', 6, {
-                                    style: 'gunBullet',
-                                    size: 5,
-                                    maxDistance: 200,
-                                    explosive: false,
-                                    freezer: false,
-                                    pierce: false
-                                });
-                            }
-                        }
-                        if (p.frostExplosion && p.frostExplosionRadius > 0) {
-                            const fex = currentMonster.x + currentMonster.width / 2;
-                            const fey = currentMonster.y + currentMonster.height / 2;
-                            explosionEffects.push({
-                                x: fex,
-                                y: fey,
-                                radius: 0,
-                                maxRadius: p.frostExplosionRadius,
-                                life: 16,
-                                maxLife: 16,
-                                damage: p.frostExplosionDamage || 0,
-                                frost: true,
-                                freezeDuration: 30
-                            });
-                        }
+                        currentMonster.freezeTimer = (currentMonster.freezeTimer || 0) + p.freezeDuration;
+                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#55ddff', 18, 12);
                     }
                     
                     if (p.knockback && p.knockbackPower) {
@@ -11910,27 +11226,7 @@ function updateProjectiles() {
                         const knockY = Math.sin(Math.atan2(currentMonster.y - p.y, currentMonster.x - p.x)) * p.knockbackPower;
                         currentMonster.vx = (currentMonster.vx || 0) + knockX;
                         currentMonster.vy = (currentMonster.vy || 0) + knockY;
-                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#ff3333', 26, 18);
-                        if (p.stun && p.stunDuration > 0) {
-                            currentMonster.stunTimer = Math.max(currentMonster.stunTimer || 0, p.stunDuration);
-                        }
-                        if (p.shockwave && p.shockwaveRadius > 0) {
-                            const swX = currentMonster.x + currentMonster.width / 2;
-                            const swY = currentMonster.y + currentMonster.height / 2;
-                            explosionEffects.push({
-                                x: swX,
-                                y: swY,
-                                radius: 0,
-                                maxRadius: p.shockwaveRadius,
-                                life: 12,
-                                maxLife: 12,
-                                damage: p.shockwaveDamage || 0,
-                                shockwave: true,
-                                chainStun: p.chainStun || false,
-                                chainStunRadius: p.chainStunRadius || 0,
-                                chainStunDuration: p.chainStunDuration || 0
-                            });
-                        }
+                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#ff3333', 22, 14);
                     }
                     
                     if (p.parried && player.parryHealOnUse > 0) {
@@ -11972,12 +11268,75 @@ function updateProjectiles() {
                             player.gunReloadInvulnCharges = 0;
                             player.gunReloadFlashTicker = 0;
                             updateCooldownBar();
-                            chargePassives('onReload');
                         }
                     }
-                    // All monster-based passives
-                    if (p.isPlayerOriginal && !p._monsterPassiveTracked) {
+                    // All monster-based gun passives
+                    if (p.style === 'gunBullet' && player.weapon && player.weapon.type === 'gun' && !p._monsterPassiveTracked) {
                         p._monsterPassiveTracked = true;
+
+                        if (player.shooterMachineGunUnlocked) {
+                            player.shooterMachineGunCount = (player.shooterMachineGunCount || 0) + 1;
+                            if (player.shooterMachineGunCount >= 4) {
+                                player.shooterMachineGunCount = 0;
+                                triggerShooterMachineGun();
+                            }
+                        }
+
+                        if (player.swarmNubeUnlocked) {
+                            player.swarmNubeCount = (player.swarmNubeCount || 0) + 1;
+                            if (player.swarmNubeCount >= 3) {
+                                player.swarmNubeCount = 0;
+                                triggerSwarmNube();
+                            }
+                        }
+
+                        if (player.casterPortalUnlocked) {
+                            player.casterPortalCount = (player.casterPortalCount || 0) + 1;
+                            if (player.casterPortalCount >= 5) {
+                                player.casterPortalCount = 0;
+                                triggerCasterPortalBurst();
+                            }
+                        }
+
+                        if (player.avianTrackerUnlocked) {
+                            player.avianTrackerCount = (player.avianTrackerCount || 0) + 1;
+                            if (player.avianTrackerCount >= 5) {
+                                player.avianTrackerCount = 0;
+                                triggerAvianTracker();
+                            }
+                        }
+
+                        if (player.smartRicochetUnlocked) {
+                            player.smartRicochetCount = (player.smartRicochetCount || 0) + 1;
+                            if (player.smartRicochetCount >= 4) {
+                                player.smartRicochetCount = 0;
+                                triggerSmartRicochet();
+                            }
+                        }
+
+                        if (player.simpleExplosiveUnlocked) {
+                            player.simpleExplosiveCount = (player.simpleExplosiveCount || 0) + 1;
+                            if (player.simpleExplosiveCount >= 3) {
+                                player.simpleExplosiveCount = 0;
+                                triggerSimpleExplosive();
+                            }
+                        }
+
+                        if (player.crocFreezerUnlocked) {
+                            player.crocFreezerCount = (player.crocFreezerCount || 0) + 1;
+                            if (player.crocFreezerCount >= 4) {
+                                player.crocFreezerCount = 0;
+                                triggerCrocFreezer();
+                            }
+                        }
+
+                        if (player.tankImpulseUnlocked) {
+                            player.tankImpulseCount = (player.tankImpulseCount || 0) + 1;
+                            if (player.tankImpulseCount >= 5) {
+                                player.tankImpulseCount = 0;
+                                triggerTankImpulse();
+                            }
+                        }
                     }
                     // preserve lance hit flag
                     if (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') p.hitTarget = true;
@@ -11996,18 +11355,8 @@ function updateProjectiles() {
                         }
                     }
                     
-                    if (p.pierce) {
-                        p.pierceRemaining = Math.max(0, (p.pierceRemaining || 1) - 1);
-                        if (p.pierceRemaining > 0) {
-                            p._monsterPassiveTracked = false;
-                            continue;
-                        }
-                    }
-                    
                     projectiles.splice(i, 1);
                         if (didCrit) {
-                            chargePassives('onCrit');
-                            player._ghostCopyFrame = gameFrameCount;
                             critEffects.push({
                                 x: currentMonster.x + currentMonster.width / 2,
                                 y: currentMonster.y - 20,
@@ -12095,7 +11444,6 @@ function updateProjectiles() {
                         effectiveDamage *= (1 - player.parryDefenseBonus / 100);
                     }
                     player.health -= effectiveDamage;
-                    chargePassives('onTakeDamage');
                     if (p.owner === 'monster') {
                         const projectileMonsterType = p.monsterType || currentMonster?.type || '';
                         if (projectileMonsterType === 'simple') {
@@ -12130,7 +11478,7 @@ function updateProjectiles() {
             if (req.kind === 'monsterRing') {
                 for (let pj = 0; pj < req.projectiles.length; pj++) {
                     const p = req.projectiles[pj];
-                    const proj = spawnMonsterProjectile(
+                    spawnMonsterProjectile(
                         req.srcX,
                         req.srcY,
                         p.targetX,
@@ -12138,18 +11486,15 @@ function updateProjectiles() {
                         p.damage,
                         p.color,
                         p.speed,
-                        { monsterType: currentMonster ? currentMonster.type : '', size: p.size || 8, style: p.style, afterImageTrail: p.afterImageTrail }
+                        { monsterType: currentMonster ? currentMonster.type : '', size: p.size || 8, style: p.style }
                     );
-                    if (proj && req.casterRef && req.casterRef.portalProjectiles) {
-                        req.casterRef.portalProjectiles.push(proj);
-                    }
                 }
                 delayedProjectileSpawns.splice(i, 1);
                 continue;
             }
 
             if (req.kind === 'monsterAimed') {
-                const proj = spawnMonsterProjectile(
+                spawnMonsterProjectile(
                     req.srcX,
                     req.srcY,
                     req.targetX,
@@ -12157,61 +11502,8 @@ function updateProjectiles() {
                     req.damage,
                     req.color,
                     req.speed,
-                    { monsterType: req.monsterType || (currentMonster ? currentMonster.type : ''), size: req.size || 9, style: req.style, afterImageTrail: req.afterImageTrail }
+                    { monsterType: req.monsterType || (currentMonster ? currentMonster.type : ''), size: req.size || 9, style: req.style }
                 );
-                if (proj && req.casterRef && req.casterRef.portalProjectiles) {
-                    req.casterRef.portalProjectiles.push(proj);
-                }
-                delayedProjectileSpawns.splice(i, 1);
-                continue;
-            }
-
-            if (req.kind === 'parryLateShot') {
-                const dx = req.targetX - req.srcX;
-                const dy = req.targetY - req.srcY;
-                const desiredActual = (req.baseActualSpeed || 5) * 8.0;
-                const proj = new Projectile(req.srcX, req.srcY, req.targetX, req.targetY, req.damage, req.color, desiredActual * 2, 'player', req.size || 8, {
-                    style: req.style || 'gunBullet',
-                    maxDistance: req.maxDistance || 800,
-                    canDestroyOnTouch: true,
-                    afterImageTrail: true,
-                    afterImageInterval: 1
-                });
-                proj.parried = true;
-                proj.canDestroyOnTouch = true;
-                projectiles.push(proj);
-                delayedProjectileSpawns.splice(i, 1);
-                continue;
-            }
-
-            if (req.kind === 'bombLateShot') {
-                const attackType = req.attackType || 'bomb';
-                if (attackType === 'bomb') {
-                    spawnFireZone(req.srcX, req.srcY, { applyStun: true });
-                    spawnSmokeBurst(req.srcX, req.srcY, 20);
-                } else {
-                    applyAreaDamageAt(req.srcX, req.srcY, 30, 10);
-                    spawnGrenadeFragments(req.srcX, req.srcY);
-                    spawnEvaporationEffect(req.srcX, req.srcY, '#ff7a00', 18, 12);
-                    spawnSmokeBurst(req.srcX, req.srcY, 20);
-                }
-                delayedProjectileSpawns.splice(i, 1);
-                continue;
-            }
-
-            if (req.kind === 'lateShot') {
-                const proj = spawnPlayerProjectile(req.srcX, req.srcY, req.targetX, req.targetY, req.damage, req.color, req.speed, {
-                    style: req.style || 'gunBullet',
-                    maxDistance: req.maxDistance,
-                    critPercent: req.critPercent || 0,
-                    canDestroyOnTouch: true,
-                    afterImageTrail: true,
-                    afterImageInterval: 1,
-                    bypassStaffCap: true
-                });
-                if (proj) {
-                    proj.canDestroyOnTouch = true;
-                }
                 delayedProjectileSpawns.splice(i, 1);
                 continue;
             }
@@ -12284,53 +11576,6 @@ function updateProjectiles() {
             delayedProjectileSpawns.splice(i, 1);
         }
     }
-
-    if (player && player.mansionGhostCopyUnlocked && player._ghostCopyFrame > -999) {
-        const critFrame = player._ghostCopyFrame;
-        player._ghostCopyFrame = -999;
-        for (const proj of projectiles) {
-            if (proj.owner !== 'player' || proj.ghostCopyProcessed) continue;
-            if (Math.abs(proj.spawnFrame - critFrame) <= 2) {
-                proj.ghostCopyProcessed = true;
-                if (Math.random() < 0.33) {
-                    const ghostDamage = Math.max(1, Math.round(proj.damage * (player.mansionGhostCopyDamageRatio || 0.7)));
-                    const dx = proj.vx;
-                    const dy = proj.vy;
-                    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-                    const tx = proj.x + (dx / dist) * (proj.maxDistance || 800);
-                    const ty = proj.y + (dy / dist) * (proj.maxDistance || 800);
-                    const ghost = spawnPlayerProjectile(proj.x, proj.y, tx, ty, ghostDamage, '#d4b8ff', proj.speed / 0.5, {
-                        style: proj.style,
-                        size: proj.size * 0.9,
-                        maxDistance: proj.maxDistance,
-                        critPercent: proj.critPercent,
-                        homing: proj.homing,
-                        homingStrength: proj.homingStrength,
-                        homingDuration: proj.homingDuration,
-                        explosive: proj.explosive,
-                        explosiveRadius: proj.explosiveRadius,
-                        freezer: proj.freezer,
-                        freezeDuration: proj.freezeDuration,
-                        knockback: proj.knockback,
-                        knockbackPower: proj.knockbackPower,
-                        ricochet: proj.ricochet,
-                        ricochetCount: proj.ricochetCount,
-                        pierce: proj.pierce,
-                        afterImageTrail: true,
-                        afterImageInterval: 2,
-                        tracer: proj.tracer,
-                        tracerColor: '#d4b8ff',
-                        tracerLife: 8,
-                        ghostCopy: true
-                    });
-                    if (ghost) {
-                        ghost.color = '#d4b8ff';
-                        ghost.ghostCopyProcessed = true;
-                    }
-                }
-            }
-        }
-    }
 }
 
 function updateMonsterHitscans() {
@@ -12351,7 +11596,6 @@ function updateMonsterHitscans() {
                         effectiveDamage *= (1 - player.parryDefenseBonus / 100);
                     }
                     player.health -= effectiveDamage;
-                    chargePassives('onTakeDamage');
                 }
                 beam.hitChecked = true;
             }
@@ -12741,31 +11985,24 @@ function drawBackground() {
     gradient.addColorStop(0.5, '#081a2d');
     gradient.addColorStop(1, '#050814');
     ctx.fillStyle = gradient;
-    // Only fill the visible viewport region (world is huge: viewportWidth * 60 wide)
-    const viewX = Math.max(0, cameraX);
-    const viewY = Math.max(0, cameraY);
-    const viewW = Math.min(viewportWidth, gameWidth - viewX);
-    const viewH = Math.min(viewportHeight, gameHeight - viewY);
-    ctx.fillRect(viewX, viewY, viewW, viewH);
+    ctx.fillRect(0, 0, gameWidth, gameHeight);
 
     ctx.save();
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
     ctx.lineWidth = 1;
     const step = 60;
-    // Cull the grid to the visible region and batch every line into a single path/stroke.
-    // Previously this issued ~2000 individual stroke() calls per frame over the whole world.
-    ctx.beginPath();
-    const startX = Math.floor(viewX / step) * step;
-    for (let x = startX; x <= viewX + viewW; x += step) {
-        ctx.moveTo(x, viewY);
-        ctx.lineTo(x, viewY + viewH);
+    for (let x = 0; x <= gameWidth; x += step) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, gameHeight);
+        ctx.stroke();
     }
-    const startY = Math.floor(viewY / step) * step;
-    for (let y = startY; y <= viewY + viewH; y += step) {
-        ctx.moveTo(viewX, y);
-        ctx.lineTo(viewX + viewW, y);
+    for (let y = 0; y <= gameHeight; y += step) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(gameWidth, y);
+        ctx.stroke();
     }
-    ctx.stroke();
     ctx.restore();
 
     drawMapWalls();
@@ -13001,49 +12238,6 @@ function spawnBombThrowEffect(x, y, targetX, targetY) {
     }
 }
 
-function spawnGunMuzzleSmoke(x, y, angle, extraPowderLevel = 0) {
-    if (typeof evaporationEffects === 'undefined') return;
-    const count = Math.round(6 * (1 + 0.2 * extraPowderLevel));
-    for (let i = 0; i < count; i++) {
-        const spread = (Math.random() - 0.5) * 0.7;
-        const dir = angle + Math.PI + spread;
-        const speed = 0.5 + Math.random() * 1.1;
-        evaporationEffects.push({
-            x: x + Math.cos(angle) * (2 + Math.random() * 3),
-            y: y + Math.sin(angle) * (2 + Math.random() * 3),
-            vx: Math.cos(dir) * speed,
-            vy: Math.sin(dir) * speed - 0.3,
-            life: 18 + Math.floor(Math.random() * 8),
-            alpha: 0.45,
-            size: 3 + Math.random() * 3,
-            color: '#c4c4c4',
-            smoke: true
-        });
-    }
-}
-
-function spawnGunSmoke(x, y, angle) {
-    if (typeof evaporationEffects === 'undefined') return;
-    const count = 5;
-    for (let i = 0; i < count; i++) {
-        const spread = (Math.random() - 0.5) * 0.6;
-        const dir = angle + spread;
-        const speed = 0.4 + Math.random() * 0.9;
-        const gray = 70 + Math.floor(Math.random() * 30);
-        evaporationEffects.push({
-            x: x + Math.cos(angle) * (2 + Math.random() * 2),
-            y: y + Math.sin(angle) * (2 + Math.random() * 2),
-            vx: Math.cos(dir) * speed,
-            vy: Math.sin(dir) * speed - 0.4 - Math.random() * 0.3,
-            life: 22 + Math.floor(Math.random() * 8),
-            alpha: 0.5,
-            size: 3 + Math.random() * 3,
-            color: `rgba(${gray}, ${gray}, ${gray}, 0.9)`,
-            smoke: true
-        });
-    }
-}
-
 function spawnBombFireZoneEffect(x, y, radiusMultiplier = 1) {
     if (!player || (player.bombFireZoneRadiusBonus <= 0 && player.bombBurnDamagePerSecond <= 0)) return;
     const effectCount = 8 + Math.floor(radiusMultiplier * 4);
@@ -13089,29 +12283,20 @@ function triggerShooterMachineGun() {
     const preferred = getPreferredTarget();
     const targetX = preferred.x || (currentMonster ? currentMonster.x + currentMonster.width / 2 : gunX + 200);
     const targetY = preferred.y || (currentMonster ? currentMonster.y + currentMonster.height / 2 : gunY);
-    const baseDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
-    const critChance = player.critChance || 0;
-    const pierceChance = Math.min(0.6, critChance * 0.015);
+    const gunDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
 
-    for (let i = 0; i < 5; i++) {
-        const spread = (Math.random() - 0.5) * 0.35;
+    for (let i = 0; i < 4; i++) {
+        const spread = (Math.random() - 0.5) * 0.25;
         const angle = Math.atan2(targetY - gunY, targetX - gunX) + spread;
-        const projectileTargetX = gunX + Math.cos(angle) * 300;
-        const projectileTargetY = gunY + Math.sin(angle) * 300;
-        const bulletDamage = baseDamage + Math.floor(Math.random() * 3);
-        spawnPlayerProjectile(gunX, gunY, projectileTargetX, projectileTargetY, bulletDamage, '#ffaa33', 9, {
+        const projectileTargetX = gunX + Math.cos(angle) * 280;
+        const projectileTargetY = gunY + Math.sin(angle) * 280;
+        spawnPlayerProjectile(gunX, gunY, projectileTargetX, projectileTargetY, gunDamage, '#ffaa33', 8.5, {
             style: 'gunBullet',
-            size: 6 + Math.random() * 3,
-            maxDistance: 1000,
-            pierce: Math.random() < pierceChance,
-            tracer: true,
-            tracerColor: '#ffcc66',
-            tracerLife: 8
+            size: 8,
+            maxDistance: 900
         });
     }
-    machineGunEffects.push({ x: gunX, y: gunY, life: 14, alpha: 0.9, color: '#ffaa33' });
-    applyPassiveImpactFrame(10);
-    spawnPassiveImpactEffect(gunX, gunY, 'muzzleFlash', '#ffaa33', { maxRadius: 40, particleCount: 20, particleSpeed: 5, particleSize: 3.5, lineWidth: 3.5 });
+    machineGunEffects.push({ x: gunX, y: gunY, life: 10, alpha: 0.8, color: '#ffaa33' });
 }
 
 function triggerSwarmNube() {
@@ -13123,25 +12308,17 @@ function triggerSwarmNube() {
     const targetY = preferred.y || (currentMonster ? currentMonster.y + currentMonster.height / 2 : nubeY);
     const nubeDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
 
-    for (let i = 0; i < 8; i++) {
-        const angle = (Math.PI * 2 * i) / 8 + Math.atan2(targetY - nubeY, targetX - nubeX);
-        const projectileTargetX = nubeX + Math.cos(angle) * 260;
-        const projectileTargetY = nubeY + Math.sin(angle) * 260;
-        spawnPlayerProjectile(nubeX, nubeY, projectileTargetX, projectileTargetY, nubeDamage, '#9c4fff', 7.5, {
+    for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI * 2 * i) / 6 + Math.atan2(targetY - nubeY, targetX - nubeX);
+        const projectileTargetX = nubeX + Math.cos(angle) * 220;
+        const projectileTargetY = nubeY + Math.sin(angle) * 220;
+        spawnPlayerProjectile(nubeX, nubeY, projectileTargetX, projectileTargetY, nubeDamage, '#9c4fff', 7, {
             style: 'swarmPod',
             size: 7,
-            maxDistance: 900,
-            noBounce: true,
-            homing: true,
-            homingStrength: 0.12,
-            homingDuration: 180,
-            poison: true,
-            poisonDamage: Math.max(1, Math.floor(nubeDamage * 0.4)),
-            poisonDuration: 180
+            maxDistance: 800,
+            noBounce: true
         });
     }
-    applyPassiveImpactFrame(10);
-    spawnPassiveImpactEffect(nubeX, nubeY, 'radialBurst', '#9c4fff', { maxRadius: 60, particleCount: 16, particleSpeed: 3, particleSize: 4.5, lineWidth: 3 });
 }
 
 function triggerCasterPortalBurst() {
@@ -13149,45 +12326,27 @@ function triggerCasterPortalBurst() {
     const portalX = player.x + player.width / 2;
     const portalY = player.y + player.height / 2 - 16;
     spawnCasterPortalEffect(portalX, portalY, '#70e7ff');
-    spawnEvaporationEffect(portalX, portalY, '#70e7ff', 30, 18);
+    spawnEvaporationEffect(portalX, portalY, '#70e7ff', 24, 14);
     const preferred = getPreferredTarget();
     const targetX = preferred.x || (currentMonster ? currentMonster.x + currentMonster.width / 2 : portalX + 200);
     const targetY = preferred.y || (currentMonster ? currentMonster.y + currentMonster.height / 2 : portalY);
     const portalDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
 
-    const burstCount = 3 + Math.floor((player.critChance || 0) / 15);
-    for (let i = 0; i < burstCount; i++) {
-        const spread = (i - (burstCount - 1) / 2) * 0.16;
+    for (let i = 0; i < 3; i++) {
+        const spread = (i - 1) * 0.18;
         const angle = Math.atan2(targetY - portalY, targetX - portalX) + spread;
-        const projectileTargetX = portalX + Math.cos(angle) * 260;
-        const projectileTargetY = portalY + Math.sin(angle) * 260;
-        spawnPlayerProjectile(portalX, portalY, projectileTargetX, projectileTargetY, portalDamage, '#70e7ff', 10, {
+        const projectileTargetX = portalX + Math.cos(angle) * 220;
+        const projectileTargetY = portalY + Math.sin(angle) * 220;
+        spawnPlayerProjectile(portalX, portalY, projectileTargetX, projectileTargetY, portalDamage, '#70e7ff', 9.2, {
             style: 'casterBurst',
-            size: 14,
-            maxDistance: 1100,
+            size: 12,
+            maxDistance: 900,
             afterImageTrail: true,
-            afterImageInterval: 1,
+            afterImageInterval: 2,
             ignoreHurricanePull: true,
-            skipHurricaneRemoval: true,
-            pierce: true
+            skipHurricaneRemoval: true
         });
     }
-    portalEffects.push({
-        x: portalX,
-        y: portalY,
-        radius: 4,
-        maxRadius: 32,
-        life: 90,
-        maxLife: 90,
-        alpha: 0.8,
-        pulse: Math.random() * Math.PI * 2,
-        color: '#70e7ff',
-        damage: Math.round(portalDamage * 0.6),
-        fireTimer: 0,
-        fireInterval: 18
-    });
-    applyPassiveImpactFrame(12);
-    spawnPassiveImpactEffect(portalX, portalY, 'portalRipple', '#70e7ff', { maxRadius: 55, particleCount: 14, particleSpeed: 2.5, particleSize: 4, lineWidth: 3.5 });
 }
 
 function triggerAvianTracker() {
@@ -13195,34 +12354,26 @@ function triggerAvianTracker() {
     const trackerX = player.x + player.width / 2;
     const trackerY = player.y + player.height / 2;
     const trackerDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
-    const trackerCount = 2 + Math.floor((player.critChance || 0) / 20);
 
-    for (let i = 0; i < trackerCount; i++) {
-        const angle = (Math.PI * 2 * i) / trackerCount;
-        const projectileTargetX = trackerX + Math.cos(angle) * 320;
-        const projectileTargetY = trackerY + Math.sin(angle) * 320;
+    for (let i = 0; i < 2; i++) {
+        const angle = (Math.PI * i);
+        const projectileTargetX = trackerX + Math.cos(angle) * 300;
+        const projectileTargetY = trackerY + Math.sin(angle) * 300;
         trackerProjectiles.push({
             x: trackerX,
             y: trackerY,
             targetX: currentMonster.x + currentMonster.width / 2,
             targetY: currentMonster.y + currentMonster.height / 2,
-            vx: Math.cos(angle) * 6,
-            vy: Math.sin(angle) * 6,
+            vx: Math.cos(angle) * 5.5,
+            vy: Math.sin(angle) * 5.5,
             damage: trackerDamage,
             color: '#ff88cc',
-            size: 11,
-            maxDistance: 1200,
+            size: 10,
+            maxDistance: 1000,
             distanceTraveled: 0,
-            life: 240,
-            mark: true,
-            markDamageBonus: 0.25,
-            chainOnKill: true,
-            chainRadius: 180,
-            chainDamage: Math.round(trackerDamage * 0.6)
+            life: 200
         });
     }
-    applyPassiveImpactFrame(10);
-    spawnPassiveImpactEffect(trackerX, trackerY, 'feathers', '#ff88cc', { maxRadius: 50, particleCount: 18, particleSpeed: 2.5, particleSize: 4, lineWidth: 2.5 });
 }
 
 function triggerSmartRicochet() {
@@ -13231,27 +12382,18 @@ function triggerSmartRicochet() {
     const ricochetY = player.y + player.height / 2;
     const targetX = currentMonster.x + currentMonster.width / 2;
     const targetY = currentMonster.y + currentMonster.height / 2;
-    const baseDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+    const ricochetDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
 
     const angle = Math.atan2(targetY - ricochetY, targetX - ricochetX);
-    const projectileTargetX = ricochetX + Math.cos(angle) * 320;
-    const projectileTargetY = ricochetY + Math.sin(angle) * 320;
-    spawnPlayerProjectile(ricochetX, ricochetY, projectileTargetX, projectileTargetY, baseDamage, '#88ff88', 10, {
+    const projectileTargetX = ricochetX + Math.cos(angle) * 300;
+    const projectileTargetY = ricochetY + Math.sin(angle) * 300;
+    spawnPlayerProjectile(ricochetX, ricochetY, projectileTargetX, projectileTargetY, ricochetDamage, '#88ff88', 9, {
         style: 'gunBullet',
-        size: 12,
-        maxDistance: 1400,
+        size: 11,
+        maxDistance: 1200,
         ricochet: true,
-        ricochetCount: 3 + Math.floor((player.critChance || 0) / 20),
-        ricochetDamageScale: 1.35,
-        tracer: true,
-        tracerColor: '#aaffaa',
-        tracerLife: 10,
-        chainLightningOnFinalBounce: true,
-        chainLightningDamage: Math.round(baseDamage * 0.8),
-        chainLightningRadius: 160
+        ricochetCount: 2
     });
-    applyPassiveImpactFrame(9);
-    spawnPassiveImpactEffect(ricochetX, ricochetY, 'sparks', '#88ff88', { maxRadius: 30, particleCount: 14, particleSpeed: 6, particleSize: 3, lineWidth: 2.5 });
 }
 
 function triggerSimpleExplosive() {
@@ -13261,28 +12403,17 @@ function triggerSimpleExplosive() {
     const targetX = currentMonster.x + currentMonster.width / 2;
     const targetY = currentMonster.y + currentMonster.height / 2;
     const explosiveDamage = Math.max(3, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage + 1));
-    const healthPercent = currentMonster.health / Math.max(1, currentMonster.maxHealth);
-    const radiusScale = 1 + (1 - healthPercent) * 0.8;
-    const finalRadius = Math.round(60 * radiusScale);
 
     const angle = Math.atan2(targetY - explosiveY, targetX - explosiveX);
-    const projectileTargetX = explosiveX + Math.cos(angle) * 320;
-    const projectileTargetY = explosiveY + Math.sin(angle) * 320;
-    spawnPlayerProjectile(explosiveX, explosiveY, projectileTargetX, projectileTargetY, explosiveDamage, '#ff6644', 11, {
+    const projectileTargetX = explosiveX + Math.cos(angle) * 300;
+    const projectileTargetY = explosiveY + Math.sin(angle) * 300;
+    spawnPlayerProjectile(explosiveX, explosiveY, projectileTargetX, projectileTargetY, explosiveDamage, '#ff6644', 10, {
         style: 'gunBullet',
-        size: 15,
-        maxDistance: 1000,
+        size: 13,
+        maxDistance: 900,
         explosive: true,
-        explosiveRadius: finalRadius,
-        burn: true,
-        burnDamage: Math.max(2, Math.floor(explosiveDamage * 0.5)),
-        burnDuration: 180,
-        secondaryExplosion: true,
-        secondaryRadius: Math.round(finalRadius * 0.5),
-        secondaryDamage: Math.round(explosiveDamage * 0.4)
+        explosiveRadius: 60
     });
-    applyPassiveImpactFrame(14);
-    spawnPassiveImpactEffect(explosiveX, explosiveY, 'explosion', '#ff6644', { maxRadius: 80, particleCount: 24, particleSpeed: 5, particleSize: 4.5, lineWidth: 4.5 });
 }
 
 function triggerCrocFreezer() {
@@ -13294,24 +12425,15 @@ function triggerCrocFreezer() {
     const freezerDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
 
     const angle = Math.atan2(targetY - freezerY, targetX - freezerX);
-    const projectileTargetX = freezerX + Math.cos(angle) * 300;
-    const projectileTargetY = freezerY + Math.sin(angle) * 300;
-    spawnPlayerProjectile(freezerX, freezerY, projectileTargetX, projectileTargetY, freezerDamage, '#55ddff', 10, {
+    const projectileTargetX = freezerX + Math.cos(angle) * 280;
+    const projectileTargetY = freezerY + Math.sin(angle) * 280;
+    spawnPlayerProjectile(freezerX, freezerY, projectileTargetX, projectileTargetY, freezerDamage, '#55ddff', 9, {
         style: 'gunBullet',
-        size: 12,
-        maxDistance: 1000,
+        size: 10,
+        maxDistance: 800,
         freezer: true,
-        freezeDuration: 60,
-        iceShards: true,
-        iceShardCount: 10,
-        iceShardDamage: Math.round(freezerDamage * 0.4),
-        iceShardRadius: 100,
-        frostExplosion: true,
-        frostExplosionRadius: 120,
-        frostExplosionDamage: Math.round(freezerDamage * 0.5)
+        freezeDuration: 45
     });
-    applyPassiveImpactFrame(12);
-    spawnPassiveImpactEffect(freezerX, freezerY, 'frostRing', '#55ddff', { maxRadius: 65, particleCount: 18, particleSpeed: 3, particleSize: 3.5, lineWidth: 3 });
 }
 
 function triggerTankImpulse() {
@@ -13323,25 +12445,15 @@ function triggerTankImpulse() {
     const impulseDamage = Math.max(3, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage + 1));
 
     const angle = Math.atan2(targetY - impulseY, targetX - impulseX);
-    const projectileTargetX = impulseX + Math.cos(angle) * 280;
-    const projectileTargetY = impulseY + Math.sin(angle) * 280;
-    spawnPlayerProjectile(impulseX, impulseY, projectileTargetX, projectileTargetY, impulseDamage, '#ff3333', 12, {
+    const projectileTargetX = impulseX + Math.cos(angle) * 250;
+    const projectileTargetY = impulseY + Math.sin(angle) * 250;
+    spawnPlayerProjectile(impulseX, impulseY, projectileTargetX, projectileTargetY, impulseDamage, '#ff3333', 11, {
         style: 'gunBullet',
-        size: 16,
-        maxDistance: 1000,
+        size: 14,
+        maxDistance: 850,
         knockback: true,
-        knockbackPower: 12,
-        stun: true,
-        stunDuration: 45,
-        shockwave: true,
-        shockwaveRadius: 140,
-        shockwaveDamage: Math.round(impulseDamage * 0.5),
-        chainStun: true,
-        chainStunRadius: 200,
-        chainStunDuration: 25
+        knockbackPower: 8
     });
-    applyPassiveImpactFrame(16);
-    spawnPassiveImpactEffect(impulseX, impulseY, 'shockwave', '#ff3333', { maxRadius: 80, particleCount: 22, particleSpeed: 4.5, particleSize: 5, lineWidth: 5 });
 }
 
 function updatePortalEffects() {
@@ -13353,32 +12465,6 @@ function updatePortalEffects() {
         effect.alpha = Math.max(0, effect.life / effect.maxLife);
         if (effect.life <= 0 || effect.alpha <= 0) {
             portalEffects.splice(i, 1);
-            continue;
-        }
-        if (effect.damage && effect.fireInterval) {
-            effect.fireTimer = (effect.fireTimer || 0) + 1;
-            if (effect.fireTimer >= effect.fireInterval && currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
-                effect.fireTimer = 0;
-                const mx = currentMonster.x + currentMonster.width / 2;
-                const my = currentMonster.y + currentMonster.height / 2;
-                const angle = Math.atan2(my - effect.y, mx - effect.x);
-                for (let j = 0; j < 2; j++) {
-                    const spread = (j - 0.5) * 0.3;
-                    const tx = effect.x + Math.cos(angle + spread) * 300;
-                    const ty = effect.y + Math.sin(angle + spread) * 300;
-                    spawnPlayerProjectile(effect.x, effect.y, tx, ty, effect.damage, effect.color || '#70e7ff', 9.5, {
-                        style: 'casterBurst',
-                        size: 10,
-                        maxDistance: 900,
-                        afterImageTrail: true,
-                        afterImageInterval: 2,
-                        ignoreHurricanePull: true,
-                        skipHurricaneRemoval: true,
-                        pierce: true
-                    });
-                }
-                spawnEvaporationEffect(effect.x, effect.y, effect.color || '#70e7ff', 14, 6);
-            }
         }
     }
 }
@@ -13421,7 +12507,7 @@ function updateTrackerProjectiles() {
         const dy = tracker.targetY - tracker.y;
         const dist = Math.hypot(dx, dy);
         if (dist > 0) {
-            const turnSpeed = 0.1;
+            const turnSpeed = 0.08;
             const targetAngle = Math.atan2(dy, dx);
             const currentAngle = Math.atan2(tracker.vy, tracker.vx);
             let angleDiff = targetAngle - currentAngle;
@@ -13435,54 +12521,9 @@ function updateTrackerProjectiles() {
         tracker.x += tracker.vx;
         tracker.y += tracker.vy;
 
-        let hit = false;
-        if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
-            const mx = currentMonster.x + currentMonster.width / 2;
-            const my = currentMonster.y + currentMonster.height / 2;
-            if (Math.hypot(tracker.x - mx, tracker.y - my) < currentMonster.width / 2 + tracker.size) {
-                currentMonster.health -= tracker.damage;
-                currentMonster.tookDamage = true;
-                if (tracker.mark && !currentMonster.isDying) {
-                    currentMonster.avianMarkTimer = Math.max(currentMonster.avianMarkTimer || 0, 240);
-                    currentMonster.avianMarkDamageBonus = Math.max(currentMonster.avianMarkDamageBonus || 0, tracker.markDamageBonus);
-                }
-                spawnEvaporationEffect(tracker.x, tracker.y, tracker.color, tracker.size, 12);
-                spawnAfterImage({
-                    kind: 'projectile',
-                    x: tracker.x - tracker.size,
-                    y: tracker.y - tracker.size,
-                    size: tracker.size * 2,
-                    color: tracker.color,
-                    life: 14,
-                    maxLife: 14,
-                    baseAlpha: 0.55
-                });
-                if (currentMonster.health <= 0 && tracker.chainOnKill) {
-                    const chainRadius = tracker.chainRadius || 180;
-                    const chainDamage = tracker.chainDamage || Math.round(tracker.damage * 0.6);
-                    for (let ci = 0; ci < 3; ci++) {
-                        const cAngle = Math.random() * Math.PI * 2;
-                        const cDist = 30 + Math.random() * chainRadius;
-                        const cx = mx + Math.cos(cAngle) * cDist;
-                        const cy = my + Math.sin(cAngle) * cDist;
-                        spawnPlayerProjectile(mx, my, cx, cy, chainDamage, '#ffaacc', 7, {
-                            style: 'gunBullet',
-                            size: 7,
-                            maxDistance: 400,
-                            explosive: false,
-                            freezer: false,
-                            pierce: false,
-                            noBounce: true
-                        });
-                    }
-                    spawnPassiveImpactEffect(mx, my, 'chainBurst', '#ff88cc', { maxRadius: 45, particleCount: 14, particleSpeed: 3.5, particleSize: 3.5, lineWidth: 2.5 });
-                    screenShakeTimer = Math.max(screenShakeTimer, 8);
-                    frameFreeze = Math.max(frameFreeze || 0, 2);
-                }
-                hit = true;
-            }
-        }
-        if (hit) {
+        if (currentMonster && Math.hypot(tracker.x - currentMonster.x - currentMonster.width / 2, tracker.y - currentMonster.y - currentMonster.height / 2) < currentMonster.width / 2 + tracker.size) {
+            currentMonster.health -= tracker.damage;
+            spawnEvaporationEffect(tracker.x, tracker.y, tracker.color, tracker.size, 8);
             trackerProjectiles.splice(i, 1);
             continue;
         }
@@ -13529,7 +12570,6 @@ function spawnTornadoHitEffect(x, y, color) {
 function handleParryProjectile(proj) {
     if (!proj || proj.parried) return;
     proj.parried = true;
-    chargePassives('onParry');
         if (player.parryHealOnUse > 0) {
             const healAmount = player.health * (player.parryHealOnUse / 100);
             player.health = Math.min(player.maxHealth, player.health + healAmount);
@@ -13539,7 +12579,7 @@ function handleParryProjectile(proj) {
         }
     proj.owner = 'player';
     const currentSpeed = Math.hypot(proj.vx || 0, proj.vy || 0) || 3;
-    const speed = currentSpeed * 5.0 + player.projectileSpeedBonus;
+    const speed = currentSpeed * 5.0; // increased parry speed
     let targetX, targetY;
     if (currentMonster) {
         targetX = currentMonster.x + currentMonster.width / 2;
@@ -13581,50 +12621,53 @@ function handleParryProjectile(proj) {
     if (!playerInsideConstruction) {
         frameFreeze = 2;
     }
+}
 
-    const extraCount = Math.floor(player.extraProjectiles || 0);
-    const spread = player.spreadProjectiles || 0;
-    const lateCount = Math.floor(player.lateShots || 0);
+function fireGunBurst(count) {
+    if (!player || !player.weapon || player.weapon.type !== 'gun' || !count || count <= 0) return;
+    const preferred = getPreferredTarget();
+    const targetX = preferred.x;
+    const targetY = preferred.y;
+    const baseAngle = Math.atan2(targetY - (player.y + player.height / 2), targetX - (player.x + player.width / 2));
+    const weaponInfo = player.getWeaponMountPoint(baseAngle);
+    const baseWeaponDamage = player.weapon.damage + player.weaponDamage + player.baseDamage;
+    const critRoll = Math.random() * 100;
+    const totalCritChance = player.critChance;
+    const critMultiplier = critRoll < totalCritChance ? 1 + player.critDamage : 1;
+    const gunPowderMult = (1 + 0.2 * (player.gunExtraPowder || 0));
+    const burstDamage = Math.max(1, Math.round(baseWeaponDamage * critMultiplier * (player.damageOutputMultiplier || 1) * gunPowderMult));
+    const burstSpeed = (player.weapon.speed + player.projectileSpeedBonus) * getPlayerInteriorScale();
+    const burstRange = player.weapon.range * getPlayerInteriorScale();
+    for (let burstIndex = 0; burstIndex < count; burstIndex++) {
+        const extraAngle = baseAngle + ((burstIndex + 1) - (count + 1) / 2) * 0.14;
+        const burstTargetX = player.x + player.width / 2 + Math.cos(extraAngle) * burstRange * 0.9;
+        const burstTargetY = player.y + player.height / 2 + Math.sin(extraAngle) * burstRange * 0.9;
+        spawnPlayerProjectile(weaponInfo.tipX, weaponInfo.tipY, burstTargetX, burstTargetY, Math.max(1, Math.round(burstDamage * 0.75)), player.weapon.color, burstSpeed * 0.95, {
+            critPercent: critMultiplier > 1 ? player.critDamage : 0,
+            explosive: player.gunExplosiveAmmo > 0,
+            isGunOriginal: false
+        });
+    }
+}
 
-    if (extraCount > 0 || lateCount > 0) {
-        const baseAngle = Math.atan2(dy, dx);
-        const cloneDamage = Math.max(1, proj.damage);
-        const cloneColor = proj.color;
-        const cloneSize = proj.size;
-        const cloneStyle = proj.style || 'gunBullet';
-
-        for (let i = 0; i < extraCount; i++) {
-            const angleOffset = ((i + 1) * spread * 0.35) * (i % 2 === 0 ? 1 : -1);
-            const angle = baseAngle + angleOffset;
-            const targetX = proj.x + Math.cos(angle) * 400;
-            const targetY = proj.y + Math.sin(angle) * 400;
-            const clone = new Projectile(proj.x, proj.y, targetX, targetY, cloneDamage, cloneColor, speed * 2, 'player', cloneSize, {
-                style: cloneStyle,
-                canDestroyOnTouch: true,
-                afterImageTrail: true,
-                afterImageInterval: 1,
-                maxDistance: 800
-            });
-            clone.canDestroyOnTouch = true;
-            projectiles.push(clone);
-        }
-
-        for (let i = 0; i < lateCount; i++) {
-            delayedProjectileSpawns.push({
-                kind: 'parryLateShot',
-                timer: 20 + i * 15,
-                srcX: proj.x,
-                srcY: proj.y,
-                targetX: proj.x + Math.cos(baseAngle) * 400,
-                targetY: proj.y + Math.sin(baseAngle) * 400,
-                damage: cloneDamage,
-                color: cloneColor,
-                size: cloneSize,
-                maxDistance: 800,
-                style: cloneStyle,
-                baseActualSpeed: speed / 8.0
-            });
-        }
+function spawnGunMuzzleSmoke(x, y, angle, extraPowderLevel = 0) {
+    if (typeof evaporationEffects === 'undefined') return;
+    const count = Math.round(6 * (1 + 0.2 * extraPowderLevel));
+    for (let i = 0; i < count; i++) {
+        const spread = (Math.random() - 0.5) * 0.7;
+        const dir = angle + Math.PI + spread;
+        const speed = 0.5 + Math.random() * 1.1;
+        evaporationEffects.push({
+            x: x + Math.cos(angle) * (2 + Math.random() * 3),
+            y: y + Math.sin(angle) * (2 + Math.random() * 3),
+            vx: Math.cos(dir) * speed,
+            vy: Math.sin(dir) * speed - 0.3,
+            life: 18 + Math.floor(Math.random() * 8),
+            alpha: 0.45,
+            size: 3 + Math.random() * 3,
+            color: '#c4c4c4',
+            smoke: true
+        });
     }
 }
 
@@ -13646,96 +12689,11 @@ function updateEvaporationEffects() {
         effect.x += effect.vx;
         effect.y += effect.vy;
         effect.life -= 1;
-        if (effect.smoke) {
-            effect.alpha = Math.max(0, (effect.life / 40) * 0.7);
-            effect.size *= 1.05;
-            effect.vx *= 0.92;
-            effect.vy *= 0.92;
-        } else {
-            effect.alpha = Math.max(0, effect.life / 40);
-            effect.size *= 0.96;
-        }
+        effect.alpha = Math.max(0, effect.life / 40);
+        effect.size *= 0.96;
         if (effect.life <= 0 || effect.alpha <= 0) {
             evaporationEffects.splice(i, 1);
         }
-    }
-}
-
-function updateExplosionEffects() {
-    for (let i = explosionEffects.length - 1; i >= 0; i--) {
-        const e = explosionEffects[i];
-        e.life--;
-        const progress = 1 - e.life / e.maxLife;
-        e.radius = e.maxRadius * progress;
-        if (e.life <= Math.floor(e.maxLife * 0.3) && !e.damageApplied) {
-            e.damageApplied = true;
-            if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
-                const mx = currentMonster.x + currentMonster.width / 2;
-                const my = currentMonster.y + currentMonster.height / 2;
-                if (Math.hypot(mx - e.x, my - e.y) <= e.maxRadius + currentMonster.width / 2) {
-                    currentMonster.takeDamage(e.damage || 0);
-                    if (e.burn && e.burnDamage > 0) {
-                        applyBurnToTarget(currentMonster, e.burnDamage, (e.burnDuration || 120) / 60);
-                    }
-                }
-            }
-            if (playerInsideConstruction) {
-                for (const enemy of castleInteriorEnemies) {
-                    if (enemy.isDying || enemy.health <= 0) continue;
-                    const ex = enemy.x + enemy.width / 2;
-                    const ey = enemy.y + enemy.height / 2;
-                    if (Math.hypot(ex - e.x, ey - e.y) <= e.maxRadius + Math.max(enemy.width, enemy.height) / 2) {
-                        applyDamageToCastleEnemy(enemy, e.damage || 0);
-                        if (e.burn && e.burnDamage > 0) {
-                            applyBurnToTarget(enemy, e.burnDamage, (e.burnDuration || 120) / 60);
-                        }
-                    }
-                }
-            }
-        }
-        if (e.frost && currentMonster && currentMonster.health > 0 && !currentMonster.isDying && e.life <= 0) {
-            const mx = currentMonster.x + currentMonster.width / 2;
-            const my = currentMonster.y + currentMonster.height / 2;
-            if (Math.hypot(mx - e.x, my - e.y) <= e.maxRadius + currentMonster.width / 2) {
-                currentMonster.freezeTimer = Math.max(currentMonster.freezeTimer || 0, e.freezeDuration || 30);
-                spawnEvaporationEffect(mx, my, '#aaeeff', 16, 10);
-            }
-        }
-        if (e.shockwave && currentMonster && currentMonster.health > 0 && !currentMonster.isDying && e.life <= 0) {
-            const mx = currentMonster.x + currentMonster.width / 2;
-            const my = currentMonster.y + currentMonster.height / 2;
-            if (Math.hypot(mx - e.x, my - e.y) <= e.maxRadius + currentMonster.width / 2) {
-                currentMonster.stunTimer = Math.max(currentMonster.stunTimer || 0, e.chainStunDuration || 25);
-                const knockPower = 10;
-                const knockAngle = Math.atan2(my - e.y, mx - e.x);
-                currentMonster.vx = (currentMonster.vx || 0) + Math.cos(knockAngle) * knockPower;
-                currentMonster.vy = (currentMonster.vy || 0) + Math.sin(knockAngle) * knockPower;
-            }
-        }
-        if (e.life <= 0) {
-            explosionEffects.splice(i, 1);
-        }
-    }
-}
-
-function drawExplosionEffects() {
-    for (const e of explosionEffects) {
-        if (e.life <= 0) continue;
-        const progress = 1 - e.life / e.maxLife;
-        const alpha = Math.max(0, e.life / e.maxLife);
-        ctx.save();
-        ctx.globalAlpha = alpha * 0.7;
-        ctx.strokeStyle = e.frost ? '#aaeeff' : '#ff6644';
-        ctx.lineWidth = Math.max(1, 4 * (1 - progress));
-        ctx.beginPath();
-        ctx.arc(e.x, e.y, Math.max(1, e.radius), 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.globalAlpha = alpha * 0.25;
-        ctx.fillStyle = e.frost ? '#aaeeff' : '#ff6644';
-        ctx.beginPath();
-        ctx.arc(e.x, e.y, Math.max(1, e.radius * 0.6), 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
     }
 }
 
@@ -13850,6 +12808,8 @@ function getProjectileDefaultSize(style) {
             return 8;
         case 'gunBullet':
             return 7;
+        case 'gunBulletBoosted':
+            return 9;
         case 'yarnBall':
             return 12;
         case 'staffOrb':
@@ -13864,10 +12824,6 @@ function getProjectileDefaultSize(style) {
             return 14;
         case 'swarmPod':
             return 10;
-        case 'casterShard':
-            return 12;
-        case 'casterBurst':
-            return 14;
         case 'casterFlameCircle':
             return 16;
         case 'casterFlameSpiral':
@@ -13898,7 +12854,7 @@ function getMonsterProjectileStyle(monsterType) {
         case 'swarm':
             return 'swarmBug';
         case 'caster':
-            return 'casterBurst';
+            return 'casterFlameCircle';
         case 'avianightmare':
             return 'crowBolt';
         case 'smart':
@@ -14086,46 +13042,10 @@ function spawnPlayerProjectile(x, y, targetX, targetY, damage, color, speed, opt
     return proj;
 }
 
-function spawnCasterProjectileBurst(proj) {
-    if (!proj || proj._casterBurstTriggered) return;
-    proj._casterBurstTriggered = true;
-
-    const burstCount = Math.max(3, Math.min(6, Math.round((proj.size || 12) / 3)));
-    const burstRadius = Math.max(16, (proj.size || 12) * 0.85);
-    spawnEvaporationEffect(proj.x, proj.y, '#ffb14a', burstRadius, 8);
-
-    for (let i = 0; i < burstCount; i++) {
-        const angle = (Math.PI * 2 * i) / burstCount + Math.random() * 0.2;
-        const targetX = proj.x + Math.cos(angle) * (80 + Math.random() * 60);
-        const targetY = proj.y + Math.sin(angle) * (80 + Math.random() * 60);
-        const shardDamage = Math.max(1, Math.round((proj.damage || 2) * 0.35));
-        spawnMonsterProjectile(
-            proj.x,
-            proj.y,
-            targetX,
-            targetY,
-            shardDamage,
-            '#ff9e3c',
-            2.2 + Math.random() * 1.2,
-            {
-                monsterType: proj.monsterType || 'caster',
-                size: Math.max(5, Math.round((proj.size || 12) * 0.45)),
-                style: 'casterShard',
-                homing: true,
-                homingTarget: player,
-                homingStrength: 0.18,
-                homingDuration: 48,
-                maxDistance: 220,
-                afterImageTrail: false
-            }
-        );
-    }
-}
-
 function spawnMonsterProjectile(x, y, targetX, targetY, damage, color, speed, opts = {}) {
     opts.monsterType = opts.monsterType || currentMonster?.type || '';
     opts.style = opts.style || getMonsterProjectileStyle(opts.monsterType);
-    const isCasterProjectile = opts.monsterType === 'caster' || opts.style === 'casterFlameCircle' || opts.style === 'casterFlameSpiral' || opts.style === 'casterFlameRing' || opts.style === 'casterFlameVolley' || opts.style === 'casterBurst' || opts.style === 'casterShard';
+    const isCasterProjectile = opts.monsterType === 'caster' || opts.style === 'casterFlameCircle' || opts.style === 'casterFlameSpiral' || opts.style === 'casterFlameRing' || opts.style === 'casterFlameVolley';
     const isCircleCasterAttack = opts.style === 'casterFlameCircle' || opts.style === 'casterFlameSpiral' || opts.style === 'casterFlameRing';
     if (isCasterProjectile) {
         opts.afterImageTrail = typeof opts.afterImageTrail === 'boolean' ? opts.afterImageTrail : true;
@@ -14328,89 +13248,6 @@ function drawSweatEffects() {
         const x = effect.x + Math.sin(effect.wobble) * 2;
         const y = effect.y + Math.cos(effect.wobble) * 2;
         ctx.fillText(effect.text, x, y);
-        ctx.restore();
-    }
-}
-
-function spawnPassiveImpactEffect(x, y, kind, color, opts = {}) {
-    const effect = {
-        x, y, kind, color,
-        life: opts.life || 22,
-        maxLife: opts.life || 22,
-        maxRadius: opts.maxRadius || 40,
-        lineWidth: opts.lineWidth || 3,
-        particleCount: opts.particleCount || 10,
-        particleSpeed: opts.particleSpeed || 3,
-        particleSize: opts.particleSize || 3,
-        particles: []
-    };
-    for (let i = 0; i < effect.particleCount; i++) {
-        const angle = (Math.PI * 2 * i) / effect.particleCount + (Math.random() - 0.5) * 0.5;
-        const speed = effect.particleSpeed * (0.6 + Math.random() * 0.8);
-        effect.particles.push({
-            angle,
-            speed,
-            size: effect.particleSize * (0.5 + Math.random()),
-            lifeOffset: Math.floor(Math.random() * 8)
-        });
-    }
-    passiveImpactEffects.push(effect);
-}
-
-function applyPassiveImpactFrame(shake = 8) {
-    if (currentMonster) {
-        currentMonster.flashTimer = 14;
-        currentMonster.impactShakeTimer = 18;
-    }
-    screenShakeTimer = Math.max(screenShakeTimer, shake);
-    frameFreeze = Math.max(frameFreeze || 0, 2);
-}
-
-function updatePassiveImpactEffects() {
-    for (let i = passiveImpactEffects.length - 1; i >= 0; i--) {
-        passiveImpactEffects[i].life--;
-        if (passiveImpactEffects[i].life <= 0) {
-            passiveImpactEffects.splice(i, 1);
-        }
-    }
-}
-
-function drawPassiveImpactEffects() {
-    for (const effect of passiveImpactEffects) {
-        if (effect.life <= 0) continue;
-        const progress = 1 - effect.life / effect.maxLife;
-        const alpha = Math.max(0, effect.life / effect.maxLife);
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.translate(effect.x, effect.y);
-        ctx.shadowColor = effect.color;
-        ctx.shadowBlur = 10;
-        const radius = effect.maxRadius * progress;
-        ctx.strokeStyle = effect.color;
-        ctx.lineWidth = Math.max(0.5, effect.lineWidth * (1 - progress));
-        ctx.beginPath();
-        ctx.arc(0, 0, radius, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(0, 0, radius * 0.65, 0, Math.PI * 2);
-        ctx.strokeStyle = '#ffffff';
-        ctx.globalAlpha = alpha * 0.4;
-        ctx.lineWidth = Math.max(0.3, effect.lineWidth * 0.4 * (1 - progress));
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-        for (const p of effect.particles) {
-            const pLife = effect.life - p.lifeOffset;
-            if (pLife <= 0) continue;
-            const pProgress = Math.max(0, Math.min(1, pLife / (effect.maxLife - p.lifeOffset)));
-            const dist = p.speed * pProgress * 28;
-            const px = Math.cos(p.angle) * dist;
-            const py = Math.sin(p.angle) * dist;
-            ctx.globalAlpha = alpha * pProgress;
-            ctx.fillStyle = effect.color;
-            ctx.beginPath();
-            ctx.arc(px, py, p.size * (1 - progress * 0.4), 0, Math.PI * 2);
-            ctx.fill();
-        }
         ctx.restore();
     }
 }
@@ -14752,9 +13589,6 @@ function updateUI() {
                 cooldownFill.style.width = `${frac * 100}%`;
             } else if (player.weapon && player.weapon.type === 'gun') {
                 renderGunAmmoCooldownBar();
-            } else if (player.weapon && player.weapon.type === 'grenade') {
-                const frac = Math.max(0, Math.min(1, 1 - player.landmineCooldown / (player.landmineCooldownMax || 12 * 60)));
-                cooldownFill.style.width = `${frac * 100}%`;
             } else {
                 let cooldown = 0;
                 let max = 1;
@@ -15035,10 +13869,6 @@ function ensureCrocFakeIndicatorTarget(monster) {
 function drawOffscreenMonsterIndicator() {
     if (!currentMonster || !ctx) return;
 
-    if (currentMonster.type === 'croc') {
-        ensureCrocFakeIndicatorTarget(currentMonster);
-    }
-
     const monsterLeft = currentMonster.x;
     const monsterTop = currentMonster.y;
     const monsterRight = currentMonster.x + currentMonster.width;
@@ -15297,45 +14127,6 @@ function positionMonsterAwayFromPlayer(monster) {
     monster.portalX = monster.x + monster.width / 2;
     monster.portalY = monster.y + monster.height / 2;
     monster.patrolTarget = { x: monster.x + monster.width / 2, y: monster.y + monster.height / 2 };
-
-    if (monster.type === 'caster') {
-        let sniperTarget = null;
-        const spawnCX = monster.x + monster.width / 2;
-        const spawnCY = monster.y + monster.height / 2;
-        for (let a = 0; a < 120; a++) {
-            const cand = {
-                x: Math.random() * Math.max(1, gameWidth - 40) + 20,
-                y: Math.random() * Math.max(1, gameHeight - 40) + 20
-            };
-            if (Math.hypot(cand.x - spawnCX, cand.y - spawnCY) >= 300) {
-                sniperTarget = cand;
-                break;
-            }
-        }
-        if (!sniperTarget) {
-            sniperTarget = {
-                x: Math.random() * Math.max(1, gameWidth - 40) + 20,
-                y: Math.random() * Math.max(1, gameHeight - 40) + 20
-            };
-        }
-        monster.patrolTarget = sniperTarget;
-    } else {
-        monster.patrolTarget = { x: monster.x + monster.width / 2, y: monster.y + monster.height / 2 };
-    }
-
-    if (monster.type === 'croc') {
-        monster.crocDecoyX = monster.x + monster.width / 2;
-        monster.crocDecoyY = monster.y + monster.height / 2;
-        const fakeMarkerStart = getRandomPointInZone('upgrade', 0);
-        monster.fakeMarkerX = fakeMarkerStart.x;
-        monster.fakeMarkerY = fakeMarkerStart.y;
-        monster.fakeMarkerTargetX = fakeMarkerStart.x;
-        monster.fakeMarkerTargetY = fakeMarkerStart.y;
-        monster.fakeMarkerDashTimer = 0;
-        monster.fakeMarkerDashCooldown = 60 + Math.floor(Math.random() * 120);
-        monster.fakeMarkerDashVx = 0;
-        monster.fakeMarkerDashVy = 0;
-    }
 }
 
 function spawnNewMonster() {
@@ -15350,9 +14141,6 @@ function spawnNewMonster() {
 
     projectiles = [];
     monsterHitscans = [];
-    if (currentMonster && currentMonster.portalProjectiles) {
-        currentMonster.portalProjectiles = [];
-    }
     if (castleBossQueued && !playerInsideConstruction) {
         currentMonster = new Monster(phase, 'castle_bone_sphere');
         castleBossQueued = false;
@@ -15361,8 +14149,6 @@ function spawnNewMonster() {
     } else {
         currentMonster = new Monster(phase, chooseMonsterType());
     }
-
-    positionMonsterAwayFromPlayer(currentMonster);
 
     if (currentMonster.type === 'castle_bone_sphere') {
         spawnCastleBossSkeletons(1 + Math.floor(Math.random() * 3));
@@ -15378,6 +14164,7 @@ function spawnNewMonster() {
     player.autoAttackEnabled = false;
     spawnSpinAttackStartProjectiles();
     spawnGhostArmyAroundMonster(currentMonster);
+    positionMonsterAwayFromPlayer(currentMonster);
     upgradeChoices = getRandomUpgrades(6);
     selectedUpgradeIndex = 0;
     isUpgrading = false;
@@ -15523,58 +14310,29 @@ function getDebugUpgradeChoices() {
     return combined.filter((choice, index, list) => index === list.findIndex((candidate) => candidate.name === choice.name && candidate.effect === choice.effect));
 }
 
-    const AVAILABLE_PASSIVE_TRIGGERS = [
-        { id: 'onHit', label: 'Ao Acertar' },
-        { id: 'onKill', label: 'Ao Matar' },
-        { id: 'onParry', label: 'Ao Desviar' },
-        { id: 'onDash', label: 'Ao Investir' },
-        { id: 'onReload', label: 'Ao Recarregar' },
-        { id: 'onTakeDamage', label: 'Ao Sofrer Dano' },
-        { id: 'onCrit', label: 'No Crítico' }
+function getPassiveMenuChoices() {
+    const defs = [
+        { flag: 'shooterMachineGunUnlocked', countKey: 'shooterMachineGunCount', name: 'Shooter Machine Gun', desc: 'Desbloqueia o atirador automático.' },
+        { flag: 'swarmNubeUnlocked', countKey: 'swarmNubeCount', name: 'Swarm Nube', desc: 'Desbloqueia enxame auxiliar.' },
+        { flag: 'casterPortalUnlocked', countKey: 'casterPortalCount', name: 'Caster Portal', desc: 'Desbloqueia portais do caster.' },
+        { flag: 'avianTrackerUnlocked', countKey: 'avianTrackerCount', name: 'Avian Tracker', desc: 'Desbloqueia rastreadores aéreos.' },
+        { flag: 'smartRicochetUnlocked', countKey: 'smartRicochetCount', name: 'Smart Ricochet', desc: 'Desbloqueia ricochetes inteligentes.' },
+        { flag: 'simpleExplosiveUnlocked', countKey: 'simpleExplosiveCount', name: 'Simple Explosive', desc: 'Desbloqueia explosivos simples.' },
+        { flag: 'crocFreezerUnlocked', countKey: 'crocFreezerCount', name: 'Croc Freezer', desc: 'Desbloqueia congelador do croc.' },
+        { flag: 'tankImpulseUnlocked', countKey: 'tankImpulseCount', name: 'Tank Impulse', desc: 'Desbloqueia impulso do tank.' },
+        { flag: 'castleBoneUnlocked', countKey: 'castleBoneHitCounter', name: 'Castle Bone', desc: 'Desbloqueia habilidade do ossoboss do castelo.' }
     ];
 
-    function getPassiveTrigger(player, flag) {
-        return player[flag + 'Trigger'] || 'onHit';
-    }
-
-    function setPassiveTrigger(player, flag, trigger) {
-        player[flag + 'Trigger'] = trigger;
-    }
-
-    function getPassiveMenuChoices() {
-        const defs = [
-            { flag: 'shooterMachineGunUnlocked', countKey: 'shooterMachineGunCount', name: 'Shooter Machine Gun', desc: 'Desbloqueia o atirador automático.' },
-            { flag: 'swarmNubeUnlocked', countKey: 'swarmNubeCount', name: 'Swarm Nube', desc: 'Desbloqueia enxame auxiliar.' },
-            { flag: 'casterPortalUnlocked', countKey: 'casterPortalCount', name: 'Caster Portal', desc: 'Desbloqueia portais do caster.' },
-            { flag: 'avianTrackerUnlocked', countKey: 'avianTrackerCount', name: 'Avian Tracker', desc: 'Desbloqueia rastreadores aéreos.' },
-            { flag: 'smartRicochetUnlocked', countKey: 'smartRicochetCount', name: 'Smart Ricochet', desc: 'Desbloqueia ricochetes inteligentes.' },
-            { flag: 'simpleExplosiveUnlocked', countKey: 'simpleExplosiveCount', name: 'Simple Explosive', desc: 'Desbloqueia explosivos simples.' },
-            { flag: 'crocFreezerUnlocked', countKey: 'crocFreezerCount', name: 'Croc Freezer', desc: 'Desbloqueia congelador do croc.' },
-            { flag: 'tankImpulseUnlocked', countKey: 'tankImpulseCount', name: 'Tank Impulse', desc: 'Desbloqueia impulso do tank.' },
-            { flag: 'castleBoneUnlocked', countKey: 'castleBoneHitCounter', name: 'Castle Bone', desc: 'Desbloqueia habilidade do ossoboss do castelo.' },
-            { flag: 'mansionGhostCopyUnlocked', countKey: null, name: 'Mansion Ghost Copy', desc: 'Desbloqueia eco fantasma da mansão.' }
-        ];
-
-        const choices = [];
-        for (const d of defs) {
-            const currentTrigger = getPassiveTrigger(player, d.flag);
-            for (const trig of AVAILABLE_PASSIVE_TRIGGERS) {
-                const isCurrent = trig.id === currentTrigger;
-                const suffix = isCurrent ? ' [ATUAL]' : '';
-                choices.push({
-                    name: `${d.name}${d.countKey && player && player[d.flag] ? ` x${player[d.countKey] || 0}` : ''} — ${trig.label}${suffix}`,
-                    effect: 'unlockPassive',
-                    passive: d.flag,
-                    passiveCountKey: d.countKey || null,
-                    trigger: trig.id,
-                    value: (player && player[d.countKey]) ? player[d.countKey] : 1,
-                    desc: `${d.desc} Gatilho: ${trig.label}.`,
-                    exclusive: false
-                });
-            }
-        }
-        return choices;
-    }
+    return defs.map(d => ({
+        name: d.name,
+        effect: 'unlockPassive',
+        passive: d.flag,
+        passiveCountKey: d.countKey || null,
+        value: (player && player[d.countKey]) ? player[d.countKey] : 1,
+        desc: d.desc,
+        exclusive: false
+    }));
+}
 
 function applyUpgradeChoice(pick, quantity = 1) {
     if (!pick) return;
@@ -15606,6 +14364,9 @@ function applyUpgradeChoice(pick, quantity = 1) {
                 break;
             case 'gunBurstFire':
                 player.gunBurstFire = (player.gunBurstFire || 0) + pick.value;
+                break;
+            case 'gunExplosiveAmmo':
+                player.gunExplosiveAmmo = (player.gunExplosiveAmmo || 0) + pick.value;
                 break;
             case 'gunExtraPowder':
                 player.gunExtraPowder = (player.gunExtraPowder || 0) + pick.value;
@@ -15714,13 +14475,11 @@ function applyUpgradeChoice(pick, quantity = 1) {
                     const flag = pick.passive;
                     const countKey = pick.passiveCountKey || null;
                     if (flag) {
+                        // Marcar como desbloqueado
                         player[flag] = true;
                     }
                     if (countKey) {
                         player[countKey] = (player[countKey] || 0) + (pick.value || 1);
-                    }
-                    if (pick.trigger) {
-                        setPassiveTrigger(player, flag, pick.trigger);
                     }
                 } catch (e) {}
                 break;
@@ -15780,11 +14539,7 @@ function applyDebugUpgrade() {
     if (!pick) return;
 
     applyUpgradeChoice(pick, debugMenuQuantity);
-    if (passiveMenuMode) {
-        debugMenuUpgradeChoices = getPassiveMenuChoices();
-    } else {
-        debugMenuUpgradeChoices = getDebugUpgradeChoices();
-    }
+    debugMenuUpgradeChoices = getDebugUpgradeChoices();
     if (selectedDebugUpgradeIndex >= debugMenuUpgradeChoices.length) {
         selectedDebugUpgradeIndex = Math.max(0, debugMenuUpgradeChoices.length - 1);
     }
@@ -16784,6 +15539,8 @@ function getUpgradeDescription(upgrade) {
 
 function gameLoop() {
     gameFrameCount += 1;
+    // Desliga o glow dos projéteis/afterimages quando há muitos na tela (performance).
+    projectileGlowEnabled = projectiles.length < PROJECTILE_GLOW_DISABLE_THRESHOLD;
     if (typeof cameraLockTarget === 'object' && cameraLockTarget !== null) {
         cameraLockTarget.timer--;
         if (cameraLockTarget.timer <= 0) cameraLockTarget = null;
@@ -16825,8 +15582,6 @@ function gameLoop() {
     } else if (upgradeDelayTimer > 0) {
         beginCamera();
         drawBackground();
-        drawAmbientAnimals();
-        drawAmbientCritters();
         player.draw();
         currentMonster.draw();
         drawMonsterDeathEffects();
@@ -16849,8 +15604,6 @@ function gameLoop() {
     } else if (upgradeOverlayAnimating) {
         beginCamera();
         drawBackground();
-        drawAmbientAnimals();
-        drawAmbientCritters();
         player.draw();
         currentMonster.draw();
         drawMonsterDeathEffects();
@@ -16876,8 +15629,6 @@ function gameLoop() {
     } else if (isUpgrading) {
         beginCamera();
         drawBackground();
-        drawAmbientAnimals();
-        drawAmbientCritters();
         player.draw();
         currentMonster.draw();
         drawMonsterDeathEffects();
@@ -16893,8 +15644,6 @@ function gameLoop() {
     } else if (!gameOver) {
         if (roundStartTimer > 0) {
             beginCamera();
-            updateAmbientAnimals();
-            updateAmbientCritters();
             drawBackground();
             drawAmbientAnimals();
             drawAmbientCritters();
@@ -16994,32 +15743,6 @@ function gameLoop() {
 
             if (currentMonster && currentMonster.health <= 0) {
                 if (!currentMonster.isDying) {
-                    if (player.castleBoneUnlocked && player.castleBoneOrbiters.length > 0) {
-                        const mx = currentMonster.x + currentMonster.width / 2;
-                        const my = currentMonster.y + currentMonster.height / 2;
-                        const activeBones = player.castleBoneOrbiters.filter(b => !b.isExploding);
-                        for (const bone of activeBones) {
-                            bone.isExploding = true;
-                            spawnPassiveImpactEffect(bone.x, bone.y, 'boneExplosion', '#ffaa44', { maxRadius: 55, particleCount: 16, particleSpeed: 4, particleSize: 4, lineWidth: 3.5 });
-                            explosionEffects.push({
-                                x: bone.x,
-                                y: bone.y,
-                                radius: 0,
-                                maxRadius: bone.explosionRadius || 50,
-                                life: 10,
-                                maxLife: 10,
-                                damage: bone.explosionDamage || 6,
-                                burn: true,
-                                burnDamage: 3,
-                                burnDuration: 120
-                            });
-                            if (bone.curse && currentMonster.health <= 0) {
-                                screenShakeTimer = Math.max(screenShakeTimer, 10);
-                                frameFreeze = Math.max(frameFreeze || 0, 3);
-                            }
-                        }
-                        player.castleBoneKills = (player.castleBoneKills || 0) + 1;
-                    }
                     currentMonster.startDeathAnimation();
                 } else {
                     currentMonster.updateDeathAnimation();
@@ -17042,7 +15765,6 @@ function gameLoop() {
             updateGrenadeFragments();
             updateBoulderMarks();
             updateBoulderProjectiles();
-            updateLandmines();
             updateBurningEffects();
             updateWeaponPickups();
             updateMonsterHitscans();
@@ -17054,9 +15776,7 @@ function gameLoop() {
             updateMonsterDeathEffects();
             updatePortalEffects();
             updateEvaporationEffects();
-            updateExplosionEffects();
             updateTrackerProjectiles();
-            updatePassiveImpactEffects();
             updateCastleBossSpawnTimer();
             updateCastleBossAlert();
 
@@ -17070,9 +15790,7 @@ function gameLoop() {
                     player.y + player.height > currentMonster.y;
 
                 if (isColliding && currentMonster.attackCooldown === 0) {
-                    if (currentMonster.type === 'croc' && currentMonster.isBiting) {
-                        // Croc está mordendo, não aplicar dano novamente até a animação terminar
-                    } else if (player.dashTimer > 0 || player.postDashInvulnTimer > 0 || player.slashDashInvulnTimer > 0) {
+                    if (player.dashTimer > 0 || player.postDashInvulnTimer > 0 || player.slashDashInvulnTimer > 0) {
                         currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
                     } else if (player.weapon && player.weapon.type === 'gun' && player.gunReloadCooldown > 0 && player.gunReloadInvulnCharges > 0) {
                         player.gunReloadInvulnCharges = 0;
@@ -17088,21 +15806,40 @@ function gameLoop() {
                         });
                         currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
                     } else {
-                        if (currentMonster.type === 'croc') {
-                            currentMonster.isBiting = true;
-                            currentMonster.biteAnimationTimer = currentMonster.biteAnimationDuration;
-                            currentMonster.attackCooldown = currentMonster.biteAnimationDuration;
-                        } else {
-                            let effectiveDamage = Math.max(0, currentMonster.getAttackDamage() - player.damageReduction);
-                            if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
-                                effectiveDamage *= (1 - player.parryDefenseBonus / 100);
-                            }
-                            player.health -= effectiveDamage;
-                            chargePassives('onTakeDamage');
-                             currentMonster.attackCooldown = 60;
+                        let effectiveDamage = Math.max(0, currentMonster.getAttackDamage() - player.damageReduction);
+                        if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
+                            effectiveDamage *= (1 - player.parryDefenseBonus / 100);
                         }
+                        player.health -= effectiveDamage;
+                        if (currentMonster.type === 'simple') {
+                            tryApplyPlayerConfusionFromAttack(currentMonster.type, { chance: 2 });
+                        } else if (currentMonster.type === 'croc') {
+                            player.stunTimer = Math.max(player.stunTimer || 0, 12);
+                            tryApplyPlayerConfusionFromAttack('croc', {
+                                chance: 100,
+                                durationFrames: Math.round(0.75 * 60)
+                            });
+                            player.poisonTimer = Math.max(player.poisonTimer || 0, 5 * 60);
+                            player.poisonTickTimer = 60;
+                            player.poisonDamagePerTick = 2;
+                            currentMonster.consecutiveHitsOnPlayer = (currentMonster.consecutiveHitsOnPlayer || 0) + 1;
+                            if (currentMonster.consecutiveHitsOnPlayer >= 2) {
+                                const monsterCenterX = currentMonster.x + currentMonster.width / 2;
+                                const monsterCenterY = currentMonster.y + currentMonster.height / 2;
+                                const escapeDir = Math.atan2(
+                                    monsterCenterY - (player.y + player.height / 2),
+                                    monsterCenterX - (player.x + player.width / 2)
+                                );
+                                currentMonster.sprintEscapeDir = escapeDir;
+                                currentMonster.sprintEscapeTimer = 40;
+                                currentMonster.consecutiveHitsOnPlayer = 0;
+                            }
+                        }
+                        currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
                     }
                 }
+            } else if (currentMonster && currentMonster.type === 'croc') {
+                currentMonster.consecutiveHitsOnPlayer = 0;
             }
 
             processMeleeHit();
@@ -17219,14 +15956,11 @@ function gameLoop() {
             drawGrenadeFragments();
             drawBoulderMarks();
             drawBoulderProjectiles();
-            drawLandmines();
             drawEvaporationEffects();
-            drawExplosionEffects();
             drawCastleBoneOrbiters();
             drawMonsterHitscans();
             drawAfterImages();
             drawCritEffects();
-            drawPassiveImpactEffects();
             endCamera();
         } else {
             // Renderizar mapa normal
@@ -17245,17 +15979,12 @@ function gameLoop() {
             drawThrownExplosives();
             drawFireZones();
             drawGrenadeFragments();
-            drawBoulderMarks();
-            drawBoulderProjectiles();
-            drawLandmines();
             drawEvaporationEffects();
-            drawExplosionEffects();
             drawThrownExplosives();
             drawFireZones();
             drawGrenadeFragments();
             drawBoulderMarks();
             drawBoulderProjectiles();
-            drawLandmines();
             drawCastleBoneOrbiters();
             drawMonsterHitscans();
             drawSlowdownInsects();
@@ -17320,6 +16049,3 @@ currentMonster = new Monster(phase, chooseMonsterType());
 positionMonsterAwayFromPlayer(currentMonster);
 isSelectingWeapon = true;
 gameLoop();
-
-
-
