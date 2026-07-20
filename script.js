@@ -24,12 +24,27 @@ canvas.addEventListener('mousemove', (e) => {
         const py = player.y + player.height / 2;
         player.swordAimAngle = Math.atan2(worldMouseY - py, worldMouseX - px);
     }
+    if (gameOver) {
+        const btnX = canvas.width / 2 - 110;
+        const btnY = canvas.height / 2 + 80;
+        const btnW = 220;
+        const btnH = 50;
+        if (mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= btnY && mouseY <= btnY + btnH) {
+            canvas.style.cursor = 'pointer';
+        } else {
+            canvas.style.cursor = 'default';
+        }
+    }
 });
 
 let viewportWidth;
 let viewportHeight;
 let gameWidth;
 let gameHeight;
+// Tile size used for Moe-style rock/stone range conversions (in world pixels)
+const MOE_TILE = 32;
+// Global lock so only ONE Moe attack is active across all Boulders at a time
+let moeAttackGlobalLock = 0;
 let mapWalls = [];
 let mapDecor = [];
 // Cached canvas for map decor to avoid redrawing heavy static decorations every frame
@@ -268,6 +283,51 @@ function getRandomPointInUpgradeRing(size = 0) {
     };
 }
 
+function getRandomPointInSpawnRing(size = 0) {
+    const { centerX, centerY, spawnRadius } = getMapCircle();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+        const point = getRandomPointInRing(centerX, centerY, 0, spawnRadius - 20);
+        if (isPointInsideMapCircle(point.x, point.y, size)) {
+            return point;
+        }
+    }
+    const safeSize = Math.max(0, size);
+    return {
+        x: Math.max(safeSize / 2, Math.min(gameWidth - safeSize / 2, centerX)),
+        y: Math.max(safeSize / 2, Math.min(gameHeight - safeSize / 2, centerY))
+    };
+}
+
+function getRandomPointInWildRing(size = 0) {
+    const { centerX, centerY, upgradeRadius, radius } = getMapCircle();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+        const point = getRandomPointInRing(centerX, centerY, upgradeRadius + 20, radius - 20);
+        if (isPointInsideMapCircle(point.x, point.y, size)) {
+            return point;
+        }
+    }
+    const safeSize = Math.max(0, size);
+    return {
+        x: Math.max(safeSize / 2, Math.min(gameWidth - safeSize / 2, centerX)),
+        y: Math.max(safeSize / 2, Math.min(gameHeight - safeSize / 2, centerY))
+    };
+}
+
+function getRandomPointInMapCircle(size = 0) {
+    const { centerX, centerY, wildRadius } = getMapCircle();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+        const point = getRandomPointInRing(centerX, centerY, 0, wildRadius);
+        if (isPointInsideMapCircle(point.x, point.y, size)) {
+            return point;
+        }
+    }
+    const safeSize = Math.max(0, size);
+    return {
+        x: Math.max(safeSize / 2, Math.min(gameWidth - safeSize / 2, centerX)),
+        y: Math.max(safeSize / 2, Math.min(gameHeight - safeSize / 2, centerY))
+    };
+}
+
 function getPlayerInteriorScale() {
     if (!playerInsideConstruction || currentConstructionId < 0) return 1;
     const construction = constructions.find(c => c.id === currentConstructionId);
@@ -304,7 +364,7 @@ function createMapDecor() {
 
     // Árvores na zona de spawn
     for (let i = 0; i < 5; i++) {
-        const pos = getRandomPointInZone('spawn', 70);
+        const pos = getRandomPointInSpawnRing(70);
         mapDecor.push(createDecorEntry(pos.x, pos.y, 2.2 + Math.random() * 0.9, 0.98, 'spawn'));
     }
 
@@ -321,7 +381,11 @@ function createMapDecor() {
 
         // Tentar encontrar uma posição válida que não colida com outras construções
         while (!isValidPosition && attempts < 120) {
-            pos = getRandomPointInUpgradeRing(90);
+            if (isCastleOrMansion) {
+                pos = getRandomPointInUpgradeRing(90);
+            } else {
+                pos = getRandomPointInWildRing(90);
+            }
             isValidPosition = true;
 
             // Verificar distância mínima entre construções
@@ -372,7 +436,7 @@ function createMapDecor() {
 
     // Árvores na zona selvagem
     for (let i = 0; i < 60; i++) {
-        const pos = getRandomPointInZone('wild', 40);
+        const pos = getRandomPointInWildRing(40);
         mapDecor.push(createDecorEntry(pos.x, pos.y, 1.6 + Math.random() * 0.8, 0.82, 'wild'));
     }
 
@@ -779,60 +843,31 @@ function drawCastleTeleportArea() {
 }
 
 function drawMansionInterior() {
-    // Piso de madeira clara
-    ctx.fillStyle = 'rgba(160, 130, 100, 1)';
-    ctx.fillRect(0, 0, viewportWidth, viewportHeight);
-    
-    // Tábuas de madeira
-    ctx.fillStyle = 'rgba(140, 110, 80, 0.85)';
-    for (let i = 0; i < viewportWidth; i += 50) {
-        ctx.fillRect(i, 0, 2, viewportHeight);
-    }
-    for (let i = 0; i < viewportHeight; i += 30) {
-        ctx.fillRect(0, i, viewportWidth, 1);
-    }
-    
-    // Parede de papel/pintura clara
-    ctx.fillStyle = 'rgba(200, 180, 160, 0.95)';
-    ctx.fillRect(0, 0, viewportWidth, 100);
-    ctx.fillRect(0, 0, 100, viewportHeight);
-    ctx.fillRect(viewportWidth - 100, 0, 100, viewportHeight);
-    
-    // Moldura decorativa
-    ctx.strokeStyle = 'rgba(160, 140, 110, 0.8)';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(15, 15, viewportWidth - 30, viewportHeight - 30);
-    
-    // Iluminação quente
-    const gradient = ctx.createRadialGradient(viewportWidth / 2, viewportHeight / 2, 0, viewportWidth / 2, viewportHeight / 2, Math.max(viewportWidth, viewportHeight));
-    gradient.addColorStop(0, 'rgba(220, 200, 160, 0.1)');
-    gradient.addColorStop(1, 'rgba(160, 120, 80, 0.15)');
-    ctx.fillStyle = gradient;
+    // Screen-space background + HUD only. The dungeon rooms and all
+    // entities are drawn AFTER beginCamera() (world-space transform),
+    // so the player, ghosts and rooms all share one camera.
+    ctx.fillStyle = 'rgba(18, 14, 24, 1)';
     ctx.fillRect(0, 0, viewportWidth, viewportHeight);
 
-    // Chandeliers (lustres)
-    for (let x = 200; x < viewportWidth; x += 400) {
-        ctx.fillStyle = 'rgba(255, 200, 100, 0.7)';
-        ctx.beginPath();
-        ctx.arc(x, 50, 15, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = 'rgba(200, 150, 50, 0.8)';
-        ctx.beginPath();
-        ctx.arc(x, 55, 8, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
-    // Área de teleporte da mansão
-    drawMansionTeleportArea();
+    // Mansion exit / progress HUD overlay.
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(0, 0, viewportWidth, 30);
+    ctx.fillStyle = '#cfe8ff';
+    ctx.font = 'bold 14px Arial';
+    ctx.textAlign = 'left';
+    const nextAt = DUNGEON_KILLS_PER_ROOM - (dungeonRoomKills % DUNGEON_KILLS_PER_ROOM);
+    ctx.fillText(`MANSÃO · Salas abertas: ${dungeonUnlockedRooms}/${DUNGEON_ROOM_COUNT} · Fantasmas: ${dungeonTotalKills} · Próx. sala em ${nextAt} kills`, 10, 20);
+    ctx.restore();
 
     if (!mansionExitOpen) {
         ctx.save();
         ctx.fillStyle = 'rgba(40, 10, 60, 0.92)';
         ctx.font = 'bold 32px Arial';
         ctx.textAlign = 'center';
-        ctx.fillText('SAÍDA TRANCADA', viewportWidth / 2, 110);
+        ctx.fillText('SAÍDA TRANCADA', viewportWidth / 2, viewportHeight - 60);
         ctx.font = '18px Arial';
-        ctx.fillText('Mate todos os fantasmas para abrir a saída', viewportWidth / 2, 140);
+        ctx.fillText('Mate todos os fantasmas para abrir a saída', viewportWidth / 2, viewportHeight - 30);
         ctx.restore();
     }
 }
@@ -1441,8 +1476,16 @@ function updateCamera() {
     if (!player) return;
 
     if (playerInsideConstruction) {
-        cameraX = 0;
-        cameraY = 0;
+        const construction = constructions.find(c => c.id === currentConstructionId);
+        if (construction && construction.type === 'mansion') {
+            // The dungeon camera re-centers on the current room whenever the
+            // player changes rooms. Keep the render camera synced to it.
+            cameraX = dungeonCameraX;
+            cameraY = dungeonCameraY;
+        } else {
+            cameraX = 0;
+            cameraY = 0;
+        }
         return;
     }
 
@@ -1507,12 +1550,18 @@ window.addEventListener('resize', () => {
 resizeGameCanvas();
 
 // ===== CLASSES DO JOGO =====
+function getProjectileSpeedMultiplier() {
+    const phaseFactor = Math.min(1, (phase - 1) / 20);
+    return 0.5 + 0.5 * phaseFactor;
+}
+
 class Projectile {
     constructor(x, y, targetX, targetY, damage, color, speed, owner = 'player', size = 8, opts = {}) {
         this.x = x;
         this.y = y;
         this.size = size;
-        const actualSpeed = (typeof speed === 'number') ? speed : 0;
+        const multiplier = getProjectileSpeedMultiplier();
+        const actualSpeed = (typeof speed === 'number') ? speed * multiplier : 0;
         this.speed = actualSpeed;
         this.baseActualSpeed = actualSpeed;
         const dx = targetX - x;
@@ -1538,13 +1587,16 @@ class Projectile {
         this.delayTimer = opts.delayTimer || 0;
         this.delayDuration = opts.delayDuration || 0;
         this.monsterType = opts.monsterType || null;
+        this.moeStage = opts.moeStage || 0;
         this.style = opts.style || (owner === 'monster' ? getMonsterProjectileStyle(this.monsterType) : '');
         this.projectileEmoji = opts.projectileEmoji || opts.emoji || null;
         this.hitTarget = opts.hitTarget || false;
         this.ignoreCollision = opts.ignoreCollision || false;
-        this.explosive = opts.explosive || false;
-        this.explosiveRadius = opts.explosiveRadius || 0;
         this.isGunOriginal = opts.isGunOriginal || false;
+        this.isPlayerOriginal = opts.isPlayerOriginal || false;
+        this.tracer = opts.tracer || false;
+        this.tracerColor = opts.tracerColor || null;
+        this.tracerLife = typeof opts.tracerLife === 'number' ? opts.tracerLife : 0;
         this.pullStrength = opts.pullStrength || 0;
         this.pullRadius = opts.pullRadius || 0;
         this.lifetime = opts.lifetime || null;
@@ -1763,6 +1815,9 @@ class Projectile {
         if (this.shakeTimer > 0) {
             this.shakeTimer -= 1;
         }
+        if (this.tracer && this.tracerLife > 0) {
+            this.tracerLife--;
+        }
     }
 
     draw() {
@@ -1776,6 +1831,9 @@ class Projectile {
         const angle = Math.atan2(this.vy, this.vx);
         const style = this.style || '';
 
+        const isCasterAttack = style === 'casterShard' || style === 'casterBurst' || style === 'casterSniper' || style === 'casterFlameCircle' || style === 'casterFlameSpiral' || style === 'casterFlameRing' || style === 'casterFlameVolley';
+        if (isCasterAttack) { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; }
+
         if (this.projectileEmoji) {
             ctx.translate(this.x, this.y);
             ctx.font = `${Math.max(14, this.size * 2.6)}px Arial`;
@@ -1787,6 +1845,19 @@ class Projectile {
             ctx.fillText(this.projectileEmoji, 0, 0);
             ctx.restore();
             return;
+        }
+
+        if (this.tracer && this.tracerLife > 0 && this.tracerColor) {
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, this.tracerLife / 12) * 0.6;
+            ctx.strokeStyle = this.tracerColor;
+            ctx.lineWidth = Math.max(1, this.size * 0.5);
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(this.x - this.vx * 1.8, this.y - this.vy * 1.8);
+            ctx.lineTo(this.x, this.y);
+            ctx.stroke();
+            ctx.restore();
         }
 
         if (style === 'tankOrbit') {
@@ -1829,6 +1900,43 @@ class Projectile {
                 ctx.fillStyle = 'rgba(255,255,255,0.9)';
                 ctx.fill();
             }
+            ctx.restore();
+            return;
+        }
+
+        if (style === 'moeRock' || style === 'moeStone' || style === 'moePebble') {
+            ctx.translate(this.x, this.y);
+            const rockSize = this.size;
+            // Body: irregular rocky sphere
+            const grad = ctx.createRadialGradient(-rockSize * 0.3, -rockSize * 0.3, rockSize * 0.1, 0, 0, rockSize);
+            grad.addColorStop(0, style === 'moeStone' ? '#d8c08c' : style === 'moePebble' ? '#b89a6c' : '#b9a07c');
+            grad.addColorStop(0.6, style === 'moeStone' ? '#a98f5e' : style === 'moePebble' ? '#8a7556' : '#8a7556');
+            grad.addColorStop(1, '#5c4a32');
+            ctx.fillStyle = grad;
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
+            ctx.shadowBlur = style === 'moeStone' ? 6 : style === 'moePebble' ? 4 : 12;
+            // lumpy outline
+            ctx.beginPath();
+            const lobes = 7;
+            for (let i = 0; i <= lobes; i++) {
+                const a = (Math.PI * 2 * i) / lobes;
+                const r = rockSize * (i % 2 === 0 ? 1.0 : 0.82);
+                const px = Math.cos(a) * r;
+                const py = Math.sin(a) * r;
+                if (i === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = 'rgba(40, 30, 20, 0.8)';
+            ctx.lineWidth = Math.max(1, rockSize * 0.1);
+            ctx.stroke();
+            // Highlight
+            ctx.fillStyle = 'rgba(255, 240, 210, 0.35)';
+            ctx.beginPath();
+            ctx.arc(-rockSize * 0.3, -rockSize * 0.3, rockSize * 0.28, 0, Math.PI * 2);
+            ctx.fill();
             ctx.restore();
             return;
         }
@@ -1905,102 +2013,14 @@ class Projectile {
         if (style === 'swarmBug') {
             ctx.translate(this.x, this.y);
             ctx.rotate(angle);
-            ctx.shadowColor = 'rgba(190, 110, 255, 0.98)';
-            ctx.shadowBlur = 30;
-
-            // Corpo do inseto roxo
-            const swarmBody = ctx.createRadialGradient(0, 0, this.size * 0.14, 0, 0, this.size * 1.1);
-            swarmBody.addColorStop(0, 'rgba(255, 235, 255, 0.98)');
-            swarmBody.addColorStop(0.35, this.color || '#9c4fff');
-            swarmBody.addColorStop(1, 'rgba(120, 45, 190, 0.85)');
-            ctx.fillStyle = swarmBody;
+            ctx.fillStyle = this.color || '#9c4fff';
             ctx.beginPath();
-            ctx.ellipse(0, 0, this.size * 1.05, this.size * 0.65, 0, 0, Math.PI * 2);
+            ctx.ellipse(0, 0, this.size, this.size * 0.55, 0, 0, Math.PI * 2);
             ctx.fill();
-
-            ctx.fillStyle = 'rgba(205, 145, 255, 0.95)';
-            for (let i = -1; i <= 1; i++) {
-                ctx.beginPath();
-                ctx.ellipse(i * this.size * 0.34, 0, this.size * 0.34, this.size * 0.2, 0, 0, Math.PI * 2);
-                ctx.fill();
-            }
-
-            // Cabeça pequena
-            ctx.fillStyle = 'rgba(225, 165, 255, 0.98)';
+            ctx.fillStyle = 'rgba(0,0,0,0.35)';
             ctx.beginPath();
-            ctx.arc(-this.size * 0.95, 0, this.size * 0.42, 0, Math.PI * 2);
+            ctx.arc(-this.size * 0.2, -this.size * 0.1, this.size * 0.22, 0, Math.PI * 2);
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.75)';
-            ctx.lineWidth = 1.2;
-            ctx.stroke();
-
-            // Ferrão
-            ctx.fillStyle = 'rgba(35, 8, 65, 0.95)';
-            ctx.beginPath();
-            ctx.moveTo(this.size * 0.92, 0);
-            ctx.lineTo(this.size * 1.55, -this.size * 0.18);
-            ctx.lineTo(this.size * 1.55, this.size * 0.18);
-            ctx.closePath();
-            ctx.fill();
-
-            // Listras roxas escuras
-            ctx.strokeStyle = 'rgba(50, 10, 80, 0.96)';
-            ctx.lineWidth = 2;
-            for (let s = -1; s <= 1; s++) {
-                ctx.beginPath();
-                ctx.ellipse(s * this.size * 0.2, 0, this.size * 0.63, this.size * 0.27, 0, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-
-            // Asas translúcidas roxas
-            ctx.fillStyle = 'rgba(210, 180, 255, 0.3)';
-            ctx.strokeStyle = 'rgba(200, 160, 255, 0.45)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.ellipse(this.size * 0.18, -this.size * 0.5, this.size * 0.48, this.size * 0.24, -0.45, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.ellipse(this.size * 0.18, this.size * 0.52, this.size * 0.48, this.size * 0.24, 0.45, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-
-            // Olhos
-            ctx.fillStyle = 'rgba(255,255,255,0.95)';
-            ctx.beginPath();
-            ctx.arc(-this.size * 1.05, -this.size * 0.14, this.size * 0.12, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(-this.size * 1.05, this.size * 0.14, this.size * 0.12, 0, Math.PI * 2);
-            ctx.fill();
-
-            ctx.restore();
-            return;
-        }
-
-        if (style === 'gunBullet') {
-            ctx.translate(this.x, this.y);
-            ctx.rotate(angle);
-            ctx.fillStyle = this.color;
-            ctx.shadowColor = this.color;
-            ctx.shadowBlur = 16;
-            ctx.beginPath();
-            ctx.moveTo(-this.size * 1.2, -this.size * 0.55);
-            ctx.lineTo(this.size * 0.9, -this.size * 0.55);
-            ctx.arc(this.size * 0.9, 0, this.size * 0.55, -Math.PI / 2, Math.PI / 2);
-            ctx.lineTo(-this.size * 1.2, this.size * 0.55);
-            ctx.arc(-this.size * 1.2, 0, this.size * 0.55, Math.PI / 2, -Math.PI / 2);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.75)';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-            ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(-this.size * 1.3, 0);
-            ctx.lineTo(-this.size * 2.3, 0);
-            ctx.stroke();
             ctx.restore();
             return;
         }
@@ -2041,6 +2061,33 @@ class Projectile {
             ctx.beginPath();
             ctx.moveTo(-this.size * 1.6, 0);
             ctx.lineTo(-this.size * 2.7, 0);
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
+
+        if (style === 'gunBullet') {
+            ctx.translate(this.x, this.y);
+            ctx.rotate(angle);
+            ctx.fillStyle = this.color;
+            ctx.shadowColor = this.color;
+            ctx.shadowBlur = 16;
+            ctx.beginPath();
+            ctx.moveTo(-this.size * 1.2, -this.size * 0.55);
+            ctx.lineTo(this.size * 0.9, -this.size * 0.55);
+            ctx.arc(this.size * 0.9, 0, this.size * 0.55, -Math.PI / 2, Math.PI / 2);
+            ctx.lineTo(-this.size * 1.2, this.size * 0.55);
+            ctx.arc(-this.size * 1.2, 0, this.size * 0.55, Math.PI / 2, -Math.PI / 2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(-this.size * 1.3, 0);
+            ctx.lineTo(-this.size * 2.3, 0);
             ctx.stroke();
             ctx.restore();
             return;
@@ -2467,28 +2514,74 @@ class Projectile {
             return;
         }
 
-        if (style === 'casterBurst') {
+        if (style === 'casterShard' || style === 'casterBurst' || style === 'casterSniper' || style === 'casterFlameCircle' || style === 'casterFlameSpiral' || style === 'casterFlameRing' || style === 'casterFlameVolley') {
             ctx.translate(this.x, this.y);
             ctx.rotate(angle);
-            ctx.fillStyle = this.color;
-            ctx.shadowColor = this.color;
-            ctx.shadowBlur = 22;
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+
+            const s = this.size;
+            const isBurst = style === 'casterBurst';
+            const isSniper = style === 'casterSniper';
+            const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.012 + this.x * 0.05);
+
+            // Outer hot aura
+            const auraGrad = ctx.createRadialGradient(0, 0, s * 0.1, 0, 0, s * 1.7);
+            auraGrad.addColorStop(0, 'rgba(255, 230, 150, 0.85)');
+            auraGrad.addColorStop(0.4, 'rgba(255, 150, 50, 0.55)');
+            auraGrad.addColorStop(1, 'rgba(120, 40, 160, 0)');
+            ctx.fillStyle = auraGrad;
             ctx.beginPath();
-            ctx.moveTo(0, -this.size * 1.4);
-            ctx.lineTo(this.size * 0.7, -this.size * 0.3);
-            ctx.lineTo(this.size * 0.2, this.size * 1.4);
-            ctx.lineTo(-this.size * 0.6, this.size * 0.8);
-            ctx.lineTo(-this.size * 0.4, -this.size * 0.8);
+            ctx.arc(0, 0, s * (1.5 + 0.2 * pulse), 0, Math.PI * 2);
+            ctx.fill();
+
+            // Swirling arcane ring
+            ctx.strokeStyle = `rgba(255, 180, 90, ${0.6 + 0.3 * pulse})`;
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.arc(0, 0, s * 1.15, -Math.PI * 0.35 + performance.now() * 0.006, Math.PI * 0.9 + performance.now() * 0.006);
+            ctx.stroke();
+            ctx.strokeStyle = `rgba(170, 120, 255, ${0.5 + 0.3 * pulse})`;
+            ctx.beginPath();
+            ctx.arc(0, 0, s * 0.85, Math.PI * 0.2 - performance.now() * 0.006, Math.PI * 1.4 - performance.now() * 0.006);
+            ctx.stroke();
+
+            // Core flame diamond
+            const coreGrad = ctx.createRadialGradient(0, 0, s * 0.05, 0, 0, s * 0.9);
+            coreGrad.addColorStop(0, '#fff7e6');
+            coreGrad.addColorStop(0.5, isSniper ? '#ff5a78' : '#ff8a1c');
+            coreGrad.addColorStop(1, isSniper ? '#8a1f4a' : '#c43a00');
+            ctx.fillStyle = coreGrad;
+            ctx.beginPath();
+            const coreScale = isBurst ? 1.35 : (isSniper ? 1.5 : 1);
+            ctx.moveTo(0, -s * 1.3 * coreScale);
+            ctx.lineTo(s * 0.8 * coreScale, 0);
+            ctx.lineTo(0, s * 1.3 * coreScale);
+            ctx.lineTo(-s * 0.8 * coreScale, 0);
             ctx.closePath();
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.88)';
-            ctx.lineWidth = 1.8;
-            ctx.stroke();
-            ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-            ctx.lineWidth = 2;
+
+            // Inner glyph
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+            ctx.lineWidth = 1.5;
             ctx.beginPath();
-            ctx.arc(0, 0, this.size * 1.8, 0, Math.PI * 2);
+            ctx.moveTo(0, -s * 0.7 * coreScale);
+            ctx.lineTo(0, s * 0.7 * coreScale);
+            ctx.moveTo(-s * 0.45 * coreScale, 0);
+            ctx.lineTo(s * 0.45 * coreScale, 0);
             ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(0, 0, s * 0.35 * coreScale, 0, Math.PI * 2);
+            ctx.stroke();
+
+            if (isBurst) {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(0, 0, s * 1.8, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
             ctx.restore();
             return;
         }
@@ -2599,8 +2692,10 @@ class Projectile {
             return;
         }
 
-        if (style === 'casterFlameCircle' || style === 'casterFlameSpiral' || style === 'casterFlameRing' || style === 'casterFlameVolley') {
+        if (style === 'casterFlameCircle' || style === 'casterFlameSpiral' || style === 'casterFlameRing' || style === 'casterFlameVolley' || style === 'casterShard' || style === 'casterBurst') {
             ctx.fillStyle = '#ff9e3c';
+            ctx.shadowColor = '#ff9e3c';
+            ctx.shadowBlur = 0;
             ctx.beginPath();
             ctx.arc(this.x, this.y, this.size * 0.9, 0, Math.PI * 2);
             ctx.fill();
@@ -2608,6 +2703,47 @@ class Projectile {
             ctx.beginPath();
             ctx.arc(this.x - this.size * 0.24, this.y - this.size * 0.26, this.size * 0.28, 0, Math.PI * 2);
             ctx.fill();
+            ctx.restore();
+            return;
+        }
+
+        if (style === 'arcaneBolt') {
+            ctx.fillStyle = '#00ccff';
+            ctx.shadowColor = '#00ccff';
+            ctx.shadowBlur = 18;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size * 0.9, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.beginPath();
+            ctx.arc(this.x - this.size * 0.2, this.y - this.size * 0.2, this.size * 0.35, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+            return;
+        }
+
+        if (style === 'rockProjectile') {
+            ctx.translate(this.x, this.y);
+            ctx.fillStyle = this.color;
+            ctx.shadowColor = '#3e2723';
+            ctx.shadowBlur = 8;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.size, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = 'rgba(0,0,0,0.25)';
+            ctx.beginPath();
+            ctx.arc(-this.size * 0.25, -this.size * 0.25, this.size * 0.35, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(this.size * 0.2, this.size * 0.15, this.size * 0.25, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+            ctx.lineWidth = Math.max(1, this.size * 0.1);
+            ctx.beginPath();
+            ctx.arc(0, 0, this.size * 0.8, 0, Math.PI * 2);
+            ctx.stroke();
             ctx.restore();
             return;
         }
@@ -2646,6 +2782,16 @@ class Player {
         this.health = 100;
         this.maxHealth = 100;
         this.attackCooldown = 0;
+        this.gunSpinTimer = 0;
+        this.gunSpinLockTimer = 0;
+        this.gunStopFlashTimer = 0;
+        this.gunSpinAfterImageTimer = 0;
+        this.gunSpinAfterImageCount = 0;
+        this.gunFireQueued = false;
+        this.gunRechargeBoost = false;
+        this.gunSpinBoostPending = false;
+        this.gunSpinBurnChance = 0;
+        this.gunBurstEndPending = false;
         this.attacking = false;
         this.meleeAttacking = false;
         this.coneAttacking = false;
@@ -2680,7 +2826,7 @@ class Player {
         this.parryConfusionDuration = 0;
         this.spinAttackLevel = 0;
         this.spinAttack = false;
-        this.spinAttackCharges = 0;
+        this.spinAttackCharges = false;
         this.attackSpeed = 0;
         this.projectileSpeedBonus = 0;
         this.bombStunPerHitSeconds = 0;
@@ -2699,13 +2845,16 @@ class Player {
         this.bombFragmentSizeBonus = 0;
         this.bombCooldown = 0;
         this.grenadeCooldown = 0;
+        this.landmineCooldown = 0;
+        this.landmineCooldownMax = 12 * 60;
         this.gunAmmo = 6;
         this.gunMaxAmmo = 6;
+        this.kickbackVX = 0;
+        this.kickbackVY = 0;
         this.gunReloadCooldown = 0;
         this.gunReloadCooldownMax = 120;
-        this.gunBurstFire = 0;
-        this.gunBurstEndPending = false;
-        this.gunExplosiveAmmo = 0;
+        this.gunBurstMidpointTimer = 0;
+        this.gunExtraPowder = 0;
         this.staffHomingBurst = 0;
         this.gunReloadHitCount = 0;
         this.gunReloadHitMax = 13;
@@ -2729,19 +2878,6 @@ class Player {
         this.gunReloadHitsToTrigger = 12;
         this.gunReloadInvulnCharges = 0;
         this.gunReloadFlashTicker = 0;
-        // Mecânica de giro/recarga do revólver
-        this.gunSpinTimer = 0;
-        this.gunSpinLockTimer = 0;
-        this.gunStopFlashTimer = 0;
-        this.gunSpinAfterImageTimer = 0;
-        this.gunSpinAfterImageCount = 0;
-        this.gunFireQueued = false;
-        this.gunRechargeBoost = false;
-        this.gunSpinBurnChance = 0;
-        this.gunExtraPowder = 0;
-        this.kickbackVX = 0;
-        this.kickbackVY = 0;
-        this.kickbackTimer = 0;
         this.gunReloadMoveBonus = 0;
         this.gunReloadAfterImageTimer = 0;
         this.gunReloadMoveBonusMax = 1.8;
@@ -2817,9 +2953,9 @@ class Player {
         this.confusedLevel = 0;
         this.confusedTimer = 0;
         this.mansionGhostCopyUnlocked = false;
-        this.mansionGhostCopyChance = 0.33;
-        this.mansionGhostCopyDamageRatio = 0.5;
-        this.mansionGhostCopyStunFrames = 24;
+        this.mansionGhostCopyChance = 0.45;
+        this.mansionGhostCopyDamageRatio = 0.7;
+        this.mansionGhostCopyStunFrames = 32;
         
         // Sistema de aceleração por cooldown de dash
         this.dashAccelerationTimer = 0; // contador para 0.5s (30 frames)
@@ -2920,8 +3056,8 @@ class Player {
             return {
                 offsetX,
                 offsetY,
-                tipX: px + Math.cos(targetAngle) * 22,
-                tipY: py + Math.sin(targetAngle) * 22,
+                tipX: px + Math.cos(targetAngle) * 30,
+                tipY: py + Math.sin(targetAngle) * 30,
                 aimAngle: targetAngle
             };
         }
@@ -3217,12 +3353,17 @@ class Player {
                 this.swordAlignmentTimer = 0;
                 if (!this.weapon || this.weapon.type !== 'sword') {
                     this.swordAlignmentSpeedBonus = 0;
+                    }
                 }
             }
-        }
-
-        if (playerInsideConstruction) {
-            resolveEntityViewportBounds(this, prevX, prevY, 16);
+            if (playerInsideConstruction) {
+            const construction = constructions.find(c => c.id === currentConstructionId);
+            if (construction && construction.type === 'mansion') {
+                dungeonResolvePlayerWalls(prevX, prevY);
+                dungeonCheckRoomTransition();
+            } else {
+                resolveEntityViewportBounds(this, prevX, prevY, 16);
+            }
         } else {
             clampEntityToMapCircle(this);
         }
@@ -3285,8 +3426,26 @@ class Player {
                 this.bowDashCharges = this.bowDashMaxCharges;
             }
         }
+        if (this.weapon && this.weapon.type === 'gun' && this.attackCooldown > 0 && this.gunSpinTimer === 0 && this.gunReloadCooldown === 0) {
+            if (Math.random() < 0.35) {
+                const weaponInfo = this.getWeaponMountPoint();
+                const gray = 90 + Math.floor(Math.random() * 40);
+                evaporationEffects.push({
+                    x: weaponInfo.tipX + (Math.random() - 0.5) * 4,
+                    y: weaponInfo.tipY + (Math.random() - 0.5) * 4,
+                    vx: (Math.random() - 0.5) * 0.5,
+                    vy: -0.2 - Math.random() * 0.6,
+                    life: 14 + Math.floor(Math.random() * 8),
+                    alpha: 0.45,
+                    size: 3 + Math.random() * 3,
+                    color: `rgba(${gray}, ${gray}, ${gray}, 0.9)`,
+                    smoke: true
+                });
+            }
+        }
         if (this.bombCooldown > 0) this.bombCooldown--;
         if (this.grenadeCooldown > 0) this.grenadeCooldown--;
+        if (this.landmineCooldown > 0) this.landmineCooldown--;
         if (this.gunSpinTimer > 0) {
             this.gunSpinTimer = Math.max(0, this.gunSpinTimer - ts);
             // Quando o spin terminar: o tiro NÃO é automático.
@@ -3294,6 +3453,7 @@ class Player {
             // o jogador para atirar novamente ao apertar ataque outra vez.
             if (this.gunSpinTimer === 0) {
                 this.gunSpinLockTimer = 30; // bloqueia novo giro por 0.5s
+                this.gunSpinBoostPending = false;
                 if (this.weapon && this.weapon.type === 'gun') {
                     // Libera o próximo disparo (manual) com o boost do giro.
                     this.attackCooldown = 0;
@@ -3422,10 +3582,6 @@ class Player {
             if (this.shakeTimer > 0) this.shakeTimer -= 1;
             if (this.impactShakeTimer > 0) this.impactShakeTimer -= 1;
         }
-        if ((this.stunTimer || 0) > 0) {
-            const shakeAmount = 4;
-            ctx.translate((Math.random() - 0.5) * shakeAmount, (Math.random() - 0.5) * shakeAmount);
-        }
         const centerX = this.x + this.width / 2;
         const centerY = this.y + this.height / 2;
         const playerScale = getPlayerInteriorScale();
@@ -3492,25 +3648,6 @@ class Player {
                 const px = centerX + Math.cos(angle) * distance;
                 const py = centerY + Math.sin(angle) * distance;
                 spawnEvaporationEffect(px, py, Math.random() < 0.5 ? '#ff6600' : '#ffaa00', 4, 1);
-            }
-        }
-
-        // Aura visual quando atordoado (player): tremor, piscar dourado e estrelas
-        if (this.stunTimer > 0) {
-            const goldFlash = (Math.floor(gameFrameCount / 4) % 2) === 0;
-            const goldAlpha = 0.32 + 0.24 * Math.sin(gameFrameCount * 0.4);
-            ctx.save();
-            ctx.globalAlpha = goldAlpha;
-            ctx.fillStyle = goldFlash ? 'rgba(255, 210, 50, 0.9)' : 'rgba(255, 235, 130, 0.78)';
-            ctx.beginPath();
-            ctx.arc(0, 0, 26 * (0.9 + 0.1 * Math.sin(gameFrameCount * 0.3)), 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-
-            drawStunStars(0, 0, 30, 1, true);
-
-            if (Math.random() < 0.1) {
-                spawnEvaporationEffect(centerX + (Math.random() - 0.5) * 24, centerY + (Math.random() - 0.5) * 24, '#ffe066', 4, 1);
             }
         }
 
@@ -3716,20 +3853,6 @@ class Player {
                     ctx.fillStyle = '#ffffff';
                     ctx.shadowColor = 'rgba(255,255,255,0.6)';
                     ctx.shadowBlur = 8;
-                    ctx.fillRect(-10, -5.5, 18, 11);
-                    ctx.fillRect(-10, -3.5, 8, 7);
-                    ctx.fillRect(8.8, -4, 7.2, 8);
-                    ctx.fillRect(12.4, -2.6, 3.4, 5.2);
-                    ctx.fillRect(4.2, -2.8, 4.4, 5.6);
-                    ctx.globalAlpha = 0.96;
-                }
-                // White flash blink while the gun is on cooldown (not spinning)
-                if (this.attackCooldown > 0 && this.gunSpinTimer <= 0 && this.gunStopFlashTimer <= 0) {
-                    const blink = 0.3 + 0.35 * Math.abs(Math.sin(performance.now() * 0.012));
-                    ctx.globalAlpha = blink;
-                    ctx.fillStyle = '#ffffff';
-                    ctx.shadowColor = 'rgba(255,255,255,0)';
-                    ctx.shadowBlur = 0;
                     ctx.fillRect(-10, -5.5, 18, 11);
                     ctx.fillRect(-10, -3.5, 8, 7);
                     ctx.fillRect(8.8, -4, 7.2, 8);
@@ -4121,10 +4244,9 @@ class Monster {
         this.type = type || this.chooseType();
         this.width = 100 + phase * 20;
         this.height = 100 + phase * 20;
-        const { centerX, centerY, spawnRadius } = getMapCircle();
-        const spawnPos = getRandomPointInRing(centerX, centerY, 0, spawnRadius * 0.92);
-        this.x = Math.max(0, Math.min(gameWidth - this.width, spawnPos.x - this.width / 2));
-        this.y = Math.max(0, Math.min(gameHeight - this.height, spawnPos.y - this.height / 2));
+        const spawnPos = getRandomPointInSpawnRing(Math.max(this.width, this.height));
+        this.x = spawnPos.x;
+        this.y = spawnPos.y;
         this.attackRange = 120;
         this.attackCooldown = 0;
         this.projectileAttackCooldown = 0;
@@ -4148,11 +4270,22 @@ class Monster {
         this.confusedTimer = 0;
 
         if (this.type === 'shooter') {
-            this.health = 37.5 + phase * 11;
-            this.speed = 0.75 + phase * 0.075;
+            this.health = (37.5 + phase * 11) * 2;
+            this.speed = (0.75 + phase * 0.075) * 2;
             this.maxHealth = this.health;
-            this.desiredDistance = 1200; // aumentado drasticamente
-            this.projectileSpeed = 4.5 + phase * 0.25;
+            this.desiredDistance = 1200 * 3; // alcance de tiro triplicado
+            this.projectileSpeed = (4.5 + phase * 0.25) * 3; // ataque viaja 3x mais rápido
+            this.projectileMaxDistance = 800 * 3; // vida do ataque triplicada (distância percorrida)
+            this.patrolSpots = Array.from({ length: 2 }, () => {
+                const p = getRandomPointInUpgradeRing(this.width);
+                return { x: p.x + this.width / 2, y: p.y + this.height / 2, progress: 0, turret: null };
+            });
+            this.patrolIndex = 0;
+            this.patrolStandTimer = 0;
+            this.turret = null;
+            this.fleeRunTimer = 0;
+            this.patrolDashTimer = 0;
+            this.patrolDashTarget = null;
         } else if (this.type === 'tank') {
             this.health = 101.25 + phase * 30;
             this.speed = 0.6 + phase * 0.075;
@@ -4168,6 +4301,13 @@ class Monster {
             this.chargeMissilesWarningTimer = 0;
             this.burstAttackWarningTimer = 0;
             this.shockwaveAttackWarningTimer = 0;
+            // Caster movement/teleport targets
+            this.patrolTarget = {
+                x: Math.random() * Math.max(1, gameWidth - 40) + 20,
+                y: Math.random() * Math.max(1, gameHeight - 40) + 20
+            };
+            this.reachedPatrol = false;
+            this.hasTeleported = false;
         } else if (this.type === 'swarm') {
             this.health = 41.25 + phase * 10;
             this.speed = 1.35 + phase * 0.175;
@@ -4175,6 +4315,8 @@ class Monster {
             this.swarmCooldown = 0;
             this.orbitalAngle = 0;
             this.markSpawnCooldown = 0;
+            this.monsterVolleyCooldown = 0;
+            this.monsterRingCooldown = 0;
         } else if (this.type === 'caster') {
             this.health = 52.5 + phase * 12.5;
             this.speed = 0.375 + phase * 0.05;
@@ -4186,62 +4328,44 @@ class Monster {
             this.portalX = this.x + this.width / 2;
             this.portalY = this.y + this.height / 2;
             this.portalAttackMode = 'circular'; // 'circular', 'spiral', 'ring' ou 'aim16'
+            this.portalSpin = Math.random() * Math.PI * 2;
             this.portalModeToggleCooldown = 0;
             this.spiralProjectileCount = 0; // rastreador de projéteis da espiral
             this.nextPortalActiveDuration = null; // custom duration for specific attack modes
             this.remoteAttackCooldown = Math.round(1.5 * 60); // frames (~1.5s)
             this.remoteAttackTimer = Math.round(Math.random() * this.remoteAttackCooldown);
-            // Tower outpost
-            this.towerX = this.x + this.width / 2;
-            this.towerY = this.y + this.height / 2;
-            this.towerActive = true;
-            this.towerWarningTimer = 0;
-            this.towerTargetX = null;
-            this.towerTargetY = null;
-            this.towerCooldown = 120;
-            this.towerQueue = [];
-            this.towerQueueTimer = 0;
+            this.remotePortalX = 0;
+            this.remotePortalY = 0;
+            this.remotePortalTimer = 0;
+            this.remotePortalWarningTimer = 0;
+            this.remotePortalAttackMode = 'circular';
+            this.remotePortalSpin = Math.random() * Math.PI * 2;
+            this.remotePortalModeToggleCooldown = 0;
             // Patrol / on-fire mechanics
             this.patrolTimer = 0; // frames gastas indo ao patrolTarget
             this.patrolTimeout = 8 * 60; // 8 segundos em frames
             this.onFire = false; // estado ativado se demorar muito
             this.fireAttackBoost = 1.5; // 50% mais poder de ataque quando em chamas
-            // Reactive attack state
-            this.reactiveCooldown = 0;
-            this.retreatTimer = 0;
-            this.orbitAngle = Math.random() * Math.PI * 2;
-            this.orbitRadius = 280 + Math.random() * 140;
-            this.floatOffset = Math.random() * Math.PI * 2;
-            this.casterDashCooldown = 0;
-            this.casterDashTimer = 0;
-            this.casterDashAngle = 0;
-            this.moveMode = 'patrol'; // 'patrol' | 'orbit' | 'retreat'
-            this.teleportCooldown = 0;
-            this.teleportDuration = 0;
-            this.patrolTarget = {
-                x: Math.random() * Math.max(1, gameWidth - 40) + 20,
-                y: Math.random() * Math.max(1, gameHeight - 40) + 20
-            };
-            const corners = [
-                { x: 50, y: 50 },
-                { x: gameWidth - 50, y: 50 },
-                { x: 50, y: gameHeight - 50 },
-                { x: gameWidth - 50, y: gameHeight - 50 }
-            ];
-            this.teleportTarget = corners[Math.floor(Math.random() * corners.length)];
             this.reachedPatrol = false;
-            this.hasTeleported = false;
+            this.sniperCooldown = 0;
+            this.sniperMode = false;
+            // Torre invocada pelo caster
+            this.tower = null; // { x, y, width, height, health, maxHealth, summonTimer, fireCooldown, spin, laserState, laserTimer, laserAngle, laserDamageTick, laserSparks }
+            this.towerSummoned = false;
+            this.towerSummonDelay = Math.round(0.8 * 60);
         } else if (this.type === 'smart') {
             this.health = 54 + phase * 14;
             this.speed = 1.2375 + phase * 0.11;
             this.maxHealth = this.health;
-            this.hitscanCooldown = 0;
-            this.hitscanWarningTimer = 0;
-            this.hitscanTargetX = null;
-            this.hitscanTargetY = null;
             this.predictiveCooldown = 0;
             this.circleAngle = 0;
             this.smartRange = 180 + phase * 6;
+            this.laserCooldown = 60;
+            this.laserState = 'idle';
+            this.laserTimer = 0;
+            this.laserAngle = 0;
+            this.laserDamageTick = 0;
+            this.laserSparks = [];
         } else if (this.type === 'avianightmare') {
             this.health = 48.75 + phase * 15;
             this.speed = 0.7875 + phase * 0.225;
@@ -4260,6 +4384,18 @@ class Monster {
             this.boneRingCooldown = 20;
             this.specialAttackCooldown = 120;
             this.stunTimer = 0;
+        } else if (this.type === 'skeleton_boss') {
+            this.health = 200 + phase * 80;
+            this.maxHealth = this.health;
+            this.speed = 0.8 + phase * 0.04;
+            this.attackRange = 260;
+            this.rotationAngle = Math.random() * Math.PI * 2;
+            this.boneRainCooldown = 0;
+            this.boneRingCooldown = 15;
+            this.specialAttackCooldown = 90;
+            this.summonCooldown = 180;
+            this.stunTimer = 0;
+            this.skeletonMinions = [];
         } else if (this.type === 'simple') {
             this.health = 22.5 + phase * 4;
             this.maxHealth = this.health;
@@ -4267,6 +4403,8 @@ class Monster {
             this.projectileAttackCooldown = 0;
             this.areaAttackCooldown = 0;
             this.clawAttackTimer = 0;
+            this.monsterVolleyCooldown = 0;
+            this.monsterRingCooldown = 0;
             this.simpleVariant = 'default';
             this.simpleDashOpen = 0;
             this.simpleDashCooldown = 0;
@@ -4280,9 +4418,9 @@ class Monster {
             this.simpleClawRange = this.attackRange * 3;
             this.speed = 1.45 + phase * 0.18;
         } else if (this.type === 'croc') {
-            this.health = (22.5 + phase * 4) * 3;
+            this.health = 22.5 + phase * 4;
             this.maxHealth = this.health;
-            this.attackRange = 50;
+            this.attackRange = 70;
             this.speed = 0;
             this.simpleDashCooldown = 45 + Math.round(Math.random() * 30);
             this.simpleDashPauseTimer = 0;
@@ -4318,16 +4456,27 @@ class Monster {
             this.crocDecoyY = this.y + this.height / 2;
             this.crocDecoyAngle = Math.random() * Math.PI * 2;
             this.crocDecoyWanderTimer = 60 + Math.floor(Math.random() * 120);
+            this.crocDecoySpeed = 2.5;
+            this.crocDecoySpeedBoostTimer = 0;
+            this.crocOffScreenRechargeTimer = 0;
+            this.crocRoarRechargeReady = false;
+            this.crocStalkingInvisible = false;
+            this.crocInvisAlpha = 1;
+            this.crocTrailTimer = 0;
             this.crocOffsetAngle = Math.random() * Math.PI * 2;
-            this.crocOffsetDist = 500 + Math.random() * 400;
+            this.crocOffsetDist = 2500 + Math.random() * 2000;
             this.x = Math.max(0, Math.min(gameWidth - this.width, this.crocDecoyX + Math.cos(this.crocOffsetAngle) * this.crocOffsetDist - this.width / 2));
             this.y = Math.max(0, Math.min(gameHeight - this.height, this.crocDecoyY + Math.sin(this.crocOffsetAngle) * this.crocOffsetDist - this.height / 2));
-            this.fakeMarkerX = this.crocDecoyX;
-            this.fakeMarkerY = this.crocDecoyY;
             this.boulderAttackCooldown = 0;
             this.boulderState = 'idle';
             this.boulderMark = null;
             this.boulderProjectile = null;
+            this.isBiting = false;
+            this.biteState = 'idle';
+            this.biteTimer = 0;
+            this.biteLungeDone = false;
+            this.biteCooldown = 0;
+            this.biteDirection = 0;
             this.stalkingMode = true;
             this.stalkingModeTimer = 300 + Math.floor(Math.random() * 1500);
             this.stalkingModeExitTimer = 300 + Math.floor(Math.random() * 300);
@@ -4335,14 +4484,86 @@ class Monster {
             this.stalkingModeRadius = 1300 + Math.random() * 400;
             this.stalkingModeAngle = Math.random() * Math.PI * 2;
             this.stalkingModeSpeed = 0.00125 + Math.random() * 0.0025;
-            this.biteAnimationTimer = 0;
-            this.biteAnimationDuration = 20;
+            this.fakeMarkerX = this.crocDecoyX;
+            this.fakeMarkerY = this.crocDecoyY;
+        } else if (this.type === 'boulder_tosser') {
+            this.health = (22.5 + phase * 4) * 3;
+            this.maxHealth = this.health;
+            this.attackRange = 70;
+            this.speed = 0;
+            this.simpleDashCooldown = 45 + Math.round(Math.random() * 30);
+            this.simpleDashPauseTimer = 0;
+            this.simpleDashWarningTimer = 0;
+            this.simpleDashWarningDuration = Math.round(0.35 * 60);
+            this.simpleDashTimer = 0;
+            this.simpleDashSpeed = 16.5 + phase * 0.7;
+            this.simpleDashDistance = 35;
+            this.simpleDashDirection = 0;
+            this.simpleDashVx = 0;
+            this.simpleDashVy = 0;
+            this.simpleDashOpen = 0;
+            this.attackCooldown = 1;
+            this.simpleVariant = 'default';
+            this.isOffScreen = false;
+            this.lastOnScreenFrame = 0;
+            this.hitsTakenThisLife = 0;
+            this.lastHitFrame = -999;
+            this.consecutiveHitsOnPlayer = 0;
+            this.confusedTimer = 0;
+            this.confusedLevel = 0;
+            this.parryCooldown = 0;
+            this.parryActiveTimer = 0;
+            this.parryFlashTimer = 0;
+            this.parryRecoveryTimer = 0;
+            this.crocCircleAngle = Math.random() * Math.PI * 2;
+            this.crocCircleRadius = 90 + Math.random() * 120;
+            this.crocCircleSpeed = 0.035 + Math.random() * 0.02;
+            this.crocDecoyX = this.x + this.width / 2;
+            this.crocDecoyY = this.y + this.height / 2;
+            this.crocDecoyAngle = Math.random() * Math.PI * 2;
+            this.crocDecoyWanderTimer = 60 + Math.floor(Math.random() * 120);
+            this.crocDecoySpeed = 2.5;
+            this.crocDecoySpeedBoostTimer = 0;
+            this.crocOffScreenRechargeTimer = 0;
+            this.crocRoarRechargeReady = false;
+            this.crocStalkingInvisible = false;
+            this.crocInvisAlpha = 1;
+            this.crocTrailTimer = 0;
+            this.crocOffsetAngle = Math.random() * Math.PI * 2;
+            this.crocOffsetDist = 2500 + Math.random() * 2000;
+            this.x = Math.max(0, Math.min(gameWidth - this.width, this.crocDecoyX + Math.cos(this.crocOffsetAngle) * this.crocOffsetDist - this.width / 2));
+            this.y = Math.max(0, Math.min(gameHeight - this.height, this.crocDecoyY + Math.sin(this.crocOffsetAngle) * this.crocOffsetDist - this.height / 2));
+            this.boulderAttackCooldown = 0;
+            this.boulderState = 'idle';
+            this.boulderMark = null;
+            this.boulderProjectile = null;
             this.isBiting = false;
             this.biteCooldown = 0;
-            this.jawOpen = 0;
+            this.monsterVolleyCooldown = 0;
+            this.monsterRingCooldown = 0;
+            this.moeRockCooldown = 120 + Math.floor(Math.random() * 120);
+            this.moeRockLockout = 0;
+            this.rollState = 'idle';
+            this.rollCooldown = 180 + Math.floor(Math.random() * 120);
+            this.rollTimer = 0;
+            this.rollAngle = 0;
+            this.rollSpeed = 0;
+            this.rollHitDone = false;
+            this.rollTrailTimer = 0;
+            this.rollFleeAngle = 0;
+            this.rollFlashTimer = 0;
+            this.stalkingMode = false;
+            this.stalkingModeTimer = 300 + Math.floor(Math.random() * 1500);
+            this.stalkingModeExitTimer = 300 + Math.floor(Math.random() * 300);
+            this.stalkingModeCooldown = 0;
+            this.stalkingModeRadius = 1300 + Math.random() * 400;
+            this.stalkingModeAngle = Math.random() * Math.PI * 2;
+            this.stalkingModeSpeed = 0.00125 + Math.random() * 0.0025;
+            this.fakeMarkerX = this.crocDecoyX;
+            this.fakeMarkerY = this.crocDecoyY;
         } else {
             this.health = 56.25 + phase * 22.5;
-            this.speed = 0.90875 + phase * 0.3625;
+            this.speed = 1.0875 + phase * 0.3625;
             this.maxHealth = this.health;
         }
     }
@@ -4358,6 +4579,16 @@ class Monster {
         this.deathMaxTimer = 24;
         this.deathShards = [];
         spawnMonsterDeathEffect(this);
+
+        if (this.type === 'shooter') {
+            for (const spot of this.patrolSpots) {
+                if (spot.turret) {
+                    try { spawnEvaporationEffect(spot.turret.x + spot.turret.width / 2, spot.turret.y + spot.turret.height / 2, '#44aaff', 60, 30); } catch (e) {}
+                    spot.turret = null;
+                }
+            }
+            this.turret = null;
+        }
 
         const centerX = this.x + this.width / 2;
         const centerY = this.y + this.height / 2;
@@ -4434,29 +4665,64 @@ class Monster {
 
         if (this.stunTimer > 0) {
             this.stunTimer--;
-            if (this.type !== 'croc') {
+            if (this.type !== 'croc' && this.type !== 'boulder_tosser') {
                 return;
+            }
+        }
+
+        if ((this.freezeTimer || 0) > 0) {
+            this.freezeTimer--;
+            if (Math.random() < 0.12) {
+                spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#aaeeff', 6, 3);
+            }
+            return;
+        }
+
+        if ((this.mansionGhostCopyMark || 0) > 0) {
+            this.mansionGhostCopyMark--;
+            if (this.mansionGhostCopyMark <= 0) {
+                this.mansionGhostCopyDamageAmp = 0;
+            }
+        }
+
+        if ((this.avianMarkTimer || 0) > 0) {
+            this.avianMarkTimer--;
+            if (this.avianMarkTimer <= 0) {
+                this.avianMarkDamageBonus = 0;
+            }
+        }
+
+        if ((this.boneCurseTimer || 0) > 0) {
+            this.boneCurseTimer--;
+            if (this.boneCurseTimer <= 0) {
+                this.boneCurseDamageBonus = 0;
             }
         }
 
         if (this.type === 'shooter') {
             const fearRange = this.desiredDistance * 2;
             const trembleDuration = 60; // 1 segundo em 60fps
-            const fleeDuration = 50;
+            const fleeDuration = 80;
+            const buildTarget = this.patrolSpots[this.patrolIndex];
+            const bdx = (buildTarget ? buildTarget.x : monsterCenterX) - monsterCenterX;
+            const bdy = (buildTarget ? buildTarget.y : monsterCenterY) - monsterCenterY;
+            const buildDist = Math.hypot(bdx, bdy) || 1;
+            const isBuilding = buildDist < 50;
 
             if (this.fearCooldown > 0) {
                 this.fearCooldown--;
             }
 
-            if (dist < fearRange && this.shakeTimer === 0 && this.fleeTimer === 0 && this.fearCooldown === 0) {
+            if (dist < fearRange && this.shakeTimer === 0 && this.fleeTimer === 0 && this.fearCooldown === 0 && !isBuilding) {
                 this.shakeTimer = trembleDuration;
+                this.patrolStandTimer = 0;
             }
 
             if (this.shakeTimer > 0) {
                 this.shakeTimer--;
                 if (this.shakeTimer === 0) {
                     this.fleeTimer = fleeDuration;
-                    this.fearCooldown = 90;
+                    this.fearCooldown = 0;
                 }
             }
 
@@ -4475,16 +4741,75 @@ class Monster {
                 const fleeSpeed = this.speed * 1.8;
                 this.x += awayX * fleeSpeed * ts;
                 this.y += awayY * fleeSpeed * ts;
-            } else if (dist < this.desiredDistance * 0.8) {
-                const awayX = (monsterCenterX - playerX) / safeDist;
-                const awayY = (monsterCenterY - playerY) / safeDist;
-                this.x += awayX * this.speed * ts;
-                this.y += awayY * this.speed * ts;
-            } else if (dist > this.desiredDistance + 40) {
-                this.x += (dx / safeDist) * this.speed * 0.6 * ts;
-                this.y += (dy / safeDist) * this.speed * 0.6 * ts;
-            } else {
-                this.x += this.speed * (Math.random() > 0.5 ? 1 : -1) * ts;
+            }
+
+            // (O atirador não tem restrição de movimento: só sugestão de patrulha.
+            //  O único limite real é a borda da zona selvagem, aplicado abaixo.)
+
+            // Sempre quer ir para o próximo ponto de patrulha
+            // (cada ponto de patrulha tem sua própria progressão e pode gerar sua própria torreta)
+            if (this.fleeTimer <= 0 && this.patrolDashTimer <= 0) {
+                const target = this.patrolSpots[this.patrolIndex];
+                const tcx = target.x;
+                const tcy = target.y;
+                const tdx = tcx - monsterCenterX;
+                const tdy = tcy - monsterCenterY;
+                const tDist = Math.hypot(tdx, tdy) || 1;
+
+                if (tDist < 50) {
+                    this.patrolStandTimer++;
+                    if (this.patrolStandTimer >= 120) {
+                        this.patrolStandTimer = 0;
+                        const spot = this.patrolSpots[this.patrolIndex];
+                        if (!spot.turret) {
+                            spot.progress = Math.min(100, (spot.progress || 0) + 50);
+                            if (spot.progress >= 100) {
+                                this.spawnShooterTurret(this.patrolIndex);
+                                this.patrolIndex = (this.patrolIndex + 1) % this.patrolSpots.length;
+                            }
+                        } else {
+                            this.patrolIndex = (this.patrolIndex + 1) % this.patrolSpots.length;
+                        }
+                    }
+                } else {
+                    this.patrolStandTimer = 0;
+                    const dashSpeed = this.speed * (this.patrolSpots.some(s => s.turret) ? 6.4 : 3.2);
+                    this.x += (tdx / tDist) * dashSpeed * ts;
+                    this.y += (tdy / tDist) * dashSpeed * ts;
+                }
+            } else if (this.patrolDashTimer > 0) {
+                this.patrolDashTimer--;
+                const sdx = this.patrolDashTarget.x - monsterCenterX;
+                const sdy = this.patrolDashTarget.y - monsterCenterY;
+                const sDist = Math.hypot(sdx, sdy) || 1;
+                const dashSpeed = this.speed * (this.patrolSpots.some(s => s.turret) ? 6.4 : 3.2);
+                this.x += (sdx / sDist) * dashSpeed * ts;
+                this.y += (sdy / sDist) * dashSpeed * ts;
+                if (sDist < 40) {
+                    this.patrolDashTimer = 0;
+                    this.patrolIndex = (this.patrolIndex + 1) % this.patrolSpots.length;
+                }
+            }
+
+            {
+                const { centerX, centerY, radius } = getMapCircle();
+                const halfW = this.width / 2;
+                const halfH = this.height / 2;
+                const maxR = Math.max(0, radius - Math.max(halfW, halfH));
+                const dx = (this.x + halfW) - centerX;
+                const dy = (this.y + halfH) - centerY;
+                const dist = Math.hypot(dx, dy) || 0.0001;
+                if (dist > maxR) {
+                    const scale = maxR / dist;
+                    this.x = centerX + dx * scale - halfW;
+                    this.y = centerY + dy * scale - halfH;
+                }
+                this.portalX = this.x + this.width / 2;
+                this.portalY = this.y + this.height / 2;
+            }
+
+            if (this.patrolSpots.some(s => s.turret)) {
+                this.updateShooterTurret();
             }
 
             if (this.fleeTimer <= 0) {
@@ -4497,10 +4822,10 @@ class Monster {
                     ];
 
                     const comboChance = Math.random();
-                    let comboCount = 1;
-                    if (comboChance < 0.25) comboCount = 4;
-                    else if (comboChance < 0.45) comboCount = 3;
-                    else if (comboChance < 0.65) comboCount = 2;
+                    let comboCount = 2;
+                    if (comboChance < 0.25) comboCount = 8;
+                    else if (comboChance < 0.45) comboCount = 6;
+                    else if (comboChance < 0.65) comboCount = 4;
 
                     const selectedIndices = [];
                     let maxCooldown = 0;
@@ -4643,300 +4968,120 @@ class Monster {
                 }
             }
         } else if (this.type === 'swarm') {
-            // Swarm: se move rapidamente e spawna enxames de projéteis homing
             this.x += (dx / dist) * this.speed * 0.8 * ts;
             this.y += (dy / dist) * this.speed * 0.8 * ts;
             
             this.orbitalAngle += 0.15 * ts;
             
             if (this.swarmCooldown <= 0) {
-                // Spawna 3 projéteis em formação giratória
                 for (let i = 0; i < 3; i++) {
                     const angle = this.orbitalAngle + (i * Math.PI * 2 / 3);
                     const spawnX = this.x + this.width / 2 + Math.cos(angle) * 60;
                     const spawnY = this.y + this.height / 2 + Math.sin(angle) * 60;
-                    
-                    // 25% chance for the projectile to be homing (was usually homing); prefer marks still makes it non-homing
-                    let targetX = playerX;
-                    let targetY = playerY;
-                    let homingOpt = (Math.random() < 0.25) ? { homing: true, homingTarget: player, homingStrength: 0.08 } : {};
-                    if (Math.random() < 0.2 && swarmMarks.length > 0) {
-                        const mk = swarmMarks[Math.floor(Math.random() * swarmMarks.length)];
-                        targetX = mk.x;
-                        targetY = mk.y;
-                        homingOpt = {}; // go straight to the mark (non-homing)
-                    }
                     const baseDamage = this.getAttackDamage() * 0.6;
-                    const projDamage = homingOpt.homing ? Math.max(1, Math.round(baseDamage * 0.75)) : Math.max(1, Math.round(baseDamage));
                     spawnMonsterProjectile(
                         spawnX, spawnY,
-                        targetX, targetY,
-                        projDamage,
+                        playerX, playerY,
+                        Math.max(1, Math.round(baseDamage)),
                         '#9c4fff',
                         6 + this.phase * 0.35,
-                        Object.assign({ monsterType: this.type, size: 7, style: 'swarmBug', afterImageTrail: true, afterImageInterval: 3 }, homingOpt)
+                        Object.assign({ monsterType: this.type, size: 7, style: 'swarmBug', afterImageTrail: false, afterImageInterval: 0 }, { homing: true, homingTarget: player, homingStrength: 0.08 })
                     );
                 }
                 this.swarmCooldown = Math.max(50, 80 - this.phase * 6);
             } else {
                 this.swarmCooldown--;
             }
-            
-            // Spawnar marcas a cada 1.75 segundos (105 frames)
-            if (this.markSpawnCooldown <= 0) {
-                const markX = Math.random() * (gameWidth - 40) + 20;
-                const markY = Math.random() * (gameHeight - 40) + 20;
-                swarmMarks.push({
-                    x: markX,
-                    y: markY,
-                    radius: 15 * 1.5, // aumentar 50%
-                    active: false,
-                    lifetime: 300 // 5 segundos
-                });
-                this.markSpawnCooldown = 105; // 1.75 segundos a 60 fps
-            } else {
-                this.markSpawnCooldown--;
-            }
         } else if (this.type === 'caster') {
-            // Caster: patrol, orbit, retreat, and reactive attacks
-            const cx = this.x + this.width / 2;
-            const cy = this.y + this.height / 2;
-            const pdx = playerX - cx;
-            const pdy = playerY - cy;
-            const dist = Math.hypot(pdx, pdy) || 0.0001;
-            const toPlayer = Math.atan2(pdy, pdx);
-
-            if (this.reactiveCooldown > 0) this.reactiveCooldown--;
-
-            // Reactive: caster got hit
-            if (this.tookDamage) {
-                this.casterQuickBurst(playerX, playerY);
-                this.tookDamage = false;
-            }
-
-            // Reactive: player took damage recently
-            if (player.lastDamageFrame === gameFrameCount) {
-                this.casterOpportunisticShot(playerX, playerY);
-            }
-
-            // Reactive: player too close
-            const closeRange = 180;
-            if (dist < closeRange && this.reactiveCooldown <= 0 && this.retreatTimer <= 0 && this.casterDashTimer <= 0) {
-                this.casterDefensiveBurst();
-                this.moveMode = 'retreat';
-                this.retreatTimer = 30;
-            }
-
-            // Reactive: player is attacking nearby
-            if ((player.attacking || player.meleeAttacking || player.coneAttacking) && dist < 220 && this.reactiveCooldown <= 0 && this.casterDashTimer <= 0) {
-                this.casterSidestep(playerX, playerY);
-            }
-
-            // Tower outpost laser
-            if (this.towerActive) {
-                if (this.isDying || this.health <= 0) {
-                    this.towerActive = false;
-                } else if (this.towerCooldown > 0) {
-                    this.towerCooldown--;
-                } else if (this.towerWarningTimer > 0) {
-                    this.towerWarningTimer--;
-                    if (this.towerWarningTimer === 0 && this.towerTargetX !== null && this.towerTargetY !== null) {
-                        const healthPercent = this.health / this.maxHealth;
-                        const baseDelay = 18; // 0.3s
-                        const delays = [0];
-                        if (healthPercent < 0.75) delays.push(baseDelay);
-                        if (healthPercent < 0.50) delays.push(baseDelay + 12);
-                        if (healthPercent < 0.25) delays.push(baseDelay + 12 + 6);
-                        for (const delay of delays) {
-                            this.towerQueue.push({
-                                timer: delay,
-                                x: this.towerX,
-                                y: this.towerY,
-                                targetX: this.towerTargetX,
-                                targetY: this.towerTargetY
-                            });
-                        }
-                        this.towerTargetX = null;
-                        this.towerTargetY = null;
-                        this.towerCooldown = 200 + Math.round(Math.random() * 140);
-                    }
-                } else if (this.towerCooldown <= 0 && this.towerTargetX === null && this.towerQueue.length === 0) {
-                    this.towerWarningTimer = 50;
-                    this.towerTargetX = playerX;
-                    this.towerTargetY = playerY;
-                }
-            }
-
-            // Process tower shot queue
-            if (this.towerQueue.length > 0) {
-                this.towerQueueTimer = (this.towerQueueTimer || 0) + 1;
-                for (let i = this.towerQueue.length - 1; i >= 0; i--) {
-                    const shot = this.towerQueue[i];
-                    shot.timer--;
-                    if (shot.timer <= 0 && this.towerActive) {
-                        this.casterTowerLaser(shot.x, shot.y, shot.targetX, shot.targetY);
-                        this.towerQueue.splice(i, 1);
-                    }
-                }
-                if (this.towerQueue.length === 0) {
-                    this.towerQueueTimer = 0;
-                }
-            }
-
-            // Teleport when below 35% HP (once)
+            this.portalSpin = (this.portalSpin || 0) + 0.08;
+            // Caster: patrulha até um ponto aleatório e pode teletransportar quando ferido
+            // Teleporte quando ficar abaixo de 35% de vida (uma única vez)
             const healthPercent = this.health / this.maxHealth;
             if (healthPercent <= 0.35 && !this.hasTeleported) {
+                // guard against missing teleportTarget
                 if (!this.teleportTarget || typeof this.teleportTarget.x !== 'number' || typeof this.teleportTarget.y !== 'number') {
-                    const corners = [
-                        { x: 50, y: 50 },
-                        { x: Math.max(1, gameWidth - 50), y: 50 },
-                        { x: 50, y: Math.max(1, gameHeight - 50) },
-                        { x: Math.max(1, gameWidth - 50), y: Math.max(1, gameHeight - 50) }
-                    ];
-                    this.teleportTarget = corners[Math.floor(Math.random() * corners.length)];
+                    this.teleportTarget = getRandomPointInUpgradeRing(this.width);
                 }
-                this.casterTeleport(this.teleportTarget.x, this.teleportTarget.y);
-                this.hasTeleported = true;
-                this.reachedPatrol = true;
+                try {
+                    try { spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#ffffff', 18, 18); } catch (e) {}
+                    // Teleportar para o teleportTarget
+                    this.x = Math.max(0, Math.min(gameWidth - this.width, this.teleportTarget.x - this.width / 2));
+                    this.y = Math.max(0, Math.min(gameHeight - this.height, this.teleportTarget.y - this.height / 2));
+                    try { spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#ffffff', 18, 18); } catch (e) {}
+                    this.hasTeleported = true;
+                    // depois do teleporte, considere que alcançou patrulha para ficar parado
+                    this.reachedPatrol = true;
+                } catch (e) {
+                    console.error('Caster teleport failed', e && e.stack ? e.stack : e, { teleportTarget: this.teleportTarget });
+                }
             }
 
-            // Teleport behavior
-            if (this.teleportDuration > 0) {
-                this.teleportDuration--;
-            } else if (this.teleportCooldown > 0) {
-                this.teleportCooldown--;
-            }
+            // Movimento: ir até patrolTarget e ficar parado quando alcançado
+            if (!this.reachedPatrol && this.patrolTarget) {
+                const patrolCenterX = this.x + this.width / 2;
+                const patrolCenterY = this.y + this.height / 2;
+                const pdx = this.patrolTarget.x - patrolCenterX;
+                const pdy = this.patrolTarget.y - patrolCenterY;
+                const pDist = Math.hypot(pdx, pdy) || 0.0001;
+                const patrolSpeed = this.speed * 1.0;
 
-            // Teleport behavior
-            if (this.teleportDuration > 0) {
-                this.teleportDuration--;
-            } else if (this.teleportCooldown > 0) {
-                this.teleportCooldown--;
-            }
+                // Incrementar timer de patrulha para casters
+                if (this.type === 'caster') {
+                    this.patrolTimer = (this.patrolTimer || 0) + 1;
+                    if (!this.onFire && this.patrolTimer >= (this.patrolTimeout || 480)) {
+                        this.onFire = true;
+                        // Aumentar muito a velocidade quando em chamas
+                        this.speed = (this.speed || 0.5) * 6.0;
+                        this.fireAttackCooldown = 0;
+                    }
+                }
 
-            // Dash movement
-            if (this.casterDashTimer > 0) {
-                const dashSpeed = this.speed * 4.5;
-                this.x += Math.cos(this.casterDashAngle) * dashSpeed * ts;
-                this.y += Math.sin(this.casterDashAngle) * dashSpeed * ts;
-                this.casterDashTimer--;
-                if (this.casterDashTimer <= 0) {
-                    this.moveMode = 'patrol';
-                    this.patrolTarget = {
-                        x: Math.max(20, Math.min(gameWidth - 20, this.x + this.width / 2 + (Math.random() - 0.5) * 300)),
-                        y: Math.max(20, Math.min(gameHeight - 20, this.y + this.height / 2 + (Math.random() - 0.5) * 300))
-                    };
-                    this.reachedPatrol = false;
-                }
-            } else if (this.retreatTimer > 0) {
-                // Retreat: run fast
-                const retreatSpeed = this.speed * 4.0;
-                this.x += Math.cos(toPlayer + Math.PI) * retreatSpeed * ts;
-                this.y += Math.sin(toPlayer + Math.PI) * retreatSpeed * ts;
-                this.floatOffset += 0.08 * ts;
-                this.y += Math.sin(this.floatOffset) * 0.6;
-                this.retreatTimer--;
-                if (this.retreatTimer <= 0) {
-                    this.moveMode = 'orbit';
-                    this.orbitAngle = toPlayer + Math.PI / 2;
-                    this.orbitRadius = 260 + Math.random() * 160;
-                }
-            } else {
-                // Determine movement mode
-                if (dist < 220) {
-                    this.moveMode = 'retreat';
-                    this.retreatTimer = Math.max(this.retreatTimer, 25);
-                } else if (dist > 520) {
-                    this.moveMode = 'orbit';
-                    this.orbitRadius = Math.min(this.orbitRadius, dist - 40);
-                } else if (dist < 200) {
-                    this.moveMode = 'retreat';
+                if (pDist > 18) {
+                    this.x += (pdx / pDist) * patrolSpeed * ts;
+                    this.y += (pdy / pDist) * patrolSpeed * ts;
                 } else {
-                    this.moveMode = 'orbit';
-                }
-
-                if (this.moveMode === 'orbit') {
-                    this.orbitAngle += (0.02 + this.phase * 0.003) * ts * (this.onFire ? 2.2 : 1.0);
-                    const targetX = playerX + Math.cos(this.orbitAngle) * this.orbitRadius;
-                    const targetY = playerY + Math.sin(this.orbitAngle) * this.orbitRadius;
-                    const dx = targetX - cx;
-                    const dy = targetY - cy;
-                    const d = Math.hypot(dx, dy) || 0.0001;
-                    const orbitSpeed = this.speed * 0.35;
-                    this.x += (dx / d) * orbitSpeed * ts;
-                    this.y += (dy / d) * orbitSpeed * ts;
-                    this.floatOffset += 0.06 * ts;
-                    this.y += Math.sin(this.floatOffset) * 0.4;
-
-                    // Teleport while orbiting
-                    if (this.teleportCooldown <= 0 && this.teleportDuration <= 0 && Math.random() < 0.02) {
-                        const newAngle = this.orbitAngle + (Math.random() - 0.5) * 1.5;
-                        const newDist = this.orbitRadius + (Math.random() - 0.5) * 100;
-                        const newX = Math.max(20, Math.min(gameWidth - this.width - 20, playerX + Math.cos(newAngle) * newDist - this.width / 2));
-                        const newY = Math.max(20, Math.min(gameHeight - this.height - 20, playerY + Math.sin(newAngle) * newDist - this.height / 2));
-                        this.casterTeleport(newX, newY);
-                    }
-                } else if (this.moveMode === 'retreat') {
-                    const retreatSpeed = this.speed * 4.0;
-                    this.x += Math.cos(toPlayer + Math.PI) * retreatSpeed * ts;
-                    this.y += Math.sin(toPlayer + Math.PI) * retreatSpeed * ts;
-                    this.floatOffset += 0.07 * ts;
-                    this.y += Math.sin(this.floatOffset) * 0.5;
-
-                    // Teleport while retreating
-                    if (this.teleportCooldown <= 0 && this.teleportDuration <= 0 && Math.random() < 0.04) {
-                        const angle = toPlayer + Math.PI + (Math.random() - 0.5) * 1.2;
-                        const dist = 250 + Math.random() * 200;
-                        const newX = Math.max(20, Math.min(gameWidth - this.width - 20, cx + Math.cos(angle) * dist));
-                        const newY = Math.max(20, Math.min(gameHeight - this.height - 20, cy + Math.sin(angle) * dist));
-                        this.casterTeleport(newX, newY);
-                    }
-                } else {
-                    // patrol fallback - walk slowly
-                    if (!this.reachedPatrol && this.patrolTarget) {
-                        const pdx2 = this.patrolTarget.x - cx;
-                        const pdy2 = this.patrolTarget.y - cy;
-                        const pDist2 = Math.hypot(pdx2, pdy2) || 0.0001;
-                        this.patrolTimer = (this.patrolTimer || 0) + 1;
-                        if (!this.onFire && this.patrolTimer >= (this.patrolTimeout || 480)) {
-                            this.onFire = true;
-                            this.speed = (this.speed || 0.5) * 6.0;
-                        }
-                        const patrolSpeed = this.speed * 0.4;
-                        if (pDist2 > 18) {
-                            this.x += (pdx2 / pDist2) * patrolSpeed * ts;
-                            this.y += (pdy2 / pDist2) * patrolSpeed * ts;
-                        } else {
-                            this.reachedPatrol = true;
-                        }
-                    } else if (this.reachedPatrol) {
-                        this.floatOffset += 0.05 * ts;
-                        this.y += Math.sin(this.floatOffset) * 0.3;
-                    }
-
-                    // Teleport while patrolling
-                    if (this.teleportCooldown <= 0 && this.teleportDuration <= 0 && Math.random() < 0.015) {
-                        const newX = Math.max(20, Math.min(gameWidth - this.width - 20, Math.random() * (gameWidth - 40) + 20));
-                        const newY = Math.max(20, Math.min(gameHeight - this.height - 20, Math.random() * (gameHeight - 40) + 20));
-                        this.casterTeleport(newX, newY);
-                    }
+                    this.reachedPatrol = true;
                 }
             }
 
-            // Dash cooldown
-            if (this.casterDashCooldown > 0) this.casterDashCooldown--;
-
-            // Occasionally pick a new patrol/retreat target
-            if (!this.reachedPatrol && this.patrolTarget && Math.random() < 0.005) {
-                this.patrolTarget = {
-                    x: Math.max(20, Math.min(gameWidth - 20, this.x + this.width / 2 + (Math.random() - 0.5) * 400)),
-                    y: Math.max(20, Math.min(gameHeight - 20, this.y + this.height / 2 + (Math.random() - 0.5) * 400))
-                };
+            if (this.reachedPatrol) {
+                this.sniperMode = true;
             }
 
-            // Keep within bounds
-            this.x = Math.max(0, Math.min(gameWidth - this.width, this.x));
-            this.y = Math.max(0, Math.min(gameHeight - this.height, this.y));
+            // ===== Torre invocada pelo caster =====
+            this.updateTower(playerX, playerY);
+
+            if (this.sniperMode && this.sniperCooldown <= 0) {
+                const px = player.x + player.width / 2;
+                const py = player.y + player.height / 2;
+                const sx = this.x + this.width / 2;
+                const sy = this.y + this.height / 2;
+                const speed = 14 + this.phase * 0.6;
+                spawnCastBanner('SNIPER SHOT', '#ff3333');
+                spawnMonsterProjectile(
+                    sx, sy,
+                    px, py,
+                    Math.max(2, Math.round(this.getAttackDamage() * 0.6)),
+                    '#ff3333',
+                    speed,
+                {
+                    monsterType: this.type,
+                    size: 10,
+                    style: 'casterSniper',
+                    homing: true,
+                    homingStrength: 0.04,
+                    homingDuration: 180,
+                    maxDistance: 5000,
+                    afterImageTrail: false,
+                    afterImageInterval: 0,
+                    offscreenLimit: 300
+                }
+                );
+                this.sniperCooldown = Math.max(45, 90 - this.phase * 5);
+            }
+            if (this.sniperCooldown > 0) {
+                this.sniperCooldown--;
+            }
             
             const portalWarningDuration = 30; // 0.5 segundos
             const portalActiveDuration = 45;
@@ -4976,20 +5121,23 @@ class Monster {
                 } else {
                     this.remoteAttackTimer--;
                 }
+                // Keep any active remote portal firing and visible
+                this.updateRemotePortal(screenCenterX, screenCenterY);
             }
 
             if (this.portalWarningTimer > 0) {
                 this.portalWarningTimer--;
                 if (this.portalWarningTimer === 0) {
                     try {
-                        spawnCasterPortalEffect(this.portalX, this.portalY, '#00ffff');
                         // Use custom portal duration if set (e.g., for aim16)
                         const effectivePortalDuration = this.nextPortalActiveDuration || portalActiveDuration;
                         this.portalTimer = effectivePortalDuration;
                         this.nextPortalActiveDuration = null; // reset for next use
                         this.spiralProjectileCount = 0; // Reset spiral counter
+                        const castBannerNames = { circular: 'CIRCULAR BURST', spiral: 'INFERNO SPIRAL', ring: 'RING WAVE', aim16: 'AIMED VOLLEY', ember: 'EMBER BURST' };
+                        spawnCastBanner(castBannerNames[this.portalAttackMode] || this.portalAttackMode.toUpperCase(), '#ff9e3c');
                         // Execute single-shot portal attacks immediately when the portal becomes active
-                        if (this.portalAttackMode === 'ring') {
+                                    if (this.portalAttackMode === 'ring') {
                             this.casterRingWaveAttack();
                         } else if (this.portalAttackMode === 'aim16') {
                             this.casterAimedVolley(screenCenterX, screenCenterY);
@@ -5005,9 +5153,6 @@ class Monster {
                     }
                 }
             } else if (this.portalTimer > 0) {
-                if (this.portalTimer % 15 === 0) {
-                    spawnCasterPortalEffect(this.portalX, this.portalY, '#00ffff');
-                }
                 const fireBoost = this.onFire ? this.fireAttackBoost : 1;
                 if (this.portalTimer % 12 === 0) {
                     if (this.portalAttackMode === 'circular') {
@@ -5022,7 +5167,7 @@ class Monster {
                                 targetX, targetY,
                                 Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)),
                                 '#ff9e3c',
-                                4.5 + this.phase * 0.2,
+                                9 + this.phase * 0.4,
                                 { monsterType: this.type, size: 16, style: 'casterFlameCircle', homing: false, afterImageTrail: false, afterImageInterval: 5 }
                             );
                         }
@@ -5040,7 +5185,7 @@ class Monster {
                                 targetX, targetY,
                                 Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)),
                                 '#ff6a2d',
-                                4.5 + this.phase * 0.2,
+                                9 + this.phase * 0.4,
                                 { monsterType: this.type, size: 16, style: 'casterFlameSpiral', homing: false, afterImageTrail: false, afterImageInterval: 5 }
                             );
                         }
@@ -5061,7 +5206,7 @@ class Monster {
                 this.portalCooldown--;
             }
         } else if (this.type === 'smart') {
-            const predicted = getPredictedPlayerPosition(24);
+        const predicted = getPredictedPlayerPosition(24);
         this.circleAngle += (0.04 + this.phase * 0.005) * ts;
         const targetOrbitX = playerX + Math.cos(this.circleAngle) * this.smartRange;
         const targetOrbitY = playerY + Math.sin(this.circleAngle) * this.smartRange;
@@ -5069,31 +5214,106 @@ class Monster {
 
         this.x += Math.cos(angleToOrbit) * this.speed * 0.96 * ts;
         this.y += Math.sin(angleToOrbit) * this.speed * 0.96 * ts;
-            if (this.hitscanWarningTimer > 0) {
-                this.hitscanWarningTimer--;
-                if (this.hitscanWarningTimer === 0 && this.hitscanTargetX !== null && this.hitscanTargetY !== null) {
-                    this.smartHitscan(this.hitscanTargetX, this.hitscanTargetY);
-                    this.hitscanTargetX = null;
-                    this.hitscanTargetY = null;
-                }
-            }
 
-            if (this.projectileAttackCooldown <= 0) {
-                this.smartVolley(predicted.x, predicted.y);
-                if (Math.random() < 0.45) {
-                    this.startSmartHitscanWarning(predicted.x, predicted.y);
+        if (this.laserState === 'idle') {
+            if (this.laserCooldown <= 0) {
+                let aimX = predicted.x, aimY = predicted.y;
+                if (this.confusedTimer > 0) {
+                    aimX = this.x + this.width / 2 - (predicted.x - (this.x + this.width / 2));
+                    aimY = this.y + this.height / 2 - (predicted.y - (this.y + this.height / 2));
                 }
-                this.projectileAttackCooldown = Math.max(90, 120 - this.phase * 6);
+                this.laserAngle = Math.atan2(aimY - (this.y + this.height / 2), aimX - (this.x + this.width / 2));
+                this.laserState = 'warning';
+                this.laserTimer = 60;
+                this.laserSparks = [];
             } else {
-                this.projectileAttackCooldown--;
+                this.laserCooldown--;
             }
+        } else if (this.laserState === 'warning') {
+            this.laserTimer -= ts;
+            if (this.laserTimer <= 0) {
+                this.laserState = 'firing';
+                this.laserTimer = 60;
+                this.laserDamageTick = 0;
+            }
+        } else if (this.laserState === 'firing') {
+            this.laserTimer -= ts;
+            this.laserDamageTick -= ts;
+            if (this.laserDamageTick <= 0) {
+                this.smartLaserDamage();
+                this.laserDamageTick = 6;
+            }
+            const beamStartX = this.x + this.width / 2;
+            const beamStartY = this.y + this.height / 2;
+            const { radius: mapRadius } = getMapCircle();
+            const beamEndX = beamStartX + Math.cos(this.laserAngle) * mapRadius * 1.6;
+            const beamEndY = beamStartY + Math.sin(this.laserAngle) * mapRadius * 1.6;
+            for (let i = 0; i < 3; i++) {
+                const tEdge = Math.random();
+                const ex = beamStartX + (beamEndX - beamStartX) * tEdge;
+                const ey = beamStartY + (beamEndY - beamStartY) * tEdge;
+                const perp = this.laserAngle + Math.PI / 2;
+                const spread = (Math.random() - 0.5) * 50;
+                const speed = 2 + Math.random() * 3;
+                this.laserSparks.push({
+                    x: ex, y: ey,
+                    vx: Math.cos(perp) * spread * 0.1 + (Math.random() - 0.5) * speed,
+                    vy: Math.sin(perp) * spread * 0.1 + (Math.random() - 0.5) * speed,
+                    r: 1.5 + Math.random() * 2.5,
+                    life: 18 + Math.random() * 12,
+                    maxLife: 30,
+                    color: Math.random() < 0.5 ? 'rgba(255, 120, 80, 1)' : 'rgba(230, 30, 30, 1)'
+                });
+            }
+            const px = player.x + player.width / 2;
+            const py = player.y + player.height / 2;
+            const bdx = beamEndX - beamStartX, bdy = beamEndY - beamStartY;
+            const lenSq = bdx * bdx + bdy * bdy;
+            let t = lenSq > 0 ? ((px - beamStartX) * bdx + (py - beamStartY) * bdy) / lenSq : 0;
+            t = Math.max(0, Math.min(1, t));
+            const closeX = beamStartX + t * bdx, closeY = beamStartY + t * bdy;
+            if (Math.hypot(px - closeX, py - closeY) <= 26 + player.width * 0.4) {
+                for (let i = 0; i < 2; i++) {
+                    const ang = Math.random() * Math.PI * 2;
+                    const speed = 1 + Math.random() * 3;
+                    this.laserSparks.push({
+                        x: px, y: py,
+                        vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
+                        r: 1.5 + Math.random() * 2.5,
+                        life: 16 + Math.random() * 10,
+                        maxLife: 26,
+                        color: 'rgba(255, 150, 110, 1)'
+                    });
+                }
+            }
+            for (let i = this.laserSparks.length - 1; i >= 0; i--) {
+                const s = this.laserSparks[i];
+                s.x += s.vx * ts;
+                s.y += s.vy * ts;
+                s.vy += 0.08 * ts;
+                s.life -= ts;
+                if (s.life <= 0) this.laserSparks.splice(i, 1);
+            }
+            if (this.laserTimer <= 0) {
+                this.laserState = 'idle';
+                this.laserCooldown = Math.max(150, 220 - this.phase * 10);
+                this.laserSparks = [];
+            }
+        }
 
-            if (this.areaAttackCooldown <= 0 && dist < this.smartRange + 60) {
-                this.smartBurst(predicted.x, predicted.y);
-                this.areaAttackCooldown = Math.max(130, 160 - this.phase * 8);
-            } else if (this.areaAttackCooldown > 0) {
-                this.areaAttackCooldown--;
-            }
+        if (this.projectileAttackCooldown <= 0) {
+            this.smartVolley(predicted.x, predicted.y);
+            this.projectileAttackCooldown = Math.max(90, 120 - this.phase * 6);
+        } else {
+            this.projectileAttackCooldown--;
+        }
+
+        if (this.areaAttackCooldown <= 0 && dist < this.smartRange + 60) {
+            this.smartBurst(predicted.x, predicted.y);
+            this.areaAttackCooldown = Math.max(130, 160 - this.phase * 8);
+        } else if (this.areaAttackCooldown > 0) {
+            this.areaAttackCooldown--;
+        }
         } else if (this.type === 'simple') {
             if (this.simpleVariant === 'croc') {
                 if (this.simpleDashPauseTimer > 0) {
@@ -5206,6 +5426,21 @@ class Monster {
                     this.simpleClawRange = this.attackRange * 2.2;
                 }
             }
+
+            if (this.monsterVolleyCooldown > 0) {
+                this.monsterVolleyCooldown--;
+            }
+            if (this.monsterRingCooldown > 0) {
+                this.monsterRingCooldown--;
+            }
+            if (this.monsterVolleyCooldown <= 0 && dist < 300 && Math.random() < 0.2) {
+                this.monsterVolleyAttack(playerX, playerY);
+                this.monsterVolleyCooldown = Math.max(90, 130 - this.phase * 6);
+            }
+            if (this.monsterRingCooldown <= 0 && dist < 200 && Math.random() < 0.15) {
+                this.monsterRingAttack();
+                this.monsterRingCooldown = Math.max(110, 150 - this.phase * 8);
+            }
         } else if (this.type === 'castle_bone_sphere') {
             if (this.specialAttackCooldown > 0) this.specialAttackCooldown--;
             const angleToPlayer = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
@@ -5305,6 +5540,135 @@ class Monster {
                 this.stunTimer -= 1;
                 return;
             }
+        } else if (this.type === 'skeleton_boss') {
+            if (this.specialAttackCooldown > 0) this.specialAttackCooldown--;
+            const angleToPlayer = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+            const angleDelta = normalizeAngle(angleToPlayer - this.rotationAngle);
+            this.rotationAngle += angleDelta * 0.10 * ts;
+            this.rotationAngle = normalizeAngle(this.rotationAngle);
+
+            const movingSpeed = this.speed * ts;
+            if (dist > this.attackRange * 0.85) {
+                this.x += Math.cos(angleToPlayer) * movingSpeed;
+                this.y += Math.sin(angleToPlayer) * movingSpeed;
+            } else {
+                const orbitAngle = angleToPlayer + Math.PI / 2;
+                this.x += Math.cos(orbitAngle) * movingSpeed * 0.20;
+                this.y += Math.sin(orbitAngle) * movingSpeed * 0.20;
+            }
+
+            if (this.boneRainCooldown <= 0) {
+                this.attackEffectTimer = 18;
+                const projectileCount = 6;
+                for (let i = 0; i < projectileCount; i += 1) {
+                    const spread = (i - (projectileCount - 1) / 2) * 0.16 + (Math.random() - 0.5) * 0.08;
+                    const angle = angleToPlayer + spread;
+                    const startX = monsterCenterX + Math.cos(angle) * 52 + (Math.random() - 0.5) * 14;
+                    const startY = monsterCenterY + Math.sin(angle) * 52 + (Math.random() - 0.5) * 14;
+                    const targetX = playerX + (Math.random() - 0.5) * 120;
+                    const targetY = playerY + (Math.random() - 0.5) * 120;
+                    spawnMonsterProjectile(
+                        startX,
+                        startY,
+                        targetX,
+                        targetY,
+                        Math.max(3, Math.round(this.getAttackDamage() * 0.90)),
+                        '#ffffff',
+                        5.4,
+                        {
+                            monsterType: 'skeleton_boss',
+                            projectileEmoji: '☠',
+                            size: 13,
+                            style: 'boneShard',
+                            homing: true,
+                            homingTarget: player,
+                            homingStrength: 0.12,
+                            homingDuration: 120,
+                            maxDistance: 1050,
+                            afterImageTrail: true,
+                            afterImageInterval: 5
+                        }
+                    );
+                }
+                this.boneRainCooldown = Math.max(70, 110 - this.phase * 4);
+            } else {
+                this.boneRainCooldown -= 1;
+            }
+
+            if (this.boneRingCooldown <= 0) {
+                spawnCastleBossProjectileRing(monsterCenterX, monsterCenterY, this.rotationAngle, 12, 5.2, '#9cb8ff', '🦴');
+                this.boneRingCooldown = Math.max(100, 140 - this.phase * 4);
+            } else {
+                this.boneRingCooldown -= 1;
+            }
+
+            if (this.specialAttackCooldown <= 0 && dist < this.attackRange * 1.05) {
+                this.attackEffectTimer = 22;
+                this.specialAttackCooldown = 180;
+                if (player) player.stunTimer = 100;
+                spawnCastleBossProjectileRing(monsterCenterX, monsterCenterY, this.rotationAngle + Math.PI / 5, 14, 4.8, '#d6e4ff', '☠');
+                for (let i = 0; i < 5; i += 1) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const startX = monsterCenterX + Math.cos(angle) * 42;
+                    const startY = monsterCenterY + Math.sin(angle) * 42;
+                    const targetX = monsterCenterX + Math.cos(angle) * (260 + Math.random() * 100);
+                    const targetY = monsterCenterY + Math.sin(angle) * (260 + Math.random() * 100);
+                    spawnMonsterProjectile(
+                        startX,
+                        startY,
+                        targetX,
+                        targetY,
+                        Math.max(4, Math.round(this.getAttackDamage() * 1.00)),
+                        '#dfe8ff',
+                        5.6,
+                        {
+                            monsterType: 'skeleton_boss',
+                            projectileEmoji: '☠',
+                            size: 15,
+                            style: 'tankOrbit',
+                            homing: false,
+                            maxDistance: 1050,
+                            afterImageTrail: true,
+                            afterImageInterval: 5
+                        }
+                    );
+                }
+            }
+
+            if (this.summonCooldown <= 0) {
+                this.summonCooldown = Math.max(140, 200 - this.phase * 6);
+                const summonCount = 2 + Math.floor(Math.random() * 2);
+                for (let i = 0; i < summonCount; i += 1) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 180 + Math.random() * 120;
+                    const sx = monsterCenterX + Math.cos(angle) * dist;
+                    const sy = monsterCenterY + Math.sin(angle) * dist;
+                    spawnMonsterProjectile(
+                        sx, sy, sx, sy,
+                        Math.max(1, Math.round(this.getAttackDamage() * 0.4)),
+                        '#d8d8d8',
+                        0,
+                        {
+                            monsterType: 'skeleton_boss',
+                            size: 18,
+                            style: 'skeletonMinion',
+                            maxDistance: 0,
+                            projectileEmoji: '💀',
+                            summonDist: dist,
+                            summonAngle: angle,
+                            summonDuration: 300
+                        }
+                    );
+                }
+                spawnCastBanner('SKELETONS SUMMONED', '#d8d8d8');
+            } else {
+                this.summonCooldown -= 1;
+            }
+
+            if (this.stunTimer > 0) {
+                this.stunTimer -= 1;
+                return;
+            }
         } else if (this.type === 'croc') {
             const isOnScreen = this.x + this.width >= cameraX &&
                 this.x <= cameraX + viewportWidth &&
@@ -5315,199 +5679,90 @@ class Monster {
                 this.boulderAttackCooldown--;
             }
 
-            if (this.stalkingMode) {
-                this.stalkingModeTimer--;
-                this.stalkingModeExitTimer--;
-                if (this.stalkingModeTimer <= 0 || this.stalkingModeExitTimer <= 0) {
-                    this.stalkingMode = false;
-                    this.stalkingModeCooldown = 1800 + Math.floor(Math.random() * 1200);
-                } else {
-                    this.stalkingModeAngle += this.stalkingModeSpeed * ts;
-                    const targetX = playerX + Math.cos(this.stalkingModeAngle) * this.stalkingModeRadius;
-                    const targetY = playerY + Math.sin(this.stalkingModeAngle) * this.stalkingModeRadius;
-                    const nextX = this.x + (targetX - this.x) * 0.025;
-                    const nextY = this.y + (targetY - this.y) * 0.025;
-
-                    if (!mapWalls.some(wall => isRectOverlap(nextX, this.y, this.width, this.height, wall.x, wall.y, wall.width, wall.height))) {
-                        this.x = nextX;
-                    }
-                    if (!mapWalls.some(wall => isRectOverlap(this.x, nextY, this.width, this.height, wall.x, wall.y, wall.width, wall.height))) {
-                        this.y = nextY;
-                    }
-
-                    if (isOnScreen) {
-                        this.stalkingModeRadius = Math.min(this.stalkingModeRadius + 1.2, 1600);
-                        this.stalkingModeAngle += Math.PI * 0.01 * ts;
-                    } else if (dist > this.stalkingModeRadius + 60) {
-                        this.stalkingModeRadius = Math.max(this.stalkingModeRadius - 0.4, 1100);
-                    }
-
-                    this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
-                    this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
-
-                    if (this.isBiting) {
-                        this.biteAnimationTimer--;
-                        const biteProgress = 1 - this.biteAnimationTimer / this.biteAnimationDuration;
-                        this.jawOpen = biteProgress < 0.4 ? biteProgress / 0.4 : 1 - (biteProgress - 0.4) / 0.6;
-                        if (this.biteAnimationTimer <= 0) {
-                            this.isBiting = false;
-                            this.jawOpen = 0;
-                            this.biteCooldown = 60;
-                        }
-                    } else if (this.biteCooldown > 0) {
-                        this.biteCooldown--;
-                    }
-                    if (this.confusedTimer > 0) this.confusedTimer--;
-                    if (this.roarTimer > 0) {
-                        this.roarTimer--;
-                        this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.25;
-                        if (this.roarTimer <= 0) {
-                            this.roarQueued = false;
-                            this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
-                        }
-                    } else if (this.stunTimer > 0) {
-                        this.stunTimer--;
-                        this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.2;
-                    } else if (this.simpleDashWarningTimer > 0) {
-                        this.simpleDashWarningTimer--;
-                        this.simpleDashOpen += (0.5 - this.simpleDashOpen) * 0.18;
-                        if (this.simpleDashWarningTimer <= 0) {
-                            this.simpleDashTimer = 20;
-                            this.attackCooldown = 0;
-                        }
-                    } else if (this.simpleDashTimer > 0) {
-                        this.x += this.simpleDashVx * ts;
-                        this.y += this.simpleDashVy * ts;
-                        this.simpleDashTimer--;
-                        this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.22;
-                        if (this.simpleDashTimer <= 0) {
-                            this.simpleDashPauseTimer = 20;
-                            this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
-                            this.attackCooldown = 60;
-                        }
-                    } else if (this.simpleDashCooldown > 0) {
-                        this.simpleDashCooldown--;
-                        this.attackCooldown = 1;
-                        this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
-                    } else {
-                        const shouldRoar = !this.roarQueued && !this.postConfusionRoar && !this.hasRoaredThisEntry && isOnScreen && gameFrameCount - (this.lastRoarFrame || 0) >= 220;
-                        if (shouldRoar) {
-                            this.roarQueued = true;
-                            this.roarTimer = 60;
-                            this.hasRoaredThisEntry = true;
-                            this.lastRoarFrame = gameFrameCount;
-                            cameraLockTarget = { x: this.crocDecoyX, y: this.crocDecoyY, timer: 60 };
-                            roarFreezeTimer = 60;
-                            screenShakeTimer = Math.max(screenShakeTimer, 60);
-                        } else if (isOnScreen && dist < 220) {
-                            const circleAngle = Math.atan2(monsterCenterY - playerY, monsterCenterX - playerX) + Math.PI / 2;
-                            const circleSpeed = 2.2 * ts;
-                            const nextX = this.x + Math.cos(circleAngle) * circleSpeed;
-                            const nextY = this.y + Math.sin(circleAngle) * circleSpeed;
-                            if (!mapWalls.some(wall => isRectOverlap(nextX, this.y, this.width, this.height, wall.x, wall.y, wall.width, wall.height))) this.x = nextX;
-                            if (!mapWalls.some(wall => isRectOverlap(this.x, nextY, this.width, this.height, wall.x, wall.y, wall.width, wall.height))) this.y = nextY;
-                            this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
-                        } else {
-                            const dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
-                            this.simpleDashDirection = dashDir;
-                            this.simpleDashVx = Math.cos(dashDir) * this.simpleDashSpeed;
-                            this.simpleDashVy = Math.sin(dashDir) * this.simpleDashSpeed;
-                            this.simpleDashWarningTimer = this.simpleDashWarningDuration;
-                            this.attackCooldown = 1;
-                            this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
-                        }
-                    }
-                }
-            } else if (this.stalkingModeCooldown > 0) {
-                this.stalkingModeCooldown--;
-            }
-
-            if (this.stalkingModeCooldown <= 0) {
-                if ((this.stalkingMode || !isOnScreen) && this.boulderAttackCooldown <= 0 && this.boulderState === 'idle' && !this.isBiting && this.biteCooldown <= 0) {
-                    const boulderCooldown = this.stalkingMode ? 540 : 180;
-                    this.boulderState = 'warning';
-                    this.boulderMark = {
-                        x: playerX + (Math.random() - 0.5) * 60,
-                        y: playerY + (Math.random() - 0.5) * 60,
-                        radius: 5,
-                        maxRadius: 50 + Math.random() * 20,
-                        growTimer: 0,
-                        growDuration: 90
-                    };
-                    boulderMarks.push(this.boulderMark);
-                    this.boulderAttackCooldown = boulderCooldown;
-                }
-
-                if (this.boulderState === 'warning' && this.boulderMark) {
-                    this.boulderMark.growTimer++;
-                    const progress = Math.min(1, this.boulderMark.growTimer / this.boulderMark.growDuration);
-                    this.boulderMark.radius = this.boulderMark.maxRadius * progress;
-
-                    if (progress >= 1) {
-                        const mark = this.boulderMark;
-                        const newProj = {
-                            x: this.x + this.width / 2,
-                            y: this.y + this.height / 2,
-                            startX: this.x + this.width / 2,
-                            startY: this.y + this.height / 2,
-                            targetX: mark.x,
-                            targetY: mark.y,
-                            travelTime: 28 + Math.random() * 10,
-                            elapsed: 0,
-                            arcHeight: 120 + Math.random() * 60,
-                            markRef: mark
-                        };
-                        boulderProjectiles.push(newProj);
-                        this.boulderProjectile = newProj;
-                        this.boulderState = 'active';
-                        this.boulderMark = null;
-                    }
-                }
-
-                if (this.boulderState === 'active') {
-                    const stillExists = boulderProjectiles.includes(this.boulderProjectile);
-                    if (!stillExists) {
-                        this.boulderState = 'idle';
-                        this.boulderProjectile = null;
-                    }
-                }
+            if (isOnScreen) {
+                this.onScreenTimer = (this.onScreenTimer || 0) + 1;
+                this.lastOnScreenFrame = gameFrameCount;
+                this.crocOffScreenRechargeTimer = 0;
             } else {
-                this.boulderState = 'idle';
-                this.boulderMark = null;
-                this.boulderProjectile = null;
+                this.onScreenTimer = 0;
+                this.crocOffScreenRechargeTimer = (this.crocOffScreenRechargeTimer || 0) + 1;
+                if (this.crocOffScreenRechargeTimer >= 600) {
+                    this.crocRoarRechargeReady = true;
+                }
             }
 
-            if (this.isBiting) {
-                this.biteAnimationTimer--;
-                const biteProgress = 1 - this.biteAnimationTimer / this.biteAnimationDuration;
-                this.jawOpen = biteProgress < 0.4 ? biteProgress / 0.4 : 1 - (biteProgress - 0.4) / 0.6;
-                if (this.biteAnimationTimer <= 0) {
-                    this.isBiting = false;
-                    this.jawOpen = 0;
-                    this.biteCooldown = 60;
-                    if (player) {
-                        const biteCenterX = this.x + this.width / 2;
-                        const biteCenterY = this.y + this.height / 2;
-                        const playerCenterX = player.x + player.width / 2;
-                        const playerCenterY = player.y + player.height / 2;
-                        const distToPlayer = Math.hypot(playerCenterX - biteCenterX, playerCenterY - biteCenterY);
-                        const biteHitRadius = Math.max(this.width, this.height) * 0.6 + 60;
-                        const withinBite = distToPlayer <= biteHitRadius;
-                        if (withinBite) {
-                            let effectiveDamage = Math.max(0, this.getAttackDamage() - player.damageReduction);
-                            if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) effectiveDamage *= (1 - player.parryDefenseBonus / 100);
-                            player.health -= effectiveDamage;
-                            player.stunTimer = Math.max(player.stunTimer || 0, 12);
-                            tryApplyPlayerConfusionFromAttack('croc', { chance: 100, durationFrames: Math.round(0.75 * 60) });
-                            player.poisonTimer = Math.max(player.poisonTimer || 0, 5 * 60);
-                            player.poisonTickTimer = 60;
-                            player.poisonDamagePerTick = 1;
-                        }
-                    }
+            const crocIsAttacking = this.roarTimer > 0 || this.simpleDashWarningTimer > 0 || this.simpleDashTimer > 0 || this.stunTimer > 0 || this.boulderState === 'warning' || this.boulderState === 'active' || this.isBiting;
+            this.crocStalkingInvisible = !crocIsAttacking && this.stalkingMode;
+            const targetAlpha = this.stalkingMode ? 0 : (this.crocStalkingInvisible ? 0.22 : 1);
+            this.crocInvisAlpha += (targetAlpha - this.crocInvisAlpha) * 0.12;
+
+            if (this.crocStalkingInvisible) {
+                this.crocTrailTimer--;
+                if (this.crocTrailTimer <= 0) {
+                    this.crocTrailTimer = 5;
+                    spawnAfterImage({
+                        kind: 'monster',
+                        x: this.x,
+                        y: this.y,
+                        width: this.width,
+                        height: this.height,
+                        life: 80,
+                        maxLife: 80,
+                        baseAlpha: 0.35
+                    });
                 }
-            } else if (this.biteCooldown > 0) {
-                this.biteCooldown--;
             }
+
+            if (!this.stalkingMode) {
+                if (gameFrameCount % 2 === 0 && Math.random() < 0.005) {
+                    this.crocDecoySpeedBoostTimer = 120;
+                }
+            }
+
+            if (this.crocDecoySpeedBoostTimer > 0) {
+                this.crocDecoySpeedBoostTimer--;
+            }
+
+            const decoySpeed = this.crocDecoySpeed * (this.crocDecoySpeedBoostTimer > 0 ? 2 : 1);
+            const crocCenterX = this.x + this.width / 2;
+            const crocCenterY = this.y + this.height / 2;
+
+            const mapInfo = getMapCircle();
+            const edgeMargin = 300;
+            let steerX = 0;
+            let steerY = 0;
+
+            const awayFromCrocX = this.crocDecoyX - crocCenterX;
+            const awayFromCrocY = this.crocDecoyY - crocCenterY;
+            const crocDist = Math.hypot(awayFromCrocX, awayFromCrocY) || 1;
+            steerX += awayFromCrocX / crocDist;
+            steerY += awayFromCrocY / crocDist;
+
+            const toCenterX = mapInfo.centerX - this.crocDecoyX;
+            const toCenterY = mapInfo.centerY - this.crocDecoyY;
+            const centerDist = Math.hypot(toCenterX, toCenterY) || 1;
+            const edgeProximity = Math.max(0, (mapInfo.radius - centerDist) - edgeMargin);
+            if (edgeProximity < 0) {
+                const edgeWeight = Math.min(1, -edgeProximity / edgeMargin);
+                steerX += (toCenterX / centerDist) * edgeWeight;
+                steerY += (toCenterY / centerDist) * edgeWeight;
+            }
+
+            const steerLen = Math.hypot(steerX, steerY) || 1;
+            this.crocDecoyX += (steerX / steerLen) * decoySpeed * ts;
+            this.crocDecoyY += (steerY / steerLen) * decoySpeed * ts;
+            if (!isPointInsideMapCircle(this.crocDecoyX, this.crocDecoyY, 0)) {
+                const { centerX, centerY, radius } = getMapCircle();
+                const maxDist = radius - 1;
+                const dx = this.crocDecoyX - centerX;
+                const dy = this.crocDecoyY - centerY;
+                const dist = Math.hypot(dx, dy);
+                const scale = maxDist / dist;
+                this.crocDecoyX = centerX + dx * scale;
+                this.crocDecoyY = centerY + dy * scale;
+            }
+            this.fakeMarkerX = this.crocDecoyX;
+            this.fakeMarkerY = this.crocDecoyY;
 
             if (this.confusedTimer > 0) {
                 this.confusedTimer--;
@@ -5529,11 +5784,74 @@ class Monster {
                 }
             }
 
+            this.isBiting = this.biteState !== 'idle';
+            if (this.biteState === 'idle') {
+                if (this.biteCooldown > 0) {
+                    this.biteCooldown--;
+                } else if (!this.stunTimer && !this.roarTimer && isOnScreen && dist < 130 && this.rollState === 'idle' && this.boulderState === 'idle') {
+                    this.biteState = 'warning';
+                    this.biteTimer = 10;
+                    this.biteDirection = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                    this.simpleDashTimer = 0;
+                    this.simpleDashWarningTimer = 0;
+                    this.simpleDashPauseTimer = 0;
+                    this.simpleDashCooldown = 0;
+                }
+            } else if (this.biteState === 'warning') {
+                this.biteTimer--;
+                this.simpleDashOpen += (0.7 - this.simpleDashOpen) * 0.18;
+                if (this.biteTimer <= 0) {
+                    this.biteState = 'lunging';
+                    this.biteTimer = 6;
+                    this.biteLungeDone = false;
+                }
+            } else if (this.biteState === 'lunging') {
+                const lungeSpeed = (18 + this.phase * 0.7) * ts;
+                this.x += Math.cos(this.biteDirection) * lungeSpeed;
+                this.y += Math.sin(this.biteDirection) * lungeSpeed;
+                this.biteTimer--;
+                this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.22;
+                if (!this.biteLungeDone && isRectOverlap(player.x, player.y, player.width, player.height, this.x, this.y, this.width, this.height)) {
+                    this.biteLungeDone = true;
+                    const dmg = this.getAttackDamage();
+                    const effectiveDamage = Math.max(0, Math.round(dmg * 2.0) - (player.damageReduction || 0));
+                    player.health -= effectiveDamage;
+                    player.stunTimer = Math.max(player.stunTimer || 0, 25);
+                    tryApplyPlayerConfusionFromAttack('croc', {
+                        chance: 100,
+                        durationFrames: Math.round(1 * 60)
+                    });
+                    player.poisonTimer = Math.max(player.poisonTimer || 0, 5 * 60);
+                    player.poisonTickTimer = 60;
+                    player.poisonDamagePerTick = 2;
+                    spawnAfterImage({
+                        kind: 'player',
+                        x: player.x,
+                        y: player.y,
+                        width: player.width,
+                        height: player.height,
+                        life: 14,
+                        maxLife: 14,
+                        baseAlpha: 0.45
+                    });
+                }
+                if (this.biteTimer <= 0) {
+                    this.biteState = 'recovery';
+                    this.biteTimer = 20;
+                    this.attackCooldown = 50;
+                    this.biteCooldown = 240;
+                }
+            } else if (this.biteState === 'recovery') {
+                this.biteTimer--;
+                this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
+                if (this.biteTimer <= 0) {
+                    this.biteState = 'idle';
+                }
+            }
+
             if (this.roarTimer > 0) {
                 this.roarTimer--;
                 this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.25;
-                this.x = this.crocDecoyX - this.width / 2;
-                this.y = this.crocDecoyY - this.height / 2;
                 if (this.roarTimer === 20) {
                     screenShakeTimer = Math.max(screenShakeTimer, 22);
                     if (player) {
@@ -5585,32 +5903,26 @@ class Monster {
                     this.y += (this.crocDecoyY - this.y) * 0.08;
                 }
             } else {
-                const shouldRoar = !this.roarQueued && !this.postConfusionRoar && !this.hasRoaredThisEntry && isOnScreen && gameFrameCount - (this.lastRoarFrame || 0) >= 220;
+                const shouldRoar = !this.roarQueued && !this.postConfusionRoar && (!this.hasRoaredThisEntry || this.crocRoarRechargeReady) && isOnScreen && gameFrameCount - (this.lastRoarFrame || 0) >= 220 && !this.stalkingMode;
                 if (shouldRoar) {
                     this.roarQueued = true;
                     this.roarTimer = 60;
                     this.hasRoaredThisEntry = true;
                     this.lastRoarFrame = gameFrameCount;
+                    this.crocRoarRechargeReady = false;
                     cameraLockTarget = { x: this.crocDecoyX, y: this.crocDecoyY, timer: 60 };
                     roarFreezeTimer = 60;
                     screenShakeTimer = Math.max(screenShakeTimer, 60);
                 } else {
-                    if (isOnScreen && dist < 220) {
+                    if (isOnScreen && dist < 260) {
                         const circleAngle = Math.atan2(monsterCenterY - playerY, monsterCenterX - playerX) + Math.PI / 2;
                         const circleSpeed = 2.2 * ts;
-                        const nextX = this.x + Math.cos(circleAngle) * circleSpeed;
-                        const nextY = this.y + Math.sin(circleAngle) * circleSpeed;
-                        if (!mapWalls.some(wall => isRectOverlap(nextX, this.y, this.width, this.height, wall.x, wall.y, wall.width, wall.height))) this.x = nextX;
-                        if (!mapWalls.some(wall => isRectOverlap(this.x, nextY, this.width, this.height, wall.x, wall.y, wall.width, wall.height))) this.y = nextY;
+                        this.x += Math.cos(circleAngle) * circleSpeed;
+                        this.y += Math.sin(circleAngle) * circleSpeed;
                         this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
-                    } else if (!isOnScreen) {
-                        const approachX = playerX + Math.cos(this.crocCircleAngle) * this.crocCircleRadius - this.width / 2;
-                        const approachY = playerY + Math.sin(this.crocCircleAngle) * this.crocCircleRadius - this.height / 2;
-                        this.x += (approachX - this.x) * 0.08;
-                        this.y += (approachY - this.y) * 0.08;
-                        this.crocCircleAngle += this.crocCircleSpeed * ts;
                     } else {
-                        const dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                        let dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                        if (this.confusedTimer > 0) dashDir += Math.PI;
                         this.simpleDashDirection = dashDir;
                         this.simpleDashVx = Math.cos(dashDir) * this.simpleDashSpeed;
                         this.simpleDashVy = Math.sin(dashDir) * this.simpleDashSpeed;
@@ -5619,6 +5931,403 @@ class Monster {
                         this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
                     }
                 }
+            }
+
+            if (this.stalkingModeCooldown > 0) {
+                this.stalkingModeCooldown--;
+            }
+
+            if (this.stalkingModeCooldown <= 0) {
+                if ((this.stalkingMode || !isOnScreen) && this.boulderAttackCooldown <= 0 && this.boulderState === 'idle' && !this.isBiting && this.biteCooldown <= 0) {
+                    const boulderCooldown = this.stalkingMode ? 540 : 180;
+                    this.boulderState = 'warning';
+                    this.boulderMark = {
+                        x: playerX + (Math.random() - 0.5) * 60,
+                        y: playerY + (Math.random() - 0.5) * 60,
+                        radius: 5,
+                        maxRadius: 62.5 + Math.random() * 25,
+                        growTimer: 0,
+                        growDuration: 120
+                    };
+                    boulderMarks.push(this.boulderMark);
+                    this.boulderAttackCooldown = boulderCooldown;
+                }
+
+                if (this.boulderState === 'warning' && this.boulderMark) {
+                    this.boulderMark.growTimer++;
+                    const progress = Math.min(1, this.boulderMark.growTimer / this.boulderMark.growDuration);
+                    this.boulderMark.radius = this.boulderMark.maxRadius * progress;
+
+                    if (progress >= 1) {
+                        const mark = this.boulderMark;
+                        const newProj = {
+                            x: this.x + this.width / 2,
+                            y: this.y + this.height / 2,
+                            startX: this.x + this.width / 2,
+                            startY: this.y + this.height / 2,
+                            targetX: mark.x,
+                            targetY: mark.y,
+                            travelTime: 60 + Math.random() * 20,
+                            elapsed: 0,
+                            arcHeight: 120 + Math.random() * 60,
+                            markRef: mark,
+                            trailTimer: 0
+                        };
+                        boulderProjectiles.push(newProj);
+                        this.boulderProjectile = newProj;
+                        this.boulderState = 'active';
+                        this.boulderMark = null;
+                    }
+                }
+
+                if (this.boulderState === 'active') {
+                    const stillExists = boulderProjectiles.includes(this.boulderProjectile);
+                    if (!stillExists) {
+                        this.boulderState = 'idle';
+                        this.boulderProjectile = null;
+                    }
+                }
+            } else {
+                this.boulderState = 'idle';
+                this.boulderMark = null;
+                this.boulderProjectile = null;
+            }
+
+            if (this.stalkingMode) {
+                this.stalkingModeTimer--;
+                this.stalkingModeExitTimer--;
+                if (this.stalkingModeTimer <= 0 || this.stalkingModeExitTimer <= 0) {
+                    this.stalkingMode = false;
+                    this.crocDecoyX = this.x + this.width / 2;
+                    this.crocDecoyY = this.y + this.height / 2;
+                    this.fakeMarkerX = this.crocDecoyX;
+                    this.fakeMarkerY = this.crocDecoyY;
+                    this.stalkingModeCooldown = 1800 + Math.floor(Math.random() * 1200);
+                } else {
+                    this.stalkingModeAngle += this.stalkingModeSpeed * ts;
+                    const targetX = playerX + Math.cos(this.stalkingModeAngle) * this.stalkingModeRadius;
+                    const targetY = playerY + Math.sin(this.stalkingModeAngle) * this.stalkingModeRadius;
+                    const nextX = this.x + (targetX - this.x) * 0.025;
+                    const nextY = this.y + (targetY - this.y) * 0.025;
+
+                    if (!mapWalls.some(wall => isRectOverlap(nextX, this.y, this.width, this.height, wall.x, wall.y, wall.width, wall.height))) {
+                        this.x = nextX;
+                    }
+                    if (!mapWalls.some(wall => isRectOverlap(this.x, nextY, this.width, this.height, wall.x, wall.y, wall.width, wall.height))) {
+                        this.y = nextY;
+                    }
+
+                    this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
+                    this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+
+                    if (isOnScreen) {
+                        this.stalkingModeRadius = Math.min(this.stalkingModeRadius + 1.2, 1600);
+                        this.stalkingModeAngle += Math.PI * 0.01 * ts;
+                    } else if (dist > this.stalkingModeRadius + 60) {
+                        this.stalkingModeRadius = Math.max(this.stalkingModeRadius - 0.4, 1100);
+                    }
+                }
+            }
+
+            this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
+            this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+        } else if (this.type === 'boulder_tosser') {
+            const isOnScreen = this.x + this.width >= cameraX &&
+                this.x <= cameraX + viewportWidth &&
+                this.y + this.height >= cameraY &&
+                this.y <= cameraY + viewportHeight;
+
+            if (this.boulderAttackCooldown > 0) {
+                this.boulderAttackCooldown--;
+            }
+
+            if (isOnScreen) {
+                this.onScreenTimer = (this.onScreenTimer || 0) + 1;
+                this.lastOnScreenFrame = gameFrameCount;
+                this.crocOffScreenRechargeTimer = 0;
+            } else {
+                this.onScreenTimer = 0;
+                this.crocOffScreenRechargeTimer = (this.crocOffScreenRechargeTimer || 0) + 1;
+            }
+
+            if (gameFrameCount % 2 === 0 && Math.random() < 0.005) {
+                this.crocDecoySpeedBoostTimer = 120;
+            }
+            if (this.crocDecoySpeedBoostTimer > 0) {
+                this.crocDecoySpeedBoostTimer--;
+            }
+
+            const decoySpeed = this.crocDecoySpeed * (this.crocDecoySpeedBoostTimer > 0 ? 2 : 1);
+            const tosCenterX = this.x + this.width / 2;
+            const tosCenterY = this.y + this.height / 2;
+
+            const mapInfo = getMapCircle();
+            const edgeMargin = 300;
+            let steerX = 0;
+            let steerY = 0;
+
+            const awayFromTosX = this.crocDecoyX - tosCenterX;
+            const awayFromTosY = this.crocDecoyY - tosCenterY;
+            const tosDist = Math.hypot(awayFromTosX, awayFromTosY) || 1;
+            steerX += awayFromTosX / tosDist;
+            steerY += awayFromTosY / tosDist;
+
+            const toCenterX = mapInfo.centerX - this.crocDecoyX;
+            const toCenterY = mapInfo.centerY - this.crocDecoyY;
+            const centerDist = Math.hypot(toCenterX, toCenterY) || 1;
+            const edgeProximity = Math.max(0, (mapInfo.radius - centerDist) - edgeMargin);
+            if (edgeProximity < 0) {
+                const edgeWeight = Math.min(1, -edgeProximity / edgeMargin);
+                steerX += (toCenterX / centerDist) * edgeWeight;
+                steerY += (toCenterY / centerDist) * edgeWeight;
+            }
+
+            const steerLen = Math.hypot(steerX, steerY) || 1;
+            this.crocDecoyX += (steerX / steerLen) * decoySpeed * ts;
+            this.crocDecoyY += (steerY / steerLen) * decoySpeed * ts;
+            if (!isPointInsideMapCircle(this.crocDecoyX, this.crocDecoyY, 0)) {
+                const { centerX, centerY, radius } = getMapCircle();
+                const maxDist = radius - 1;
+                const dx = this.crocDecoyX - centerX;
+                const dy = this.crocDecoyY - centerY;
+                const dist = Math.hypot(dx, dy);
+                const scale = maxDist / dist;
+                this.crocDecoyX = centerX + dx * scale;
+                this.crocDecoyY = centerY + dy * scale;
+            }
+            this.fakeMarkerX = this.crocDecoyX;
+            this.fakeMarkerY = this.crocDecoyY;
+
+            if (this.rollState === 'idle') {
+            if (this.simpleDashWarningTimer > 0) {
+                this.simpleDashWarningTimer--;
+                this.simpleDashOpen += (0.5 - this.simpleDashOpen) * 0.18;
+                if (this.simpleDashWarningTimer <= 0) {
+                    this.simpleDashTimer = 20;
+                    this.attackCooldown = 0;
+                }
+            } else if (this.simpleDashTimer > 0) {
+                this.x += this.simpleDashVx * ts;
+                this.y += this.simpleDashVy * ts;
+                this.simpleDashTimer--;
+                this.simpleDashOpen += (1 - this.simpleDashOpen) * 0.22;
+                if (this.simpleDashTimer <= 0) {
+                    this.simpleDashPauseTimer = 20;
+                    this.simpleDashCooldown = 45 + Math.round(Math.random() * 20);
+                    this.attackCooldown = 60;
+                }
+            } else if (this.simpleDashPauseTimer > 0) {
+                this.simpleDashPauseTimer--;
+                this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
+            } else if (this.simpleDashCooldown > 0) {
+                this.simpleDashCooldown--;
+                this.attackCooldown = 1;
+                this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
+                if (isOnScreen && dist < 260) {
+                    const approachX = playerX + Math.cos(this.crocCircleAngle) * this.crocCircleRadius - this.width / 2;
+                    const approachY = playerY + Math.sin(this.crocCircleAngle) * this.crocCircleRadius - this.height / 2;
+                    this.x += (approachX - this.x) * 0.08;
+                    this.y += (approachY - this.y) * 0.08;
+                    this.crocCircleAngle += this.crocCircleSpeed * ts;
+                } else {
+                    this.x += (this.crocDecoyX - this.x) * 0.08;
+                    this.y += (this.crocDecoyY - this.y) * 0.08;
+                }
+            } else {
+                if (isOnScreen && dist < 200) {
+                    let dashDir = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                    this.simpleDashDirection = dashDir;
+                    this.simpleDashVx = Math.cos(dashDir) * this.simpleDashSpeed;
+                    this.simpleDashVy = Math.sin(dashDir) * this.simpleDashSpeed;
+                    this.simpleDashWarningTimer = this.simpleDashWarningDuration;
+                    this.attackCooldown = 1;
+                    this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
+                } else {
+                    this.x += (this.crocDecoyX - this.x) * 0.08;
+                    this.y += (this.crocDecoyY - this.y) * 0.08;
+                    this.simpleDashOpen += (0 - this.simpleDashOpen) * 0.18;
+                }
+            }
+            }
+
+            if (this.parryActiveTimer > 0) {
+                this.parryActiveTimer--;
+                this.parryFlashTimer--;
+            }
+            if (this.parryRecoveryTimer > 0) {
+                this.parryRecoveryTimer--;
+            }
+            if (this.parryCooldown > 0) {
+                this.parryCooldown--;
+            }
+
+            // === Flee-then-Roll dash attack ===
+            if (this.rollState === 'idle') {
+                if (this.rollCooldown > 0) {
+                    this.rollCooldown--;
+                } else if (isOnScreen && dist < 300 && this.boulderState === 'idle' && !this.isBiting && this.biteCooldown <= 0) {
+                    this.rollState = 'fleeing';
+                    this.rollTimer = 22 + Math.floor(Math.random() * 10);
+                    this.rollFleeAngle = Math.atan2(monsterCenterY - playerY, monsterCenterX - playerX);
+                    if (this.confusedTimer > 0) this.rollFleeAngle += Math.PI;
+                }
+            } else if (this.rollState === 'fleeing') {
+                const fleeSpeed = (10 + this.phase * 0.5) * ts;
+                this.x += Math.cos(this.rollFleeAngle) * fleeSpeed;
+                this.y += Math.sin(this.rollFleeAngle) * fleeSpeed;
+                if (--this.rollTimer <= 0) {
+                    this.rollState = 'flashing';
+                    this.rollTimer = 63;
+                    this.rollFlashTimer = 0;
+                }
+            } else if (this.rollState === 'flashing') {
+                this.rollFlashTimer++;
+                if (--this.rollTimer <= 0) {
+                    this.rollState = 'rolling';
+                    this.rollTimer = 150 + this.phase * 6;
+                    this.rollHitDone = false;
+                    this.rollTrailTimer = 0;
+                    this.rollAngle = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+                }
+            } else if (this.rollState === 'rolling') {
+                this.rollAngle = Math.atan2(playerY - (this.y + this.height / 2), playerX - (this.x + this.width / 2));
+                const rollSpeed = (13 + this.phase * 0.6) * ts;
+                this.x += Math.cos(this.rollAngle) * rollSpeed;
+                this.y += Math.sin(this.rollAngle) * rollSpeed;
+                this.rollTrailTimer++;
+                if (this.rollTrailTimer % 2 === 0) {
+                    spawnAfterImage({
+                        kind: 'monster',
+                        x: this.x,
+                        y: this.y,
+                        width: this.width,
+                        height: this.height,
+                        life: 14,
+                        maxLife: 14,
+                        baseAlpha: 0.4,
+                        color: '#6e6e6e'
+                    });
+                }
+                if (!this.rollHitDone && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0 && player.slashDashInvulnTimer <= 0 &&
+                    isRectOverlap(player.x, player.y, player.width, player.height, this.x, this.y, this.width, this.height)) {
+                    this.rollHitDone = true;
+                    player.stunTimer = Math.max(player.stunTimer || 0, 90);
+                    tryApplyPlayerConfusionFromAttack('croc', {
+                        chance: 100,
+                        durationFrames: Math.round(1.5 * 60)
+                    });
+                    const baseDmg = this.getAttackDamage();
+                    const effectiveDamage = Math.max(0, Math.round(baseDmg * 0.2) + 10 - (player.damageReduction || 0));
+                    player.health -= effectiveDamage;
+                    spawnAfterImage({
+                        kind: 'player',
+                        x: player.x,
+                        y: player.y,
+                        width: player.width,
+                        height: player.height,
+                        life: 14,
+                        maxLife: 14,
+                        baseAlpha: 0.45
+                    });
+                    critEffects.push({
+                        x: player.x + player.width / 2,
+                        y: player.y - 20,
+                        alpha: 1,
+                        text: 'STUNNED!',
+                        rise: 0,
+                        color: '#ffdd33'
+                    });
+                }
+                if (--this.rollTimer <= 0) {
+                    this.rollState = 'idle';
+                    this.rollCooldown = 300 + Math.floor(Math.random() * 120);
+                }
+            }
+            this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
+            this.y = Math.max(0, Math.min(this.y, gameHeight - this.height));
+
+            if (this.boulderAttackCooldown <= 0 && this.boulderState === 'idle' && !this.isBiting && this.biteCooldown <= 0 && this.rollState === 'idle') {
+                this.boulderState = 'warning';
+                this.boulderMark = {
+                    x: playerX + (Math.random() - 0.5) * 60,
+                    y: playerY + (Math.random() - 0.5) * 60,
+                    radius: 5,
+                    maxRadius: 62.5 + Math.random() * 25,
+                    growTimer: 0,
+                    growDuration: 120
+                };
+                boulderMarks.push(this.boulderMark);
+                this.boulderAttackCooldown = 540;
+            }
+
+            if (this.boulderState === 'warning' && this.boulderMark) {
+                this.boulderMark.growTimer++;
+                const progress = Math.min(1, this.boulderMark.growTimer / this.boulderMark.growDuration);
+                this.boulderMark.radius = this.boulderMark.maxRadius * progress;
+
+                if (progress >= 1) {
+                    const mark = this.boulderMark;
+                    const newProj = {
+                        x: this.x + this.width / 2,
+                        y: this.y + this.height / 2,
+                        startX: this.x + this.width / 2,
+                        startY: this.y + this.height / 2,
+                        targetX: mark.x,
+                        targetY: mark.y,
+                        travelTime: 60 + Math.random() * 20,
+                        elapsed: 0,
+                        arcHeight: 120 + Math.random() * 60,
+                        markRef: mark,
+                        trailTimer: 0
+                    };
+                    boulderProjectiles.push(newProj);
+                    this.boulderProjectile = newProj;
+                    this.boulderState = 'active';
+                    this.boulderMark = null;
+                }
+            }
+
+            if (this.boulderState === 'active') {
+                const stillExists = boulderProjectiles.includes(this.boulderProjectile);
+                if (!stillExists) {
+                    this.boulderState = 'idle';
+                    this.boulderProjectile = null;
+                }
+            }
+
+            if (this.monsterVolleyCooldown > 0) {
+                this.monsterVolleyCooldown--;
+            }
+            if (this.monsterRingCooldown > 0) {
+                this.monsterRingCooldown--;
+            }
+            if (this.monsterVolleyCooldown <= 0 && dist < 400 && Math.random() < 0.2) {
+                this.monsterVolleyAttack(playerX, playerY);
+                this.monsterVolleyCooldown = Math.max(100, 140 - this.phase * 8);
+            }
+            if (this.monsterRingCooldown <= 0 && dist < 300 && Math.random() < 0.15) {
+                this.monsterRingAttack();
+                this.monsterRingCooldown = Math.max(120, 160 - this.phase * 10);
+            }
+
+            // Moe-style bouncing rock split attack
+            if (this.moeRockCooldown > 0) {
+                this.moeRockCooldown--;
+            }
+            if (this.moeRockLockout > 0) {
+                this.moeRockLockout--;
+            }
+            if (moeAttackGlobalLock > 0) {
+                moeAttackGlobalLock--;
+            }
+            // Cap concurrent moe projectiles so Boulders can't blanket the map with a wall.
+            // A global lock ensures only ONE Moe attack is active at a time across all Boulders.
+            const moeLive = projectiles.reduce((n, p) => n + (p.style === 'moeRock' || p.style === 'moeStone' || p.style === 'moePebble' ? 1 : 0), 0);
+            if (this.moeRockCooldown <= 0 && this.moeRockLockout <= 0 && moeAttackGlobalLock <= 0 && dist < 16 * MOE_TILE && moeLive < 36 && !playerInsideConstruction) {
+                this.moeRockSplitAttack(playerX, playerY);
+                this.moeRockCooldown = Math.max(220, 280 - this.phase * 10);
+                this.moeRockLockout = 60 * 60 * 2; // ~2 minutes before this Boulder can use it again
+                moeAttackGlobalLock = 60 * 60 * 2; // ~2 minutes before ANY Boulder can use it again
             }
 
             this.x = Math.max(0, Math.min(this.x, gameWidth - this.width));
@@ -5719,11 +6428,11 @@ class Monster {
         }
     }
 
-    casterRingWaveAttack() {
+    casterRingWaveAttack(srcX = this.portalX, srcY = this.portalY) {
         this.attackEffectTimer = 14;
         const fireBoost = this.onFire ? this.fireAttackBoost : 1;
         const waveCount = 1 + Math.floor(Math.random() * 3);
-        const baseSpeed = 3.4 + this.phase * 0.14;
+        const baseSpeed = 6.8 + this.phase * 0.28;
         const framesBetweenWaves = Math.round(0.35 * 60);
 
         // Schedule each wave with a delay so they appear separated in time
@@ -5738,16 +6447,16 @@ class Monster {
             const projectilesForWave = [];
             for (let i = 0; i < ringCount; i++) {
                 const angle = (Math.PI * 2 / ringCount) * i + wave * 0.1;
-                const targetX = this.portalX + Math.cos(angle) * radius;
-                const targetY = this.portalY + Math.sin(angle) * radius;
+                const targetX = srcX + Math.cos(angle) * radius;
+                const targetY = srcY + Math.sin(angle) * radius;
                 projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 16, style: 'casterFlameRing' });
             }
 
             delayedProjectileSpawns.push({
                 timer: delay,
                 kind: 'monsterRing',
-                srcX: this.portalX,
-                srcY: this.portalY,
+                srcX,
+                srcY,
                 projectiles: projectilesForWave
             });
         }
@@ -5769,7 +6478,7 @@ class Monster {
                 targetY,
                 Math.max(2, Math.round(this.getAttackDamage() * 0.5 * fireBoost)),
                 '#ff9e3c',
-                3.4 + this.phase * 0.1,
+                6.8 + this.phase * 0.2,
                 {
                     monsterType: this.type,
                     size: 13,
@@ -5785,7 +6494,33 @@ class Monster {
         this.attackEffectTimer = 12;
     }
 
-    casterAimedVolley(playerX, playerY) {
+    // Moe-style attack for the Boulder monster: throws a long-range rock that bounces
+    // once. On impact with the player or a wall (or at max range) it breaks into 4 stones
+    // in a cross pattern. If it reaches max range without hitting, it becomes a smaller,
+    // longer-range rock that splits again on impact. Only stones deal damage.
+    moeRockSplitAttack(playerX, playerY) {
+        if (playerInsideConstruction) return;
+        const srcX = this.x + this.width / 2;
+        const srcY = this.y + this.height / 2;
+        const baseAngle = Math.atan2(playerY - srcY, playerX - srcX);
+        const range = 5 * MOE_TILE;
+        const targetX = srcX + Math.cos(baseAngle) * range;
+        const targetY = srcY + Math.sin(baseAngle) * range;
+        const damage = Math.max(2, Math.round(this.getAttackDamage() * 0.6));
+        const proj = new Projectile(srcX, srcY, targetX, targetY, damage, '#b9a07c', 4, 'monster', 32, {
+            monsterType: this.type,
+            style: 'moeRock',
+            maxDistance: range * 2,
+            moeStage: 0,
+            canDealDamage: false,
+            rotationSpeed: 0.25,
+            ignoreCollision: true
+        });
+        projectiles.push(proj);
+        this.attackEffectTimer = 14;
+    }
+
+    casterAimedVolley(playerX, playerY, srcX = this.portalX, srcY = this.portalY) {
         if (this.confusedTimer > 0) {
             playerX = this.x + this.width / 2 - (playerX - (this.x + this.width / 2));
             playerY = this.y + this.height / 2 - (playerY - (this.y + this.height / 2));
@@ -5793,7 +6528,7 @@ class Monster {
         this.attackEffectTimer = 14;
         const fireBoost = this.onFire ? this.fireAttackBoost : 1;
         const shots = 16;
-        const speed = (2.2 + this.phase * 0.08) * 1.8; // increased by ~1.8x
+        const speed = (4.4 + this.phase * 0.16) * 1.8; // increased by ~1.8x
         const baseX = playerX; // capture player position at spawn time
         const baseY = playerY; // capture player position at spawn time
         const framesPerShot = Math.max(1, Math.round(0.05 * 60 * 10 * 3)); // 3x interval
@@ -5807,8 +6542,8 @@ class Monster {
             delayedProjectileSpawns.push({
                 timer: delay,
                 kind: 'monsterAimed',
-                srcX: this.portalX,
-                srcY: this.portalY,
+                srcX: srcX,
+                srcY: srcY,
                 targetX,
                 targetY,
                 damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64 * fireBoost)),
@@ -5831,148 +6566,172 @@ class Monster {
         const margin = 60;
         const srcX = (playerX < gameWidth / 2) ? (gameWidth - margin) : margin;
         const srcY = Math.max(40, Math.min(gameHeight - 40, Math.random() * (gameHeight - 80) + 40));
-        const fireBoost = this.onFire ? this.fireAttackBoost : 1;
 
         // choose attack mode
-        const modes = ['circular', 'spiral', 'ring', 'aim16'];
+        const modes = ['circular', 'spiral', 'ring', 'aim16', 'ember'];
         const mode = modes[Math.floor(Math.random() * modes.length)];
 
-        if (mode === 'circular') {
-            const rayCount = 5 + this.phase;
-            const speed = 4.0 + this.phase * 0.2;
-            for (let i = 0; i < rayCount; i++) {
-                const angle = (Math.PI * 2 / rayCount) * i;
-                const targetX = srcX + Math.cos(angle) * 1200;
-                const targetY = srcY + Math.sin(angle) * 1200;
-                spawnMonsterProjectile(srcX, srcY, targetX, targetY, Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)), '#ff9c46', speed, { monsterType: this.type, size: 16, style: 'casterFlameCircle', explodeOnExpire: true, explodeCount: 3, homing: false, afterImageTrail: false, afterImageInterval: 5 });
-            }
-        } else if (mode === 'spiral') {
-            const spiralCount = 5 + this.phase;
-            const spiralSpacing = 0.25;
-            const speed = 4.0 + this.phase * 0.2;
-            for (let i = 0; i < spiralCount; i++) {
-                const angle = (Math.PI * 2 * i) / spiralCount + Math.random() * spiralSpacing;
-                const targetX = srcX + Math.cos(angle) * 1200;
-                const targetY = srcY + Math.sin(angle) * 1200;
-                spawnMonsterProjectile(srcX, srcY, targetX, targetY, Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)), '#ff7430', speed, { monsterType: this.type, size: 16, style: 'casterFlameSpiral', explodeOnExpire: true, explodeCount: 3, homing: false, afterImageTrail: false, afterImageInterval: 5 });
-            }
-        } else if (mode === 'ring') {
-            // schedule 1-3 waves like casterRingWaveAttack did
-            const waveCount = 1 + Math.floor(Math.random() * 3);
-            const baseSpeed = 3.4 + this.phase * 0.14;
-            const framesBetweenWaves = Math.round(0.35 * 60);
-            for (let wave = 0; wave < waveCount; wave++) {
-                const delay = wave * framesBetweenWaves;
-                const ringCount = 18;
-                const radius = 960 + wave * 192;
-                const speed = Math.max(1.6, baseSpeed - wave * 0.22);
-                const damage = Math.max(2, Math.round(this.getAttackDamage() * 0.6 * fireBoost));
-                const color = '#ffb95d';
-                const projectilesForWave = [];
-                for (let i = 0; i < ringCount; i++) {
-                    const angle = (Math.PI * 2 / ringCount) * i + wave * 0.1;
-                    const targetX = srcX + Math.cos(angle) * radius;
-                    const targetY = srcY + Math.sin(angle) * radius;
-                    projectilesForWave.push({ targetX, targetY, damage, color, speed, size: 16, style: 'casterFlameRing', explodeOnExpire: true, explodeCount: 4 });
+        // Spawn a lasting portal at the remote location that fires the attack while active
+        this.remotePortalX = srcX;
+        this.remotePortalY = srcY;
+        this.remotePortalWarningTimer = 30; // 0.5s charge, like the regular portal
+        this.remotePortalTimer = 0;
+        this.remotePortalAttackMode = mode;
+
+        const castBannerNames = { circular: 'CIRCULAR BURST', spiral: 'INFERNO SPIRAL', ring: 'RING WAVE', aim16: 'AIMED VOLLEY', ember: 'EMBER BURST' };
+        spawnCastBanner((castBannerNames[mode] || mode.toUpperCase()) + ' (REMOTE)', '#ff6a2d');
+    }
+
+    updateRemotePortal(playerX, playerY) {
+        if (this.remotePortalSpin != null) {
+            this.remotePortalSpin = (this.remotePortalSpin || 0) + 0.08;
+        }
+        const fireBoost = this.onFire ? this.fireAttackBoost : 1;
+        const screenCenterX = (typeof cameraX !== 'undefined' && typeof viewportWidth !== 'undefined') ? cameraX + viewportWidth / 2 : playerX;
+        const screenCenterY = (typeof cameraY !== 'undefined' && typeof viewportHeight !== 'undefined') ? cameraY + viewportHeight / 2 : playerY;
+
+        if (this.remotePortalWarningTimer > 0) {
+            this.remotePortalWarningTimer--;
+            if (this.remotePortalWarningTimer === 0) {
+                let activeDuration = 45;
+                if (this.remotePortalAttackMode === 'aim16') {
+                    // Make the portal last until the final staggered shot is fired
+                    const shots = 16;
+                    const framesPerShot = Math.max(1, Math.round(0.05 * 60 * 10 * 3));
+                    activeDuration = (shots - 1) * framesPerShot + 10;
                 }
-                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterRing', srcX, srcY, projectiles: projectilesForWave });
+                this.remotePortalTimer = activeDuration;
+
+                if (this.remotePortalAttackMode === 'ring') {
+                    this.casterRingWaveAttack(this.remotePortalX, this.remotePortalY);
+                } else if (this.remotePortalAttackMode === 'aim16') {
+                    this.casterAimedVolley(screenCenterX, screenCenterY); // uses remote portal as source
+                } else if (this.remotePortalAttackMode === 'ember') {
+                    this.casterEmberBurst(screenCenterX, screenCenterY, this.remotePortalX, this.remotePortalY);
+                }
             }
-        } else if (mode === 'aim16') {
-            const shots = 16;
-            const speed = (2.2 + this.phase * 0.08) * 1.8; // match the increased speed
-            const framesPerShot = Math.max(1, Math.round(0.05 * 60 * 10 * 3)); // same cadence as adjusted aim16
-            for (let i = 0; i < shots; i++) {
-                const offset = (i - (shots - 1) / 2) * 0.06;
-                const targetX = playerX + Math.cos(offset) * 27;
-                const targetY = playerY + Math.sin(offset) * 27;
-                const delay = i * framesPerShot;
-                delayedProjectileSpawns.push({ timer: delay, kind: 'monsterAimed', srcX, srcY, targetX, targetY, damage: Math.max(2, Math.round(this.getAttackDamage() * 0.64 * fireBoost)), color: this.confusedTimer > 0 ? '#ffd880' : '#ffb14a', speed, monsterType: this.type, size: 16, style: 'casterFlameVolley', explodeOnExpire: true, explodeCount: 3 });
+            return;
+        }
+
+        if (this.remotePortalTimer > 0) {
+            if (this.remotePortalTimer % 12 === 0) {
+                if (this.remotePortalAttackMode === 'circular') {
+                    const rayCount = 5 + this.phase;
+                    const speed = 8.0 + this.phase * 0.4;
+                    for (let i = 0; i < rayCount; i++) {
+                        const angle = (Math.PI * 2 / rayCount) * i;
+                        const targetX = this.remotePortalX + Math.cos(angle) * 1200;
+                        const targetY = this.remotePortalY + Math.sin(angle) * 1200;
+                        spawnMonsterProjectile(this.remotePortalX, this.remotePortalY, targetX, targetY, Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)), '#ff9c46', speed, { monsterType: this.type, size: 16, style: 'casterFlameCircle', explodeOnExpire: true, explodeCount: 3, homing: false, afterImageTrail: false, afterImageInterval: 5 });
+                    }
+                } else if (this.remotePortalAttackMode === 'spiral') {
+                    const spiralCount = 5 + this.phase;
+                    const spiralSpacing = 0.25;
+                    const speed = 8.0 + this.phase * 0.4;
+                    for (let i = 0; i < spiralCount; i++) {
+                        const angle = (Math.PI * 2 * i) / spiralCount + Math.random() * spiralSpacing;
+                        const targetX = this.remotePortalX + Math.cos(angle) * 1200;
+                        const targetY = this.remotePortalY + Math.sin(angle) * 1200;
+                        spawnMonsterProjectile(this.remotePortalX, this.remotePortalY, targetX, targetY, Math.max(2, Math.round(this.getAttackDamage() * 0.7 * fireBoost)), '#ff7430', speed, { monsterType: this.type, size: 16, style: 'casterFlameSpiral', explodeOnExpire: true, explodeCount: 3, homing: false, afterImageTrail: false, afterImageInterval: 5 });
+                    }
+                } else if (this.remotePortalAttackMode === 'ring') {
+                    this.casterRingWaveAttack(this.remotePortalX, this.remotePortalY);
+                } else if (this.remotePortalAttackMode === 'aim16') {
+                    this.casterAimedVolley(screenCenterX, screenCenterY);
+                } else if (this.remotePortalAttackMode === 'ember') {
+                    this.casterEmberBurst(screenCenterX, screenCenterY, this.remotePortalX, this.remotePortalY);
+                }
             }
+            this.remotePortalTimer--;
         }
     }
 
-    casterQuickBurst(playerX, playerY) {
-        if (this.reactiveCooldown > 0) return;
-        this.reactiveCooldown = 45;
-        this.attackEffectTimer = 10;
-        const cx = this.x + this.width / 2;
-        const cy = this.y + this.height / 2;
-        const baseAngle = Math.atan2(playerY - cy, playerX - cx);
-        const count = 7;
-        const spread = 0.35;
-        for (let i = 0; i < count; i++) {
-            const angle = baseAngle + (i - (count - 1) / 2) * spread;
-            const targetX = cx + Math.cos(angle) * 600;
-            const targetY = cy + Math.sin(angle) * 600;
-            spawnMonsterProjectile(cx, cy, targetX, targetY, Math.max(1, Math.round(this.getAttackDamage() * 0.5)), '#ffaa55', 5.5 + this.phase * 0.15, {
-                monsterType: this.type, size: 10, style: 'casterFlameCircle', homing: false, afterImageTrail: false, afterImageInterval: 6
-            });
+    drawRemotePortal() {
+        if (this.remotePortalWarningTimer > 0) {
+            const warningRadius = 42;
+            const warningProgress = 1 - this.remotePortalWarningTimer / 30;
+            const spin = this.remotePortalSpin || 0;
+
+            const warnGlow = ctx.createRadialGradient(this.remotePortalX, this.remotePortalY, 0, this.remotePortalX, this.remotePortalY, warningRadius * 1.4);
+            warnGlow.addColorStop(0, 'rgba(255, 106, 45, 0.45)');
+            warnGlow.addColorStop(1, 'rgba(255, 106, 45, 0)');
+            ctx.fillStyle = warnGlow;
+            ctx.beginPath();
+            ctx.arc(this.remotePortalX, this.remotePortalY, warningRadius * 1.4, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.strokeStyle = 'rgba(255, 106, 45, 0.35)';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.arc(this.remotePortalX, this.remotePortalY, warningRadius, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(255, 106, 45, 0.95)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(this.remotePortalX, this.remotePortalY, warningRadius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * warningProgress);
+            ctx.stroke();
+
+            ctx.strokeStyle = `rgba(255, 200, 170, ${0.3 + 0.6 * warningProgress})`;
+            ctx.lineWidth = 2;
+            const segs = 9;
+            for (let i = 0; i < segs; i++) {
+                const a0 = spin + (Math.PI * 2 * i) / segs;
+                const a1 = a0 + 0.3 * warningProgress;
+                ctx.beginPath();
+                ctx.arc(this.remotePortalX, this.remotePortalY, warningRadius * 0.72, a0, a1);
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+            ctx.font = 'bold 14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText((this.remotePortalWarningTimer / 60).toFixed(1), this.remotePortalX, this.remotePortalY);
+        } else if (this.remotePortalTimer > 0) {
+            const spin = this.remotePortalSpin || 0;
+            const pr = 42;
+            const portalCol = '#ff6a2d';
+
+            const coreGlow = ctx.createRadialGradient(this.remotePortalX, this.remotePortalY, 0, this.remotePortalX, this.remotePortalY, pr * 1.5);
+            coreGlow.addColorStop(0, 'rgba(255, 220, 200, 0.7)');
+            coreGlow.addColorStop(0.5, 'rgba(255, 106, 45, 0.35)');
+            coreGlow.addColorStop(1, 'rgba(255, 106, 45, 0)');
+            ctx.fillStyle = coreGlow;
+            ctx.beginPath();
+            ctx.arc(this.remotePortalX, this.remotePortalY, pr * 1.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = 'rgba(255, 106, 45, 0.25)';
+            ctx.beginPath();
+            ctx.arc(this.remotePortalX, this.remotePortalY, pr, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = portalCol;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(this.remotePortalX, this.remotePortalY, pr, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(255, 200, 170, 0.85)';
+            ctx.lineWidth = 2;
+            const segs = 9;
+            for (let i = 0; i < segs; i++) {
+                const a0 = spin + (Math.PI * 2 * i) / segs;
+                const a1 = a0 + 0.28;
+                ctx.beginPath();
+                ctx.arc(this.remotePortalX, this.remotePortalY, pr * 0.72, a0, a1);
+                ctx.stroke();
+            }
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.arc(this.remotePortalX, this.remotePortalY, pr * 0.45, -spin * 1.6, -spin * 1.6 + Math.PI * 1.3);
+            ctx.stroke();
         }
-    }
-
-    casterDefensiveBurst() {
-        if (this.reactiveCooldown > 0) return;
-        this.reactiveCooldown = 60;
-        this.attackEffectTimer = 12;
-        const cx = this.x + this.width / 2;
-        const cy = this.y + this.height / 2;
-        const count = 12;
-        for (let i = 0; i < count; i++) {
-            const angle = (Math.PI * 2 / count) * i;
-            const targetX = cx + Math.cos(angle) * 500;
-            const targetY = cy + Math.sin(angle) * 500;
-            spawnMonsterProjectile(cx, cy, targetX, targetY, Math.max(1, Math.round(this.getAttackDamage() * 0.45)), '#ff7733', 4.2 + this.phase * 0.12, {
-                monsterType: this.type, size: 10, style: 'casterFlameRing', homing: false, afterImageTrail: false, afterImageInterval: 5
-            });
-        }
-        this.retreatTimer = 30;
-    }
-
-    casterOpportunisticShot(playerX, playerY) {
-        if (this.reactiveCooldown > 0) return;
-        this.reactiveCooldown = 35;
-        this.attackEffectTimer = 8;
-        const cx = this.x + this.width / 2;
-        const cy = this.y + this.height / 2;
-        spawnMonsterProjectile(cx, cy, playerX, playerY, Math.max(1, Math.round(this.getAttackDamage() * 0.7)), '#ffcc66', 7.5 + this.phase * 0.2, {
-            monsterType: this.type, size: 12, style: 'casterFlameVolley', homing: true, homingTarget: player, homingStrength: 0.06, homingDuration: 60, maxDistance: 700, afterImageTrail: false, afterImageInterval: 3
-        });
-    }
-
-    casterSidestep(playerX, playerY) {
-        if (this.casterDashCooldown > 0 || this.casterDashTimer > 0) return;
-        const cx = this.x + this.width / 2;
-        const cy = this.y + this.height / 2;
-        const toPlayer = Math.atan2(playerY - cy, playerX - cx);
-        this.casterDashAngle = toPlayer + Math.PI / 2 * (Math.random() > 0.5 ? 1 : -1);
-        this.casterDashTimer = 18;
-        this.casterDashCooldown = 90 + Math.round(Math.random() * 60);
-    }
-
-    casterTeleport(newX, newY) {
-        const cx = this.x + this.width / 2;
-        const cy = this.y + this.height / 2;
-        try { spawnEvaporationEffect(cx, cy, '#ffffff', 18, 18); } catch (e) {}
-        this.x = Math.max(0, Math.min(gameWidth - this.width, newX));
-        this.y = Math.max(0, Math.min(gameHeight - this.height, newY));
-        try { spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#ffffff', 18, 18); } catch (e) {}
-        this.teleportDuration = 10;
-        const minCd = 45;
-        const maxCd = 90;
-        this.teleportCooldown = minCd + Math.round(Math.random() * (maxCd - minCd));
-    }
-
-    casterTowerLaser(towerX, towerY, targetX, targetY) {
-        if (this.confusedTimer > 0) {
-            targetX = towerX - (targetX - towerX);
-            targetY = towerY - (targetY - towerY);
-        }
-        const angle = Math.atan2(targetY - towerY, targetX - towerX);
-        const distance = Math.max(gameWidth, gameHeight) * 1.5;
-        const hitX = towerX + Math.cos(angle) * distance;
-        const hitY = towerY + Math.sin(angle) * distance;
-        const laserColor = this.confusedTimer > 0 ? 'rgba(255,210,110,0.95)' : 'rgba(255,140,0,0.95)';
-        spawnTowerHitscan(towerX, towerY, hitX, hitY, Math.max(6, this.getAttackDamage()), laserColor, 12, 40, 20);
     }
 
     smartVolley(targetX, targetY) {
@@ -5999,6 +6758,433 @@ class Monster {
             );
         }
         this.attackEffectTimer = 10;
+    }
+
+    updateTower(playerX, playerY) {
+        if (this.type !== 'caster') return;
+
+        // Summon the tower shortly after the caster reaches patrol
+        if (!this.towerSummoned) {
+            if (this.reachedPatrol) {
+                this.towerSummonDelay--;
+                if (this.towerSummonDelay <= 0) {
+                    const towerWidth = 70;
+                    const towerHeight = 190;
+                    const spawnPos = getRandomPointInUpgradeRing(Math.max(towerWidth, towerHeight));
+                    let tx = Math.max(0, Math.min(gameWidth - towerWidth, spawnPos.x));
+                    let ty = Math.max(0, Math.min(gameHeight - towerHeight, spawnPos.y));
+                    const towerHealth = Math.round(this.maxHealth * 2.5);
+                    this.tower = {
+                        x: tx,
+                        y: ty,
+                        width: towerWidth,
+                        height: towerHeight,
+                        health: towerHealth,
+                        maxHealth: towerHealth,
+                        spin: 0,
+                        fireCooldown: Math.round(1.5 * 60),
+                        laserState: 'idle',
+                        laserTimer: 0,
+                        laserAngle: 0,
+                        laserDamageTick: 0,
+                        laserSparks: []
+                    };
+                    this.towerSummoned = true;
+                    cameraLockTarget = { x: tx + towerWidth / 2, y: ty + towerHeight / 2, timer: 90 };
+                    roarFreezeTimer = 90;
+                    screenShakeTimer = Math.max(screenShakeTimer, 60);
+                    towerSummonBigBanner = { text: 'TOWER SUMMONED', color: '#ff4444', life: 90, maxLife: 90, flash: 45 };
+                    castBannerEffects = [];
+                    try { spawnEvaporationEffect(tx + towerWidth / 2, ty + towerHeight / 2, '#ff5555', 40, 18); } catch (e) {}
+                }
+            }
+            return;
+        }
+
+        const tower = this.tower;
+        if (!tower) return;
+
+        if (this.health <= 0 || this.isDying) {
+            this.tower = null;
+            return;
+        }
+
+        tower.spin += 0.05;
+
+        if (tower.laserState === 'idle') {
+            if (tower.fireCooldown > 0) {
+                tower.fireCooldown--;
+            } else {
+                const predicted = getPredictedPlayerPosition(18);
+                const orbX = tower.x + tower.width / 2;
+                const orbY = tower.y + 8;
+                tower.laserAngle = Math.atan2(predicted.y - orbY, predicted.x - orbX);
+                tower.laserState = 'warning';
+                tower.laserTimer = 60;
+                tower.laserSparks = [];
+            }
+        } else if (tower.laserState === 'warning') {
+            tower.laserTimer -= 1;
+            if (tower.laserTimer <= 0) {
+                tower.laserState = 'firing';
+                tower.laserTimer = 60;
+                tower.laserDamageTick = 0;
+            }
+        } else if (tower.laserState === 'firing') {
+            tower.laserTimer -= 1;
+            tower.laserDamageTick -= 1;
+            if (tower.laserDamageTick <= 0) {
+                const hit = this.towerLaserDamage();
+                if (!hit && Math.random() < 0.10) {
+                    this.requestTowerBonusHitscan();
+                }
+                tower.laserDamageTick = 9;
+            }
+            const startX = tower.x + tower.width / 2;
+            const startY = tower.y + 8;
+            const { radius: mapRadius } = getMapCircle();
+            const endDist = mapRadius * 1.6;
+            const endX = startX + Math.cos(tower.laserAngle) * endDist;
+            const endY = startY + Math.sin(tower.laserAngle) * endDist;
+            for (let i = 0; i < 3; i++) {
+                const tEdge = Math.random();
+                const ex = startX + (endX - startX) * tEdge;
+                const ey = startY + (endY - startY) * tEdge;
+                const perp = tower.laserAngle + Math.PI / 2;
+                const spread = (Math.random() - 0.5) * 50;
+                const speed = 2 + Math.random() * 3;
+                tower.laserSparks.push({
+                    x: ex, y: ey,
+                    vx: Math.cos(perp) * spread * 0.1 + (Math.random() - 0.5) * speed,
+                    vy: Math.sin(perp) * spread * 0.1 + (Math.random() - 0.5) * speed,
+                    r: 1.5 + Math.random() * 2.5,
+                    life: 18 + Math.random() * 12,
+                    maxLife: 30,
+                    color: Math.random() < 0.5 ? 'rgba(180, 120, 255, 1)' : 'rgba(120, 80, 255, 1)'
+                });
+            }
+            const px = player.x + player.width / 2;
+            const py = player.y + player.height / 2;
+            const bdx = endX - startX, bdy = endY - startY;
+            const lenSq = bdx * bdx + bdy * bdy;
+            let t = lenSq > 0 ? ((px - startX) * bdx + (py - startY) * bdy) / lenSq : 0;
+            t = Math.max(0, Math.min(1, t));
+            const closeX = startX + t * bdx, closeY = startY + t * bdy;
+            if (Math.hypot(px - closeX, py - closeY) <= 26 + player.width * 0.4) {
+                for (let i = 0; i < 2; i++) {
+                    const ang = Math.random() * Math.PI * 2;
+                    const speed = 1 + Math.random() * 3;
+                    tower.laserSparks.push({
+                        x: px, y: py,
+                        vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
+                        r: 1.5 + Math.random() * 2.5,
+                        life: 16 + Math.random() * 10,
+                        maxLife: 26,
+                        color: 'rgba(200, 160, 255, 1)'
+                    });
+                }
+            }
+            for (let i = tower.laserSparks.length - 1; i >= 0; i--) {
+                const s = tower.laserSparks[i];
+                s.x += s.vx * 1;
+                s.y += s.vy * 1;
+                s.vy += 0.08 * 1;
+                s.life -= 1;
+                if (s.life <= 0) tower.laserSparks.splice(i, 1);
+            }
+            if (tower.laserTimer <= 0) {
+                tower.laserState = 'idle';
+                tower.fireCooldown = Math.round((2 + Math.random()) * 60);
+                tower.laserSparks = [];
+            }
+        }
+    }
+
+    towerLaserDamage() {
+        const tower = this.tower;
+        if (!tower) return false;
+        const startX = tower.x + tower.width / 2;
+        const startY = tower.y + 8;
+        const { radius } = getMapCircle();
+        const endDist = radius * 1.6;
+        const endX = startX + Math.cos(tower.laserAngle) * endDist;
+        const endY = startY + Math.sin(tower.laserAngle) * endDist;
+        const halfThick = 26;
+        const px = player.x + player.width / 2;
+        const py = player.y + player.height / 2;
+
+        const dx = endX - startX;
+        const dy = endY - startY;
+        const lenSq = dx * dx + dy * dy;
+        let t = lenSq > 0 ? ((px - startX) * dx + (py - startY) * dy) / lenSq : 0;
+        t = Math.max(0, Math.min(1, t));
+        const closestX = startX + t * dx;
+        const closestY = startY + t * dy;
+        const distToBeam = Math.hypot(px - closestX, py - closestY);
+
+        if (distToBeam <= halfThick + player.width * 0.4) {
+            const dmg = this.getAttackDamage();
+            player.health -= dmg;
+            if (typeof onPlayerHit === 'function') onPlayerHit(dmg, 'towerLaser');
+            if (player.health <= 0) player.health = 0;
+            return true;
+        }
+        return false;
+    }
+
+    requestTowerBonusHitscan() {
+        const tower = this.tower;
+        if (!tower) return;
+        const predicted = getPredictedPlayerPosition(18);
+        const orbX = tower.x + tower.width / 2;
+        const orbY = tower.y + 8;
+        const newAngle = Math.atan2(predicted.y - orbY, predicted.x - orbX);
+
+        if (tower.laserState === 'idle') {
+            tower.laserAngle = newAngle;
+            tower.laserState = 'firing';
+            tower.laserTimer = 18;
+            tower.laserDamageTick = 0;
+            tower.laserSparks = [];
+        } else if (tower.laserState === 'firing') {
+            tower.laserAngle = newAngle;
+            tower.laserTimer += 18;
+            tower.laserDamageTick = 0;
+        }
+    }
+
+    drawTower() {
+        const tower = this.tower;
+        if (!tower) return;
+        const cx = tower.x + tower.width / 2;
+        const topY = tower.y;
+        const baseY = tower.y + tower.height;
+
+        ctx.save();
+
+        const auraPulse = 0.7 + 0.3 * Math.sin(performance.now() * 0.04 + tower.spin * 2);
+        const auraGrad = ctx.createRadialGradient(cx, baseY - tower.height * 0.4, tower.width * 0.3, cx, baseY - tower.height * 0.4, tower.width * 1.5);
+        auraGrad.addColorStop(0, 'rgba(80, 60, 180, 0.25)');
+        auraGrad.addColorStop(0.6, 'rgba(40, 20, 120, 0.08)');
+        auraGrad.addColorStop(1, 'rgba(20, 10, 60, 0)');
+        ctx.fillStyle = auraGrad;
+        ctx.beginPath();
+        ctx.arc(cx, baseY - tower.height * 0.4, tower.width * 1.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        const bodyGrad = ctx.createLinearGradient(tower.x, 0, tower.x + tower.width, 0);
+        bodyGrad.addColorStop(0, '#1a0a2e');
+        bodyGrad.addColorStop(0.3, '#3d1a6e');
+        bodyGrad.addColorStop(0.5, '#5b2d8e');
+        bodyGrad.addColorStop(0.7, '#3d1a6e');
+        bodyGrad.addColorStop(1, '#1a0a2e');
+        ctx.fillStyle = bodyGrad;
+        ctx.strokeStyle = '#8a5cff';
+        ctx.lineWidth = 2;
+
+        ctx.beginPath();
+        ctx.moveTo(tower.x - 12, baseY);
+        ctx.lineTo(tower.x + tower.width + 12, baseY);
+        ctx.lineTo(tower.x + tower.width - 8, tower.y + 40);
+        ctx.lineTo(tower.x + 8, tower.y + 40);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.rect(tower.x + 6, tower.y + 36, tower.width - 12, tower.height - 44);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(140, 100, 255, 0.5)';
+        ctx.lineWidth = 1.5;
+        for (let by = tower.y + 55; by < baseY - 15; by += 28) {
+            ctx.beginPath();
+            ctx.moveTo(tower.x + 12, by);
+            ctx.lineTo(tower.x + tower.width - 12, by);
+            ctx.stroke();
+            for (let rx = tower.x + 16; rx < tower.x + tower.width - 16; rx += 18) {
+                ctx.beginPath();
+                ctx.moveTo(rx, by - 4);
+                ctx.lineTo(rx + 5, by + 4);
+                ctx.moveTo(rx + 5, by - 4);
+                ctx.lineTo(rx, by + 4);
+                ctx.stroke();
+            }
+        }
+
+        ctx.fillStyle = '#7b3fbf';
+        ctx.strokeStyle = '#c4a8ff';
+        ctx.beginPath();
+        ctx.moveTo(tower.x - 6, tower.y + 40);
+        ctx.lineTo(tower.x + tower.width + 6, tower.y + 40);
+        ctx.lineTo(tower.x + tower.width - 8, tower.y + 8);
+        ctx.lineTo(tower.x + 8, tower.y + 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.strokeStyle = '#6a3dab';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(cx, tower.y + 8);
+        ctx.lineTo(cx, topY - 6);
+        ctx.stroke();
+
+        if (tower.laserState === 'warning' || tower.laserState === 'firing') {
+            const beamStartX = cx;
+            const beamStartY = tower.y + 8;
+            const { radius: mapRadius } = getMapCircle();
+            const beamDist = mapRadius * 1.6;
+            const beamEndX = beamStartX + Math.cos(tower.laserAngle) * beamDist;
+            const beamEndY = beamStartY + Math.sin(tower.laserAngle) * beamDist;
+            ctx.save();
+            ctx.lineCap = 'round';
+            if (tower.laserState === 'warning') {
+                const charge = 1 - (tower.laserTimer / 60);
+                const pulse = 0.55 + 0.45 * Math.sin(gameFrameCount * 0.45);
+                const flicker = (Math.floor(gameFrameCount / 3) % 2) === 0 ? 1 : 0.5;
+                ctx.globalAlpha = 0.75;
+                ctx.setLineDash([16, 12]);
+                ctx.lineDashOffset = -(gameFrameCount * 5) % 28;
+                ctx.strokeStyle = `rgba(140, 80, 220, ${0.7 * flicker})`;
+                ctx.lineWidth = (9 + charge * 11) * pulse;
+                ctx.beginPath();
+                ctx.moveTo(beamStartX, beamStartY);
+                ctx.lineTo(beamEndX, beamEndY);
+                ctx.stroke();
+                ctx.strokeStyle = `rgba(180, 120, 255, ${0.85 * flicker})`;
+                ctx.lineWidth = (3 + charge * 4) * pulse;
+                ctx.beginPath();
+                ctx.moveTo(beamStartX, beamStartY);
+                ctx.lineTo(beamEndX, beamEndY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                const coreR = 20 + charge * 22;
+                const coreGrad = ctx.createRadialGradient(beamStartX, beamStartY, 2, beamStartX, beamStartY, coreR);
+                coreGrad.addColorStop(0, `rgba(200, 160, 255, ${0.8 * flicker})`);
+                coreGrad.addColorStop(0.45, `rgba(140, 80, 220, ${0.6 * flicker})`);
+                coreGrad.addColorStop(1, 'rgba(80, 40, 140, 0)');
+                ctx.fillStyle = coreGrad;
+                ctx.beginPath();
+                ctx.arc(beamStartX, beamStartY, coreR, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            } else {
+                const t = gameFrameCount;
+                const wob = Math.sin(t * 0.6) * 2.5;
+                const ex = beamEndX + Math.cos(tower.laserAngle + Math.PI / 2) * wob;
+                const ey = beamEndY + Math.sin(tower.laserAngle + Math.PI / 2) * wob;
+                const flick = 0.82 + 0.18 * Math.sin(t * 1.1);
+
+                ctx.globalCompositeOperation = 'lighter';
+
+                const glowGrad = ctx.createLinearGradient(beamStartX, beamStartY, ex, ey);
+                glowGrad.addColorStop(0, 'rgba(100, 40, 180, 0.55)');
+                glowGrad.addColorStop(0.5, 'rgba(130, 60, 200, 0.5)');
+                glowGrad.addColorStop(1, 'rgba(100, 40, 180, 0.12)');
+                ctx.strokeStyle = glowGrad;
+                ctx.lineWidth = 70 + Math.sin(t * 0.5) * 8;
+                ctx.beginPath();
+                ctx.moveTo(beamStartX, beamStartY);
+                ctx.lineTo(ex, ey);
+                ctx.stroke();
+
+                const bodyGrad = ctx.createLinearGradient(beamStartX, beamStartY, ex, ey);
+                bodyGrad.addColorStop(0, 'rgba(140, 80, 220, 0.95)');
+                bodyGrad.addColorStop(0.5, 'rgba(170, 110, 240, 0.9)');
+                bodyGrad.addColorStop(1, 'rgba(130, 60, 200, 0.25)');
+                ctx.strokeStyle = bodyGrad;
+                ctx.lineWidth = 30 + Math.sin(t * 0.5) * 4;
+                ctx.beginPath();
+                ctx.moveTo(beamStartX, beamStartY);
+                ctx.lineTo(ex, ey);
+                ctx.stroke();
+
+                ctx.strokeStyle = 'rgba(180, 140, 255, 0.9)';
+                ctx.lineWidth = 12 + Math.sin(t * 0.7) * 2;
+                ctx.beginPath();
+                ctx.moveTo(beamStartX, beamStartY);
+                ctx.lineTo(ex, ey);
+                ctx.stroke();
+
+                const hotGrad = ctx.createLinearGradient(beamStartX, beamStartY, ex, ey);
+                hotGrad.addColorStop(0, 'rgba(220, 200, 255, 0.95)');
+                hotGrad.addColorStop(0.4, 'rgba(180, 140, 255, 0.8)');
+                hotGrad.addColorStop(1, 'rgba(140, 100, 220, 0.2)');
+                ctx.strokeStyle = hotGrad;
+                ctx.lineWidth = 4 + Math.sin(t * 0.9) * 1;
+                ctx.beginPath();
+                ctx.moveTo(beamStartX, beamStartY);
+                ctx.lineTo(ex, ey);
+                ctx.stroke();
+
+                const coreGrad = ctx.createRadialGradient(beamStartX, beamStartY, 3, beamStartX, beamStartY, 38);
+                coreGrad.addColorStop(0, 'rgba(230, 220, 255, 0.95)');
+                coreGrad.addColorStop(0.4, 'rgba(170, 120, 255, 0.85)');
+                coreGrad.addColorStop(1, 'rgba(100, 60, 180, 0)');
+                ctx.fillStyle = coreGrad;
+                ctx.beginPath();
+                ctx.arc(beamStartX, beamStartY, 38, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.globalCompositeOperation = 'source-over';
+
+                if (tower.laserSparks) {
+                    for (const s of tower.laserSparks) {
+                        ctx.globalAlpha = Math.max(0, s.life / s.maxLife);
+                        ctx.fillStyle = s.color;
+                        ctx.beginPath();
+                        ctx.arc(s.x - cameraX, s.y - cameraY, s.r, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                    ctx.globalAlpha = 1;
+                }
+            }
+            ctx.restore();
+        }
+
+        const orbPulse = 0.85 + 0.15 * Math.sin(performance.now() * 0.06 + tower.spin);
+        const orbRadius = 14 * orbPulse;
+        const orbGlow = ctx.createRadialGradient(cx, topY - 14, 0, cx, topY - 14, orbRadius * 2.5);
+        orbGlow.addColorStop(0, 'rgba(100, 220, 255, 0.9)');
+        orbGlow.addColorStop(0.5, 'rgba(80, 140, 255, 0.4)');
+        orbGlow.addColorStop(1, 'rgba(60, 80, 200, 0)');
+        ctx.fillStyle = orbGlow;
+        ctx.beginPath();
+        ctx.arc(cx, topY - 14, orbRadius * 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.shadowColor = '#44aaff';
+        ctx.shadowBlur = 22;
+        const orbGrad = ctx.createRadialGradient(cx - 4, topY - 18, 1, cx, topY - 14, orbRadius);
+        orbGrad.addColorStop(0, '#e0f7ff');
+        orbGrad.addColorStop(0.4, '#44aaff');
+        orbGrad.addColorStop(1, '#1a3a6e');
+        ctx.fillStyle = orbGrad;
+        ctx.beginPath();
+        ctx.arc(cx, topY - 14, orbRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.font = '10px serif';
+        ctx.fillStyle = `rgba(180, 160, 255, ${0.4 + 0.3 * auraPulse})`;
+        ctx.textAlign = 'center';
+        for (let i = 0; i < 3; i++) {
+            const runeY = topY - 30 - i * 18 + Math.sin(performance.now() * 0.03 + i) * 3;
+            ctx.fillText('*', cx - 25 + i * 25, runeY);
+        }
+
+        const hpRatio = Math.max(0, tower.health / tower.maxHealth);
+        const barW = tower.width + 16;
+        const barX = cx - barW / 2;
+        const barY = baseY + 6;
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(barX, barY, barW, 5);
+        ctx.fillStyle = '#8855ff';
+        ctx.fillRect(barX, barY, barW * hpRatio, 5);
+
+        ctx.restore();
     }
 
     smartBurst(targetX, targetY) {
@@ -6028,25 +7214,32 @@ class Monster {
         this.attackEffectTimer = 14;
     }
 
-    smartHitscan(targetX, targetY) {
-        if (this.confusedTimer > 0) {
-            targetX = this.x + this.width / 2 - (targetX - (this.x + this.width / 2));
-            targetY = this.y + this.height / 2 - (targetY - (this.y + this.height / 2));
-        }
+    smartLaserDamage() {
         const startX = this.x + this.width / 2;
         const startY = this.y + this.height / 2;
-        const angle = Math.atan2(targetY - startY, targetX - startX);
-        const distance = Math.max(gameWidth, gameHeight) * 1.5;
-        const hitX = startX + Math.cos(angle) * distance;
-        const hitY = startY + Math.sin(angle) * distance;
-        const hitscanColor = this.confusedTimer > 0 ? 'rgba(255,210,110,0.95)' : 'rgba(255,80,80,0.95)';
-        spawnMonsterHitscan(startX, startY, hitX, hitY, Math.max(8, this.getAttackDamage()), hitscanColor, 20, 30);
-    }
+        const { radius } = getMapCircle();
+        const endDist = radius * 1.6;
+        const endX = startX + Math.cos(this.laserAngle) * endDist;
+        const endY = startY + Math.sin(this.laserAngle) * endDist;
+        const halfThick = 26;
+        const px = player.x + player.width / 2;
+        const py = player.y + player.height / 2;
 
-    startSmartHitscanWarning(targetX, targetY) {
-        this.hitscanWarningTimer = 60;
-        this.hitscanTargetX = targetX;
-        this.hitscanTargetY = targetY;
+        const dx = endX - startX;
+        const dy = endY - startY;
+        const lenSq = dx * dx + dy * dy;
+        let t = lenSq > 0 ? ((px - startX) * dx + (py - startY) * dy) / lenSq : 0;
+        t = Math.max(0, Math.min(1, t));
+        const closestX = startX + t * dx;
+        const closestY = startY + t * dy;
+        const distToBeam = Math.hypot(px - closestX, py - closestY);
+
+        if (distToBeam <= halfThick + player.width * 0.4) {
+            const dmg = this.getAttackDamage();
+            player.health -= dmg;
+            if (typeof onPlayerHit === 'function') onPlayerHit(dmg, 'smartLaser');
+            if (player.health <= 0) player.health = 0;
+        }
     }
 
     sprayAttack(playerX, playerY) {
@@ -6071,7 +7264,7 @@ class Monster {
                 this.getAttackDamage(),
                 projectileColor,
                 speed,
-                { monsterType: this.type }
+                { monsterType: this.type, maxDistance: this.projectileMaxDistance }
             );
         }
 
@@ -6084,7 +7277,7 @@ class Monster {
             playerY = this.y + this.height / 2 - (playerY - (this.y + this.height / 2));
         }
         const shots = 10 + this.phase * 2;
-        const speed = 4.5 * 0.67;
+        const speed = (this.projectileSpeed || 6) * 0.3;
         const baseAngle = Math.atan2(playerY - (this.y + this.height / 2), playerX - (this.x + this.width / 2));
         const projectileColor = this.confusedTimer > 0 ? '#ffd880' : '#44aaff';
 
@@ -6101,7 +7294,7 @@ class Monster {
                 this.getAttackDamage(),
                 projectileColor,
                 speed,
-                { monsterType: this.type }
+                { monsterType: this.type, maxDistance: this.projectileMaxDistance }
             );
         }
 
@@ -6114,7 +7307,7 @@ class Monster {
             playerY = this.y + this.height / 2 - (playerY - (this.y + this.height / 2));
         }
         const shots = 7;
-        const speed = 5.5;
+        const speed = (this.projectileSpeed || 6) * 0.37;
         const baseAngle = Math.atan2(playerY - (this.y + this.height / 2), playerX - (this.x + this.width / 2));
 
         const projectileColor = this.confusedTimer > 0 ? '#ffd880' : '#88eeff';
@@ -6131,7 +7324,7 @@ class Monster {
                 this.getAttackDamage(),
                 projectileColor,
                 speed,
-                { monsterType: this.type }
+                { monsterType: this.type, maxDistance: this.projectileMaxDistance }
             );
         }
 
@@ -6255,7 +7448,7 @@ class Monster {
                 Math.max(4, this.getAttackDamage() - 1),
                 color,
                 speed,
-                { monsterType: this.type }
+                { monsterType: this.type, maxDistance: this.projectileMaxDistance }
             );
         }
 
@@ -6312,11 +7505,99 @@ class Monster {
                 Math.max(4, this.getAttackDamage() - 1),
                 '#99ddff',
                 speed,
-                { monsterType: this.type }
+                { monsterType: this.type, maxDistance: this.projectileMaxDistance }
             );
         }
 
         this.attackEffectTimer = 12;
+    }
+
+    monsterVolleyAttack(playerX, playerY) {
+        const monsterCenterX = this.x + this.width / 2;
+        const monsterCenterY = this.y + this.height / 2;
+        const baseAngle = Math.atan2(playerY - monsterCenterY, playerX - monsterCenterX);
+        const projectileCount = 5 + this.phase;
+        const baseSpeed = 7 + this.phase * 0.3;
+        const spreadAngle = 0.15;
+
+        let visual;
+        if (this.type === 'swarm') {
+            visual = { color: '#9c4fff', size: 7, style: 'swarmBug', afterImageTrail: false, afterImageInterval: 0 };
+        } else if (this.type === 'simple') {
+            visual = { color: '#f9b9ff', size: 12, style: 'yarnBall', afterImageTrail: false, afterImageInterval: 0 };
+        } else if (this.type === 'boulder_tosser') {
+            visual = { color: '#5d4037', size: 14, style: 'rockProjectile', afterImageTrail: false, afterImageInterval: 0 };
+        } else {
+            visual = { color: '#ff3333', size: 6 + this.phase * 0.2, style: 'monsterVolley', afterImageTrail: false, afterImageInterval: 0 };
+        }
+
+        for (let i = 0; i < projectileCount; i++) {
+            const angle = baseAngle + (i - (projectileCount - 1) / 2) * spreadAngle;
+            const targetX = monsterCenterX + Math.cos(angle) * 500;
+            const targetY = monsterCenterY + Math.sin(angle) * 500;
+
+            spawnMonsterProjectile(
+                monsterCenterX,
+                monsterCenterY,
+                targetX,
+                targetY,
+                Math.max(2, Math.round(this.getAttackDamage() * 0.85)),
+                visual.color,
+                baseSpeed,
+                {
+                    monsterType: this.type,
+                    size: visual.size,
+                    style: visual.style,
+                    homing: false,
+                    afterImageTrail: visual.afterImageTrail,
+                    afterImageInterval: visual.afterImageInterval
+                }
+            );
+        }
+        this.attackEffectTimer = 8;
+    }
+
+    monsterRingAttack() {
+        const monsterCenterX = this.x + this.width / 2;
+        const monsterCenterY = this.y + this.height / 2;
+        const ringCount = 10 + this.phase;
+        const speed = 3.5 + this.phase * 0.25;
+
+        let visual;
+        if (this.type === 'swarm') {
+            visual = { color: '#9c4fff', size: 7, style: 'swarmBug', afterImageTrail: false, afterImageInterval: 0 };
+        } else if (this.type === 'simple') {
+            visual = { color: '#f9b9ff', size: 12, style: 'yarnBall', afterImageTrail: false, afterImageInterval: 0 };
+        } else if (this.type === 'boulder_tosser') {
+            visual = { color: '#5d4037', size: 14, style: 'rockProjectile', afterImageTrail: false, afterImageInterval: 0 };
+        } else {
+            visual = { color: '#ffaa00', size: 9, style: 'monsterRing', afterImageTrail: false, afterImageInterval: 0 };
+        }
+
+        for (let i = 0; i < ringCount; i++) {
+            const angle = (Math.PI * 2 / ringCount) * i;
+            const targetX = monsterCenterX + Math.cos(angle) * 450;
+            const targetY = monsterCenterY + Math.sin(angle) * 450;
+
+            spawnMonsterProjectile(
+                monsterCenterX,
+                monsterCenterY,
+                targetX,
+                targetY,
+                Math.max(3, Math.round(this.getAttackDamage() * 0.75)),
+                visual.color,
+                speed,
+                {
+                    monsterType: this.type,
+                    size: visual.size,
+                    style: visual.style,
+                    homing: false,
+                    afterImageTrail: visual.afterImageTrail,
+                    afterImageInterval: visual.afterImageInterval
+                }
+            );
+        }
+        this.attackEffectTimer = 14;
     }
 
     draw(overrideFillColor = null, overrideStrokeColor = null, overrideAlpha = 1, isFlashOverlay = false) {
@@ -6324,17 +7605,10 @@ class Monster {
         // Combine override alpha with monster-specific alpha (for transparency while thrown)
         let useAlpha = (overrideAlpha !== 1) ? overrideAlpha : 1;
         if (typeof this.alpha === 'number') useAlpha *= this.alpha;
-        if (this.type === 'caster' && this.teleportDuration > 0) useAlpha *= 0.3;
         if (useAlpha !== 1) ctx.globalAlpha = useAlpha;
         const monsterShakeTimer = Math.max(this.shakeTimer || 0, this.impactShakeTimer || 0);
         if (monsterShakeTimer > 0) {
             const shakeAmount = 8;
-            const shakeX = (Math.random() - 0.5) * shakeAmount;
-            const shakeY = (Math.random() - 0.5) * shakeAmount;
-            ctx.translate(shakeX, shakeY);
-        }
-        if ((this.stunTimer || 0) > 0) {
-            const shakeAmount = 6;
             const shakeX = (Math.random() - 0.5) * shakeAmount;
             const shakeY = (Math.random() - 0.5) * shakeAmount;
             ctx.translate(shakeX, shakeY);
@@ -6397,6 +7671,12 @@ class Monster {
             gradient.addColorStop(0, '#ffffff');
             gradient.addColorStop(0.4, '#dce8ff');
             gradient.addColorStop(1, '#8ba3d9');
+        } else if (this.type === 'skeleton_boss') {
+            fillColor = '#d0d8e8';
+            strokeColor = '#aaccff';
+            gradient.addColorStop(0, '#ffffff');
+            gradient.addColorStop(0.4, '#c8d4f0');
+            gradient.addColorStop(1, '#5a6a8a');
         } else {
             fillColor = '#cc3333';
             strokeColor = '#ff5d5d';
@@ -6415,6 +7695,78 @@ class Monster {
         ctx.fillStyle = overrideFillColor !== null ? overrideFillColor : gradient;
         ctx.shadowColor = strokeColor;
         ctx.shadowBlur = 26;
+
+        // Aura visual da marca do Avian Tracker
+        if (this.avianMarkTimer > 0 && this.avianMarkDamageBonus > 0) {
+            const markPulse = 0.85 + 0.2 * Math.sin(performance.now() * 0.04);
+            ctx.save();
+            ctx.globalAlpha = 0.35;
+            ctx.fillStyle = '#ff88cc';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 1.25 * markPulse, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#ffaadd';
+            ctx.lineWidth = 2.5;
+            ctx.globalAlpha = 0.55;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 1.35 * markPulse, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // Aura visual do eco fantasma da mansão
+        if ((this.mansionGhostCopyMark || 0) > 0) {
+            const ghostPulse = 0.7 + 0.35 * Math.sin(performance.now() * 0.05);
+            ctx.save();
+            ctx.globalAlpha = 0.3;
+            ctx.fillStyle = '#f4e2ff';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 1.3 * ghostPulse, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#d4b8ff';
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = 0.5;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 1.4 * ghostPulse, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // Aura visual da maldição do Castle Bone
+        if (this.boneCurseTimer > 0 && this.boneCurseDamageBonus > 0) {
+            const cursePulse = 0.8 + 0.25 * Math.sin(performance.now() * 0.03);
+            ctx.save();
+            ctx.globalAlpha = 0.3;
+            ctx.fillStyle = '#ffaa44';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 1.2 * cursePulse, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#ffcc66';
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = 0.5;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 1.3 * cursePulse, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // Aura visual de congelamento
+        if ((this.freezeTimer || 0) > 0) {
+            const freezePulse = 0.75 + 0.3 * Math.sin(performance.now() * 0.06);
+            ctx.save();
+            ctx.globalAlpha = 0.4;
+            ctx.fillStyle = '#aaeeff';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 1.15 * freezePulse, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2.5;
+            ctx.globalAlpha = 0.6;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 1.25 * freezePulse, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+        }
 
         if (this.type === 'tank') {
             const tankRadius = Math.max(this.width, this.height) * 0.45;
@@ -6670,255 +8022,413 @@ class Monster {
             ctx.restore();
         } else if (this.type === 'simple' && this.simpleVariant === 'croc') {
             const open = this.simpleDashOpen > 0.05;
-            const jawOpen = radius * 0.3 + this.simpleDashOpen * radius * 1.8;
-            const tilt = Math.sin(gameFrameCount * 0.18) * 0.04;
-            const skinColor = '#4f7243';
-            const jawColor = '#789d58';
-            const mouthColor = '#1f2b11';
-            const toothColor = '#f7f3dd';
-            const eyeColor = '#fbf37f';
+            const jawOpen = radius * 0.35 + this.simpleDashOpen * radius * 2.2;
+            const tilt = Math.sin(gameFrameCount * 0.15) * 0.03;
+            const skinColor = '#3d4f35';
+            const jawColor = '#526b45';
+            const mouthColor = '#0a0d08';
+            const toothColor = '#f0e8d0';
+            const eyeColor = '#ff6a00';
 
             ctx.save();
             ctx.translate(centerX, centerY);
             ctx.rotate(tilt);
 
-            // Head shape with improved texture
-            const headGradient = ctx.createLinearGradient(-radius, -radius * 0.35, radius, radius * 0.15);
-            headGradient.addColorStop(0, '#79a15d');
-            headGradient.addColorStop(0.5, '#5d7a43');
-            headGradient.addColorStop(1, '#4b6133');
-            ctx.fillStyle = headGradient;
-            ctx.beginPath();
-            ctx.moveTo(-radius, -radius * 0.35);
-            ctx.quadraticCurveTo(-radius * 0.9, -radius * 0.8, -radius * 0.3, -radius * 0.95);
-            ctx.lineTo(radius * 0.3, -radius * 0.95);
-            ctx.quadraticCurveTo(radius * 0.9, -radius * 0.8, radius, -radius * 0.35);
-            ctx.lineTo(radius, -radius * 0.08);
-            ctx.quadraticCurveTo(radius * 0.6, 0, radius * 0.4, radius * 0.15);
-            ctx.lineTo(-radius * 0.4, radius * 0.15);
-            ctx.quadraticCurveTo(-radius * 0.6, 0, -radius, -radius * 0.08);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = '#29321a';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-
-            // Head texture and scales
-            ctx.fillStyle = 'rgba(18, 18, 10, 0.15)';
-            for (let i = 0; i < 6; i++) {
-                const px = -radius * 0.55 + i * radius * 0.22;
-                const py = -radius * 0.53 + Math.sin(i * 0.9) * radius * 0.03;
+            // Outer aura when aggressive
+            if (this.simpleDashOpen > 0.1) {
+                const auraGrad = ctx.createRadialGradient(0, 0, radius * 0.6, 0, 0, radius * 1.4);
+                auraGrad.addColorStop(0, 'rgba(255, 90, 20, 0)');
+                auraGrad.addColorStop(0.7, 'rgba(255, 90, 20, 0.08)');
+                auraGrad.addColorStop(1, 'rgba(255, 90, 20, 0)');
+                ctx.fillStyle = auraGrad;
                 ctx.beginPath();
-                ctx.ellipse(px, py, radius * 0.07, radius * 0.035, -0.15, 0, Math.PI * 2);
+                ctx.arc(0, 0, radius * 1.4, 0, Math.PI * 2);
                 ctx.fill();
             }
 
-            // Lower jaw with shading
-            const jawGradient = ctx.createLinearGradient(-radius, -radius * 0.08, radius, radius * 0.18);
-            jawGradient.addColorStop(0, '#8cab71');
-            jawGradient.addColorStop(0.5, '#708a4f');
-            jawGradient.addColorStop(1, '#5b7242');
+            // Head shape with sharper angles
+            const headGradient = ctx.createLinearGradient(-radius * 1.05, -radius * 0.42, radius * 1.05, radius * 0.18);
+            headGradient.addColorStop(0, '#4a5e3d');
+            headGradient.addColorStop(0.5, '#3d4f32');
+            headGradient.addColorStop(1, '#2f4028');
+            ctx.fillStyle = headGradient;
+            ctx.beginPath();
+            ctx.moveTo(-radius, -radius * 0.4);
+            ctx.lineTo(-radius * 0.95, -radius * 0.88);
+            ctx.lineTo(-radius * 0.35, -radius * 0.98);
+            ctx.lineTo(radius * 0.35, -radius * 0.98);
+            ctx.lineTo(radius * 0.95, -radius * 0.88);
+            ctx.lineTo(radius, -radius * 0.4);
+            ctx.lineTo(radius * 0.85, -radius * 0.05);
+            ctx.quadraticCurveTo(radius * 0.55, 0.04, radius * 0.4, radius * 0.18);
+            ctx.lineTo(-radius * 0.4, radius * 0.18);
+            ctx.quadraticCurveTo(-radius * 0.55, 0.04, -radius * 0.85, -radius * 0.05);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = '#1a2416';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            // Snout ridge spikes
+            ctx.fillStyle = '#2a3a22';
+            ctx.beginPath();
+            ctx.moveTo(-radius * 0.5, -radius * 0.88);
+            ctx.lineTo(-radius * 0.48, -radius * 1.0);
+            ctx.lineTo(-radius * 0.35, -radius * 0.88);
+            ctx.closePath();
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(radius * 0.5, -radius * 0.88);
+            ctx.lineTo(radius * 0.48, -radius * 1.0);
+            ctx.lineTo(radius * 0.35, -radius * 0.88);
+            ctx.closePath();
+            ctx.fill();
+
+            // Hexagonal scale pattern
+            ctx.fillStyle = 'rgba(20, 30, 15, 0.22)';
+            for (let i = 0; i < 8; i++) {
+                const px = -radius * 0.6 + i * radius * 0.18;
+                const py = -radius * 0.55 + Math.sin(i * 0.7) * radius * 0.04;
+                ctx.beginPath();
+                ctx.ellipse(px, py, radius * 0.09, radius * 0.05, -0.25, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Brow ridge with sharp angles
+            ctx.fillStyle = 'rgba(35, 50, 28, 0.4)';
+            ctx.beginPath();
+            ctx.moveTo(-radius * 0.6, -radius * 0.65);
+            ctx.lineTo(-radius * 0.55, -radius * 0.78);
+            ctx.lineTo(radius * 0.55, -radius * 0.78);
+            ctx.lineTo(radius * 0.6, -radius * 0.65);
+            ctx.lineTo(radius * 0.15, -radius * 0.55);
+            ctx.lineTo(-radius * 0.15, -radius * 0.55);
+            ctx.closePath();
+            ctx.fill();
+
+            // Side plating
+            ctx.fillStyle = 'rgba(25, 35, 18, 0.25)';
+            ctx.fillRect(-radius * 0.95, -radius * 0.3, radius * 0.18, radius * 0.45);
+            ctx.fillRect(radius * 0.77, -radius * 0.3, radius * 0.18, radius * 0.45);
+
+            // Lower jaw with angular shape
+            const jawGradient = ctx.createLinearGradient(-radius, -radius * 0.08, radius, radius * 0.22);
+            jawGradient.addColorStop(0, '#7a9e60');
+            jawGradient.addColorStop(0.5, '#5f8045');
+            jawGradient.addColorStop(1, '#4a6535');
             ctx.fillStyle = jawGradient;
             ctx.beginPath();
             ctx.moveTo(-radius, -radius * 0.08);
             ctx.quadraticCurveTo(0, jawOpen, radius, -radius * 0.08);
-            ctx.lineTo(radius * 0.8, radius * 0.18);
-            ctx.quadraticCurveTo(0, jawOpen * 0.65, -radius * 0.8, radius * 0.18);
+            ctx.lineTo(radius * 0.85, radius * 0.22);
+            ctx.quadraticCurveTo(0, jawOpen * 0.62, -radius * 0.85, radius * 0.22);
             ctx.closePath();
             ctx.fill();
+            ctx.strokeStyle = '#1a2416';
+            ctx.lineWidth = 3;
             ctx.stroke();
 
-            // Jaw texture
-            ctx.fillStyle = 'rgba(18, 18, 8, 0.14)';
-            for (let i = 0; i < 4; i++) {
-                const px = -radius * 0.45 + i * radius * 0.3;
-                const py = radius * 0.04 + Math.max(0, jawOpen - radius * 0.04);
-                ctx.beginPath();
-                ctx.ellipse(px, py, radius * 0.06, radius * 0.03, 0, 0, Math.PI * 2);
-                ctx.fill();
-            }
-
-            // Subtle tongue
-            if (jawOpen > radius * 0.1) {
-                ctx.fillStyle = 'rgba(172, 88, 36, 0.35)';
-                ctx.beginPath();
-                ctx.moveTo(-radius * 0.32, radius * 0.02);
-                ctx.quadraticCurveTo(0, radius * 0.14 + jawOpen * 0.08, radius * 0.32, radius * 0.02);
-                ctx.quadraticCurveTo(radius * 0.28, radius * 0.08 + jawOpen * 0.05, -radius * 0.28, radius * 0.08 + jawOpen * 0.05);
-                ctx.closePath();
-                ctx.fill();
-            }
-
-            // Mouth interior
-            ctx.fillStyle = mouthColor;
-            ctx.beginPath();
-            ctx.moveTo(-radius * 0.8, -radius * 0.02);
-            ctx.quadraticCurveTo(0, jawOpen * 0.55, radius * 0.8, -radius * 0.02);
-            ctx.lineTo(radius * 0.7, radius * 0.18);
-            ctx.quadraticCurveTo(0, jawOpen * 0.4, -radius * 0.7, radius * 0.18);
-            ctx.closePath();
-            ctx.fill();
-
-            // Teeth
-            ctx.fillStyle = toothColor;
-            const toothCount = 4;
-            for (let i = 0; i < toothCount; i++) {
-                const x = -radius * 0.72 + i * (radius * 0.48);
-                const topY = -radius * 0.05;
-                ctx.beginPath();
-                ctx.moveTo(x, topY);
-                ctx.lineTo(x + radius * 0.12, topY + radius * 0.18);
-                ctx.lineTo(x - radius * 0.12, topY + radius * 0.18);
-                ctx.closePath();
-                ctx.fill();
-                const bottomY = radius * 0.08;
-                ctx.beginPath();
-                ctx.moveTo(x, bottomY);
-                ctx.lineTo(x + radius * 0.12, bottomY - radius * 0.18);
-                ctx.lineTo(x - radius * 0.12, bottomY - radius * 0.18);
-                ctx.closePath();
-                ctx.fill();
-            }
-
-            // Eye
-            ctx.fillStyle = eyeColor;
-            ctx.beginPath();
-            ctx.arc(radius * 0.45, -radius * 0.72, radius * 0.11, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#21220f';
-            ctx.beginPath();
-            ctx.arc(radius * 0.45, -radius * 0.72, radius * 0.04, 0, Math.PI * 2);
-            ctx.fill();
-
-            ctx.fillStyle = 'rgba(255,255,255,0.9)';
-            ctx.beginPath();
-            ctx.arc(radius * 0.52, -radius * 0.78, radius * 0.03, 0, Math.PI * 2);
-            ctx.fill();
-
-            ctx.restore();
-        } else if (this.type === 'croc') {
-            const isDashing = this.simpleDashOpen > 0.05;
-            const jawOpen = radius * 0.32 + this.simpleDashOpen * radius * 1.8;
-            const rotation = 0;
-            const tilt = Math.sin(gameFrameCount * 0.16) * 0.03;
-            const skinColor = '#4f7243';
-            const jawColor = '#7aa26b';
-            const mouthColor = '#17230f';
-            const toothColor = '#f8f4df';
-            const eyeColor = '#fcf57f';
-
-            ctx.save();
-            ctx.translate(centerX, centerY);
-            ctx.rotate(rotation + tilt);
-
-            // Head shape with richer scales and shading
-            const headGradient = ctx.createLinearGradient(-radius * 1.1, -radius * 0.4, radius * 1.1, radius * 0.18);
-            headGradient.addColorStop(0, '#6c9851');
-            headGradient.addColorStop(0.45, '#4f6f3a');
-            headGradient.addColorStop(1, '#3c552c');
-            ctx.fillStyle = headGradient;
-            ctx.beginPath();
-            ctx.moveTo(-radius * 1.1, -radius * 0.4);
-            ctx.quadraticCurveTo(-radius * 1.0, -radius * 0.95, -radius * 0.35, -radius * 1.05);
-            ctx.lineTo(radius * 0.35, -radius * 1.05);
-            ctx.quadraticCurveTo(radius * 1.0, -radius * 0.95, radius * 1.1, -radius * 0.4);
-            ctx.lineTo(radius * 1.1, -radius * 0.08);
-            ctx.quadraticCurveTo(radius * 0.65, 0, radius * 0.45, radius * 0.18);
-            ctx.lineTo(-radius * 0.45, radius * 0.18);
-            ctx.quadraticCurveTo(-radius * 0.65, 0, -radius * 1.1, -radius * 0.08);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = '#273217';
-            ctx.lineWidth = 2.5;
-            ctx.stroke();
-
-            // Upper snout ridge
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.16)';
-            ctx.lineWidth = 4;
-            ctx.beginPath();
-            ctx.moveTo(-radius * 0.95, -radius * 0.35);
-            ctx.quadraticCurveTo(-radius * 0.45, -radius * 0.85, 0, -radius * 1.0);
-            ctx.quadraticCurveTo(radius * 0.45, -radius * 0.85, radius * 0.95, -radius * 0.35);
-            ctx.stroke();
-
-            // Nostrils and brow
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
-            ctx.beginPath();
-            ctx.ellipse(-radius * 0.42, -radius * 0.72, radius * 0.07, radius * 0.035, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.ellipse(-radius * 0.25, -radius * 0.75, radius * 0.03, radius * 0.015, 0, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Head scale detail
-            ctx.fillStyle = 'rgba(22, 18, 8, 0.16)';
-            for (let i = 0; i < 7; i++) {
-                const px = -radius * 0.85 + i * radius * 0.28;
-                const py = -radius * 0.57 + Math.cos(i * 1.1) * radius * 0.04;
-                ctx.beginPath();
-                ctx.ellipse(px, py, radius * 0.095, radius * 0.05, -0.18, 0, Math.PI * 2);
-                ctx.fill();
-            }
-
-            // Lower jaw with stronger shading
-            const jawGradient = ctx.createLinearGradient(-radius * 1.1, -radius * 0.08, radius * 1.1, radius * 0.2);
-            jawGradient.addColorStop(0, '#93b47a');
-            jawGradient.addColorStop(0.5, '#719356');
-            jawGradient.addColorStop(1, '#556d43');
-            ctx.fillStyle = jawGradient;
-            ctx.beginPath();
-            ctx.moveTo(-radius * 1.1, -radius * 0.08);
-            ctx.quadraticCurveTo(0, jawOpen, radius * 1.1, -radius * 0.08);
-            ctx.lineTo(radius * 0.9, radius * 0.2);
-            ctx.quadraticCurveTo(0, jawOpen * 0.65, -radius * 0.9, radius * 0.2);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-
-            // Jaw texture
-            ctx.fillStyle = 'rgba(22, 18, 8, 0.15)';
+            // Jaw scales
+            ctx.fillStyle = 'rgba(20, 30, 15, 0.18)';
             for (let i = 0; i < 6; i++) {
-                const px = -radius * 0.55 + i * radius * 0.3;
-                const py = radius * 0.05 + Math.max(0, jawOpen - radius * 0.05);
+                const px = -radius * 0.5 + i * radius * 0.24;
+                const py = radius * 0.06 + Math.max(0, jawOpen - radius * 0.04);
                 ctx.beginPath();
-                ctx.ellipse(px, py, radius * 0.08, radius * 0.035, 0, 0, Math.PI * 2);
+                ctx.ellipse(px, py, radius * 0.08, radius * 0.04, 0, 0, Math.PI * 2);
                 ctx.fill();
             }
 
-            // Tongue detail
-            if (jawOpen > radius * 0.12) {
-                ctx.fillStyle = 'rgba(175, 76, 34, 0.35)';
+            // Jaw spikes
+            ctx.fillStyle = '#354a28';
+            for (let i = 0; i < 5; i++) {
+                const px = -radius * 0.7 + i * radius * 0.35;
+                const py = radius * 0.2;
                 ctx.beginPath();
-                ctx.moveTo(-radius * 0.4, radius * 0.04);
-                ctx.quadraticCurveTo(0, radius * 0.18 + jawOpen * 0.07, radius * 0.4, radius * 0.04);
-                ctx.lineTo(radius * 0.35, radius * 0.14 + jawOpen * 0.05);
-                ctx.quadraticCurveTo(0, radius * 0.2 + jawOpen * 0.1, -radius * 0.35, radius * 0.14 + jawOpen * 0.05);
+                ctx.moveTo(px, py);
+                ctx.lineTo(px + radius * 0.04, py + radius * 0.1);
+                ctx.lineTo(px - radius * 0.04, py + radius * 0.1);
                 ctx.closePath();
                 ctx.fill();
             }
 
-            // Mouth interior
+            // Tongue with forked tip
+            if (jawOpen > radius * 0.1) {
+                ctx.fillStyle = 'rgba(200, 75, 30, 0.45)';
+                ctx.beginPath();
+                ctx.moveTo(-radius * 0.36, radius * 0.02);
+                ctx.quadraticCurveTo(0, radius * 0.18 + jawOpen * 0.08, radius * 0.36, radius * 0.02);
+                ctx.lineTo(radius * 0.32, radius * 0.1 + jawOpen * 0.05);
+                ctx.quadraticCurveTo(0, radius * 0.22 + jawOpen * 0.1, -radius * 0.32, radius * 0.1 + jawOpen * 0.05);
+                ctx.closePath();
+                ctx.fill();
+
+                if (jawOpen > radius * 0.25) {
+                    ctx.fillStyle = 'rgba(180, 55, 25, 0.4)';
+                    ctx.beginPath();
+                    ctx.moveTo(0, radius * 0.16 + jawOpen * 0.06);
+                    ctx.lineTo(radius * 0.06, radius * 0.22 + jawOpen * 0.08);
+                    ctx.lineTo(-radius * 0.06, radius * 0.22 + jawOpen * 0.08);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            }
+
+            // Mouth interior with glow
             ctx.fillStyle = mouthColor;
             ctx.beginPath();
-            ctx.moveTo(-radius * 0.9, -radius * 0.02);
-            ctx.quadraticCurveTo(0, jawOpen * 0.55, radius * 0.9, -radius * 0.02);
+            ctx.moveTo(-radius * 0.85, -radius * 0.02);
+            ctx.quadraticCurveTo(0, jawOpen * 0.55, radius * 0.85, -radius * 0.02);
             ctx.lineTo(radius * 0.75, radius * 0.18);
             ctx.quadraticCurveTo(0, jawOpen * 0.4, -radius * 0.75, radius * 0.18);
             ctx.closePath();
             ctx.fill();
 
+            if (jawOpen > radius * 0.15) {
+                const mouthGlow = ctx.createRadialGradient(0, radius * 0.08, radius * 0.1, 0, radius * 0.08, radius * 0.5);
+                mouthGlow.addColorStop(0, 'rgba(255, 60, 20, 0.15)');
+                mouthGlow.addColorStop(1, 'rgba(255, 60, 20, 0)');
+                ctx.fillStyle = mouthGlow;
+                ctx.beginPath();
+                ctx.arc(0, radius * 0.08, radius * 0.5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Teeth - larger and more detailed
+            ctx.fillStyle = toothColor;
+            const toothCount = 5;
+            for (let i = 0; i < toothCount; i++) {
+                const x = -radius * 0.75 + i * (radius * 0.38);
+                const topY = -radius * 0.05;
+                ctx.beginPath();
+                ctx.moveTo(x, topY);
+                ctx.lineTo(x + radius * 0.1, topY + radius * 0.22);
+                ctx.lineTo(x - radius * 0.1, topY + radius * 0.22);
+                ctx.closePath();
+                ctx.fill();
+
+                const bottomY = radius * 0.1;
+                ctx.beginPath();
+                ctx.moveTo(x, bottomY);
+                ctx.lineTo(x + radius * 0.1, bottomY - radius * 0.22);
+                ctx.lineTo(x - radius * 0.1, bottomY - radius * 0.22);
+                ctx.closePath();
+                ctx.fill();
+            }
+
+            // Eye - glowing predatory eye
+            const ex = radius * 0.45;
+            const ey = -radius * 0.72;
+
+            ctx.fillStyle = 'rgba(255, 100, 0, 0.25)';
+            ctx.beginPath();
+            ctx.arc(ex, ey, radius * 0.16, 0, Math.PI * 2);
+            ctx.fill();
+
+            const eyeGlow = ctx.createRadialGradient(ex, ey, radius * 0.02, ex, ey, radius * 0.12);
+            eyeGlow.addColorStop(0, '#ffaa00');
+            eyeGlow.addColorStop(0.4, '#ff7700');
+            eyeGlow.addColorStop(0.8, '#cc4400');
+            eyeGlow.addColorStop(1, 'rgba(180, 40, 0, 0.3)');
+            ctx.fillStyle = eyeGlow;
+            ctx.beginPath();
+            ctx.arc(ex, ey, radius * 0.12, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = '#0a0500';
+            ctx.beginPath();
+            ctx.ellipse(ex, ey, radius * 0.02, radius * 0.065, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = 'rgba(255,255,255,0.95)';
+            ctx.beginPath();
+            ctx.arc(ex + radius * 0.04, ey - radius * 0.05, radius * 0.032, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.55)';
+            ctx.beginPath();
+            ctx.arc(ex - radius * 0.025, ey + radius * 0.035, radius * 0.018, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.restore();
+        } else if (this.type === 'croc') {
+            const isDashing = this.simpleDashOpen > 0.05;
+            const jawOpen = radius * 0.35 + this.simpleDashOpen * radius * 2.0;
+            const rotation = 0;
+            const tilt = Math.sin(gameFrameCount * 0.14) * 0.025;
+            const skinColor = '#4a6b3a';
+            const jawColor = '#6d8f52';
+            const mouthColor = '#111a09';
+            const toothColor = '#f5f1d8';
+            const eyeColor = '#fce64a';
+            const eyeRingColor = '#d4a017';
+            const pupilColor = '#1a0f00';
+
+            ctx.save();
+            ctx.translate(centerX, centerY);
+            ctx.rotate(rotation + tilt);
+            if (typeof this.crocInvisAlpha === 'number') {
+                ctx.globalAlpha *= this.crocInvisAlpha;
+            }
+
+            // Shadow beneath
+            ctx.fillStyle = 'rgba(0,0,0,0.18)';
+            ctx.beginPath();
+            ctx.ellipse(0, radius * 0.25, radius * 1.05, radius * 0.12, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Head shape with richer gradients
+            const headGradient = ctx.createLinearGradient(-radius * 1.1, -radius * 0.45, radius * 1.1, radius * 0.2);
+            headGradient.addColorStop(0, '#5e8a42');
+            headGradient.addColorStop(0.4, '#4a6b35');
+            headGradient.addColorStop(0.75, '#3d5a2c');
+            headGradient.addColorStop(1, '#2f4522');
+            ctx.fillStyle = headGradient;
+            ctx.beginPath();
+            ctx.moveTo(-radius * 1.1, -radius * 0.4);
+            ctx.quadraticCurveTo(-radius * 1.0, -radius * 0.98, -radius * 0.38, -radius * 1.08);
+            ctx.lineTo(radius * 0.38, -radius * 1.08);
+            ctx.quadraticCurveTo(radius * 1.0, -radius * 0.98, radius * 1.1, -radius * 0.4);
+            ctx.lineTo(radius * 1.1, -radius * 0.06);
+            ctx.quadraticCurveTo(radius * 0.68, 0.02, radius * 0.48, radius * 0.2);
+            ctx.lineTo(-radius * 0.48, radius * 0.2);
+            ctx.quadraticCurveTo(-radius * 0.68, 0.02, -radius * 1.1, -radius * 0.06);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = '#1f2e16';
+            ctx.lineWidth = 2.8;
+            ctx.stroke();
+
+            // Brow ridge
+            ctx.fillStyle = 'rgba(30, 45, 20, 0.35)';
+            ctx.beginPath();
+            ctx.moveTo(-radius * 0.85, -radius * 0.62);
+            ctx.quadraticCurveTo(-radius * 0.4, -radius * 0.88, 0, -radius * 0.95);
+            ctx.quadraticCurveTo(radius * 0.4, -radius * 0.88, radius * 0.85, -radius * 0.62);
+            ctx.quadraticCurveTo(radius * 0.3, -radius * 0.55, 0, -radius * 0.52);
+            ctx.quadraticCurveTo(-radius * 0.3, -radius * 0.55, -radius * 0.85, -radius * 0.62);
+            ctx.closePath();
+            ctx.fill();
+
+            // Upper snout ridge
+            ctx.strokeStyle = 'rgba(20, 30, 12, 0.22)';
+            ctx.lineWidth = 5;
+            ctx.beginPath();
+            ctx.moveTo(-radius * 0.95, -radius * 0.38);
+            ctx.quadraticCurveTo(-radius * 0.5, -radius * 0.82, 0, -radius * 0.98);
+            ctx.quadraticCurveTo(radius * 0.5, -radius * 0.82, radius * 0.95, -radius * 0.38);
+            ctx.stroke();
+
+            // Nostrils
+            ctx.fillStyle = 'rgba(10, 15, 5, 0.28)';
+            ctx.beginPath();
+            ctx.ellipse(-radius * 0.44, -radius * 0.74, radius * 0.08, radius * 0.04, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(-radius * 0.22, -radius * 0.76, radius * 0.035, radius * 0.018, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Scar marks
+            ctx.strokeStyle = 'rgba(20, 30, 12, 0.25)';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(-radius * 0.6, -radius * 0.25);
+            ctx.lineTo(-radius * 0.3, -radius * 0.1);
+            ctx.lineTo(-radius * 0.15, radius * 0.05);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(radius * 0.5, -radius * 0.3);
+            ctx.lineTo(radius * 0.35, -radius * 0.12);
+            ctx.stroke();
+
+            // Head scale detail - multiple layers
+            ctx.fillStyle = 'rgba(18, 28, 10, 0.18)';
+            for (let i = 0; i < 9; i++) {
+                const px = -radius * 0.8 + i * radius * 0.22;
+                const py = -radius * 0.5 + Math.cos(i * 1.3) * radius * 0.05;
+                ctx.beginPath();
+                ctx.ellipse(px, py, radius * 0.1, radius * 0.055, -0.2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.fillStyle = 'rgba(18, 28, 10, 0.12)';
+            for (let i = 0; i < 7; i++) {
+                const px = -radius * 0.7 + i * radius * 0.24;
+                const py = radius * 0.0 + Math.sin(i * 0.8) * radius * 0.04;
+                ctx.beginPath();
+                ctx.ellipse(px, py, radius * 0.08, radius * 0.04, 0.15, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Lower jaw with stronger shading
+            const jawGradient = ctx.createLinearGradient(-radius * 1.1, -radius * 0.08, radius * 1.1, radius * 0.22);
+            jawGradient.addColorStop(0, '#8db86e');
+            jawGradient.addColorStop(0.5, '#729b54');
+            jawGradient.addColorStop(1, '#5a7a40');
+            ctx.fillStyle = jawGradient;
+            ctx.beginPath();
+            ctx.moveTo(-radius * 1.1, -radius * 0.08);
+            ctx.quadraticCurveTo(0, jawOpen, radius * 1.1, -radius * 0.08);
+            ctx.lineTo(radius * 0.92, radius * 0.22);
+            ctx.quadraticCurveTo(0, jawOpen * 0.65, -radius * 0.92, radius * 0.22);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = '#1f2e16';
+            ctx.lineWidth = 2.8;
+            ctx.stroke();
+
+            // Jaw texture
+            ctx.fillStyle = 'rgba(18, 28, 10, 0.16)';
+            for (let i = 0; i < 7; i++) {
+                const px = -radius * 0.5 + i * radius * 0.28;
+                const py = radius * 0.06 + Math.max(0, jawOpen - radius * 0.05);
+                ctx.beginPath();
+                ctx.ellipse(px, py, radius * 0.09, radius * 0.04, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Jaw scar
+            ctx.strokeStyle = 'rgba(20, 30, 12, 0.2)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(-radius * 0.7, radius * 0.12);
+            ctx.lineTo(-radius * 0.4, radius * 0.18);
+            ctx.stroke();
+
+            // Tongue detail
+            if (jawOpen > radius * 0.12) {
+                const tongueGradient = ctx.createLinearGradient(0, radius * 0.04, 0, radius * 0.2 + jawOpen * 0.1);
+                tongueGradient.addColorStop(0, 'rgba(185, 82, 38, 0.4)');
+                tongueGradient.addColorStop(1, 'rgba(140, 55, 25, 0.25)');
+                ctx.fillStyle = tongueGradient;
+                ctx.beginPath();
+                ctx.moveTo(-radius * 0.42, radius * 0.04);
+                ctx.quadraticCurveTo(0, radius * 0.2 + jawOpen * 0.08, radius * 0.42, radius * 0.04);
+                ctx.lineTo(radius * 0.38, radius * 0.16 + jawOpen * 0.05);
+                ctx.quadraticCurveTo(0, radius * 0.24 + jawOpen * 0.1, -radius * 0.38, radius * 0.16 + jawOpen * 0.05);
+                ctx.closePath();
+                ctx.fill();
+            }
+
+            // Mouth interior
+            ctx.fillStyle = mouthColor;
+            ctx.beginPath();
+            ctx.moveTo(-radius * 0.92, -radius * 0.02);
+            ctx.quadraticCurveTo(0, jawOpen * 0.55, radius * 0.92, -radius * 0.02);
+            ctx.lineTo(radius * 0.78, radius * 0.18);
+            ctx.quadraticCurveTo(0, jawOpen * 0.4, -radius * 0.78, radius * 0.18);
+            ctx.closePath();
+            ctx.fill();
+
             // Garganta e dentes internos (apenas enquanto a boca está aberta)
             if (jawOpen > radius * 0.05) {
-                const throatColor = '#0a0f06';
-                const throatWidth = radius * 0.8;
-                const throatDepth = jawOpen * 1.2;
-                const toothHeight = radius * 0.14;
+                const throatColor = '#060a04';
+                const throatWidth = radius * 0.85;
+                const throatDepth = jawOpen * 1.25;
+                const toothHeight = radius * 0.15;
                 const toothCount = 9;
                 
                 // Lados da garganta com pele verde
                 const sideSkinGradient = ctx.createLinearGradient(-throatWidth, radius * 0.08, -throatWidth * 0.2, radius * 0.08 + throatDepth);
                 sideSkinGradient.addColorStop(0, skinColor);
-                sideSkinGradient.addColorStop(1, '#3d5928');
+                sideSkinGradient.addColorStop(1, '#344d22');
                 ctx.fillStyle = sideSkinGradient;
                 ctx.beginPath();
                 ctx.moveTo(-throatWidth, radius * 0.08);
@@ -6946,6 +8456,21 @@ class Monster {
                 ctx.closePath();
                 ctx.fill();
 
+                // Throat depth gradient
+                const throatInnerGradient = ctx.createLinearGradient(0, radius * 0.08, 0, radius * 0.08 + throatDepth);
+                throatInnerGradient.addColorStop(0, 'rgba(0,0,0,0.15)');
+                throatInnerGradient.addColorStop(0.5, 'rgba(0,0,0,0.05)');
+                throatInnerGradient.addColorStop(1, 'rgba(0,0,0,0.2)');
+                ctx.fillStyle = throatInnerGradient;
+                ctx.beginPath();
+                ctx.moveTo(-throatWidth * 0.8, radius * 0.08);
+                ctx.lineTo(throatWidth * 0.8, radius * 0.08);
+                ctx.quadraticCurveTo(throatWidth * 0.6, radius * 0.08 + throatDepth * 0.6, throatWidth * 0.3, radius * 0.08 + throatDepth);
+                ctx.lineTo(-throatWidth * 0.3, radius * 0.08 + throatDepth);
+                ctx.quadraticCurveTo(-throatWidth * 0.6, radius * 0.08 + throatDepth * 0.6, -throatWidth * 0.8, radius * 0.08);
+                ctx.closePath();
+                ctx.fill();
+
                 // Dentes superiores da garganta
                 ctx.fillStyle = toothColor;
                 for (let i = 0; i < toothCount; i++) {
@@ -6953,9 +8478,9 @@ class Monster {
                     const x = -throatWidth + t * (throatWidth * 2);
                     const y = radius * 0.08;
                     ctx.beginPath();
-                    ctx.moveTo(x - radius * 0.065, y);
+                    ctx.moveTo(x - radius * 0.07, y);
                     ctx.lineTo(x, y + toothHeight);
-                    ctx.lineTo(x + radius * 0.065, y);
+                    ctx.lineTo(x + radius * 0.07, y);
                     ctx.closePath();
                     ctx.fill();
                 }
@@ -6966,17 +8491,17 @@ class Monster {
                     const x = -throatWidth + t * (throatWidth * 2);
                     const y = radius * 0.08 + throatDepth;
                     ctx.beginPath();
-                    ctx.moveTo(x - radius * 0.065, y);
+                    ctx.moveTo(x - radius * 0.07, y);
                     ctx.lineTo(x, y - toothHeight);
-                    ctx.lineTo(x + radius * 0.065, y);
+                    ctx.lineTo(x + radius * 0.07, y);
                     ctx.closePath();
                     ctx.fill();
                 }
 
                 // Base sob os dentes inferiores (queixo / suporte)
                 const baseTop = radius * 0.08 + throatDepth;
-                const baseBottom = baseTop + radius * 0.08;
-                ctx.fillStyle = '#1c2410';
+                const baseBottom = baseTop + radius * 0.09;
+                ctx.fillStyle = '#151c0d';
                 ctx.beginPath();
                 ctx.moveTo(-throatWidth * 0.95, baseTop);
                 ctx.quadraticCurveTo(-throatWidth * 0.4, baseTop + radius * 0.03, -throatWidth * 0.25, baseBottom);
@@ -6986,56 +8511,236 @@ class Monster {
                 ctx.fill();
 
                 // Brilho da garganta (reflexo)
-                ctx.fillStyle = 'rgba(255, 100, 50, 0.15)';
+                ctx.fillStyle = 'rgba(255, 90, 40, 0.18)';
                 ctx.beginPath();
-                ctx.ellipse(0, radius * 0.1 + throatDepth * 0.3, throatWidth * 0.3, throatDepth * 0.2, 0, 0, Math.PI * 2);
+                ctx.ellipse(0, radius * 0.1 + throatDepth * 0.3, throatWidth * 0.28, throatDepth * 0.18, 0, 0, Math.PI * 2);
                 ctx.fill();
             }
 
-            // Eyes
-            ctx.fillStyle = eyeColor;
-            ctx.beginPath();
-            ctx.arc(radius * 0.5, -radius * 0.78, radius * 0.12, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(-radius * 0.5, -radius * 0.78, radius * 0.12, 0, Math.PI * 2);
-            ctx.fill();
-            
-            ctx.fillStyle = '#232511';
-            ctx.beginPath();
-            ctx.arc(radius * 0.5, -radius * 0.78, radius * 0.045, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(-radius * 0.5, -radius * 0.78, radius * 0.045, 0, Math.PI * 2);
-            ctx.fill();
+            // Eyes with iris and slit pupil
+            const drawEye = (ex, ey) => {
+                if (isDashing) {
+                    ctx.fillStyle = 'rgba(255, 140, 0, 0.25)';
+                    ctx.beginPath();
+                    ctx.arc(ex, ey, radius * 0.16, 0, Math.PI * 2);
+                    ctx.fill();
+                }
 
-            ctx.fillStyle = 'rgba(255,255,255,0.95)';
-            ctx.beginPath();
-            ctx.arc(radius * 0.56, -radius * 0.82, radius * 0.03, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(-radius * 0.44, -radius * 0.82, radius * 0.03, 0, Math.PI * 2);
-            ctx.fill();
+                ctx.fillStyle = eyeColor;
+                ctx.beginPath();
+                ctx.arc(ex, ey, radius * 0.13, 0, Math.PI * 2);
+                ctx.fill();
+
+                const irisGradient = ctx.createRadialGradient(ex, ey, radius * 0.04, ex, ey, radius * 0.11);
+                irisGradient.addColorStop(0, eyeRingColor);
+                irisGradient.addColorStop(0.7, eyeRingColor);
+                irisGradient.addColorStop(1, 'rgba(180, 130, 20, 0.3)');
+                ctx.fillStyle = irisGradient;
+                ctx.beginPath();
+                ctx.arc(ex, ey, radius * 0.11, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.fillStyle = pupilColor;
+                ctx.beginPath();
+                ctx.ellipse(ex, ey, radius * 0.025, radius * 0.07, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.fillStyle = 'rgba(255,255,255,0.95)';
+                ctx.beginPath();
+                ctx.arc(ex + radius * 0.04, ey - radius * 0.05, radius * 0.028, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = 'rgba(255,255,255,0.6)';
+                ctx.beginPath();
+                ctx.arc(ex - radius * 0.03, ey + radius * 0.04, radius * 0.015, 0, Math.PI * 2);
+                ctx.fill();
+            };
+
+            drawEye(radius * 0.5, -radius * 0.78);
+            drawEye(-radius * 0.5, -radius * 0.78);
 
             if (this.simpleDashWarningTimer > 0) {
                 const progress = 1 - (this.simpleDashWarningTimer / this.simpleDashWarningDuration);
-                const alpha = 0.25 + 0.55 * progress;
+                const alpha = 0.3 + 0.6 * progress;
+
+                ctx.strokeStyle = `rgba(255, 100, 40, ${alpha * 0.4})`;
+                ctx.lineWidth = 12;
+                ctx.beginPath();
+                ctx.arc(0, 0, radius * 1.5, 0, Math.PI * 2);
+                ctx.stroke();
+
                 ctx.strokeStyle = `rgba(255, 120, 60, ${alpha})`;
                 ctx.lineWidth = 5;
                 ctx.beginPath();
                 ctx.arc(0, 0, radius * 1.45, 0, Math.PI * 2);
                 ctx.stroke();
 
+                ctx.strokeStyle = `rgba(255, 200, 150, ${alpha * 0.7})`;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(0, 0, radius * 1.4, 0, Math.PI * 2);
+                ctx.stroke();
+
                 if (typeof this.simpleDashDirection === 'number') {
                     ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
-                    ctx.lineWidth = 3;
+                    ctx.lineWidth = 3.5;
                     ctx.beginPath();
                     ctx.moveTo(0, 0);
                     ctx.lineTo(Math.cos(this.simpleDashDirection) * radius * 1.45, Math.sin(this.simpleDashDirection) * radius * 1.45);
                     ctx.stroke();
+
+                    ctx.fillStyle = `rgba(255, 200, 150, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(Math.cos(this.simpleDashDirection) * radius * 1.45, Math.sin(this.simpleDashDirection) * radius * 1.45, radius * 0.06, 0, Math.PI * 2);
+                    ctx.fill();
                 }
             }
 
+            ctx.restore();
+        } else if (this.type === 'boulder_tosser') {
+            ctx.save();
+            ctx.translate(centerX, centerY);
+            if (typeof this.crocInvisAlpha === 'number') {
+                ctx.globalAlpha *= this.crocInvisAlpha;
+            }
+
+            const bodyRadius = radius * 0.9;
+            const rockGradient = ctx.createRadialGradient(-bodyRadius * 0.3, -bodyRadius * 0.3, bodyRadius * 0.1, 0, 0, bodyRadius);
+            rockGradient.addColorStop(0, '#8a8a8a');
+            rockGradient.addColorStop(0.5, '#5c5c5c');
+            rockGradient.addColorStop(1, '#3a3a3a');
+            ctx.fillStyle = rockGradient;
+            ctx.beginPath();
+            ctx.arc(0, 0, bodyRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#1f1f1f';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            const spikeCount = 10;
+            for (let i = 0; i < spikeCount; i++) {
+                const angle = (Math.PI * 2 / spikeCount) * i + gameFrameCount * 0.01;
+                const spikeLen = bodyRadius * 0.35 + Math.sin(i * 2.7) * bodyRadius * 0.1;
+                const innerR = bodyRadius * 0.85;
+                const outerR = bodyRadius + spikeLen;
+                ctx.fillStyle = '#6e6e6e';
+                ctx.beginPath();
+                ctx.moveTo(Math.cos(angle) * innerR, Math.sin(angle) * innerR);
+                ctx.lineTo(Math.cos(angle - 0.18) * outerR, Math.sin(angle - 0.18) * outerR);
+                ctx.lineTo(Math.cos(angle + 0.18) * outerR, Math.sin(angle + 0.18) * outerR);
+                ctx.closePath();
+                ctx.fill();
+                ctx.strokeStyle = '#2a2a2a';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = '#3d3d3d';
+            for (let i = 0; i < 6; i++) {
+                const px = -bodyRadius * 0.5 + Math.cos(i * 1.3) * bodyRadius * 0.45;
+                const py = -bodyRadius * 0.2 + Math.sin(i * 1.7) * bodyRadius * 0.35;
+                ctx.beginPath();
+                ctx.arc(px, py, bodyRadius * 0.12, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            ctx.fillStyle = '#111';
+            ctx.beginPath();
+            ctx.arc(-bodyRadius * 0.3, -bodyRadius * 0.25, bodyRadius * 0.12, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(bodyRadius * 0.3, -bodyRadius * 0.25, bodyRadius * 0.12, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = '#ff3333';
+            ctx.beginPath();
+            ctx.arc(-bodyRadius * 0.3, -bodyRadius * 0.25, bodyRadius * 0.05, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(bodyRadius * 0.3, -bodyRadius * 0.25, bodyRadius * 0.05, 0, Math.PI * 2);
+            ctx.fill();
+
+            if (this.simpleDashWarningTimer > 0) {
+                const progress = 1 - (this.simpleDashWarningTimer / this.simpleDashWarningDuration);
+                const alpha = 0.3 + 0.6 * progress;
+                ctx.strokeStyle = `rgba(255, 140, 60, ${alpha * 0.4})`;
+                ctx.lineWidth = 10;
+                ctx.beginPath();
+                ctx.arc(0, 0, bodyRadius * 1.45, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.strokeStyle = `rgba(255, 160, 80, ${alpha})`;
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.arc(0, 0, bodyRadius * 1.4, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            if (this.parryFlashTimer > 0) {
+                ctx.strokeStyle = `rgba(255, 255, 255, ${this.parryFlashTimer / 8})`;
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.arc(0, 0, bodyRadius * 1.3, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            if (this.rollState === 'flashing') {
+                const flashing = Math.floor(this.rollFlashTimer / 9) % 2 === 0;
+                if (flashing) {
+                    ctx.fillStyle = '#ffffff';
+                    ctx.beginPath();
+                    ctx.arc(0, 0, bodyRadius * 1.1, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                }
+            } else if (this.rollState === 'rolling' || this.rollState === 'fleeing') {
+                const isFleeing = this.rollState === 'fleeing';
+                const rollSpin = gameFrameCount * (isFleeing ? 0.25 : 0.5);
+                const rollCol = isFleeing ? '#7a7a7a' : '#555555';
+                const rollGrad = ctx.createRadialGradient(-bodyRadius * 0.3, -bodyRadius * 0.3, bodyRadius * 0.1, 0, 0, bodyRadius * 1.15);
+                rollGrad.addColorStop(0, isFleeing ? '#b0b0b0' : '#8a8a8a');
+                rollGrad.addColorStop(0.6, rollCol);
+                rollGrad.addColorStop(1, '#2c2c2c');
+                ctx.fillStyle = rollGrad;
+                ctx.beginPath();
+                ctx.arc(0, 0, bodyRadius * 1.1, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#151515';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                ctx.strokeStyle = 'rgba(20, 20, 20, 0.8)';
+                ctx.lineWidth = Math.max(2, bodyRadius * 0.12);
+                for (let s = 0; s < 3; s++) {
+                    const a = rollSpin + (s * Math.PI * 2 / 3);
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(Math.cos(a) * bodyRadius * 1.05, Math.sin(a) * bodyRadius * 1.05);
+                    ctx.stroke();
+                }
+                for (let c = 0; c < 5; c++) {
+                    const ca = rollSpin + c * 1.9;
+                    const cr = bodyRadius * (0.35 + (c % 2) * 0.25);
+                    ctx.fillStyle = 'rgba(10, 10, 10, 0.7)';
+                    ctx.beginPath();
+                    ctx.arc(Math.cos(ca) * cr, Math.sin(ca) * cr, bodyRadius * 0.13, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                if (!isFleeing) {
+                    const dir = this.rollAngle || 0;
+                    ctx.fillStyle = 'rgba(255, 90, 40, 0.9)';
+                    for (let t = 1; t <= 3; t++) {
+                        const tx = -Math.cos(dir) * bodyRadius * (0.9 + t * 0.55);
+                        const ty = -Math.sin(dir) * bodyRadius * (0.9 + t * 0.55);
+                        ctx.globalAlpha = 0.7 / t;
+                        ctx.beginPath();
+                        ctx.arc(tx, ty, bodyRadius * 0.18, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                    ctx.globalAlpha = 1;
+                }
+            }
             ctx.restore();
         } else if (this.type === 'simple') {
             const bodyRadius = radius * 0.95;
@@ -7215,6 +8920,120 @@ class Monster {
             ctx.moveTo(centerX - chipRadius * 0.25, centerY + outerRadius * 0.18);
             ctx.lineTo(centerX + chipRadius * 0.25, centerY + outerRadius * 0.18);
             ctx.stroke();
+
+            if (this.laserState === 'warning' || this.laserState === 'firing') {
+                const startX = centerX;
+                const startY = centerY;
+                const { radius: mapRadius } = getMapCircle();
+                const endDist = mapRadius * 1.6;
+                const endX = startX + Math.cos(this.laserAngle) * endDist;
+                const endY = startY + Math.sin(this.laserAngle) * endDist;
+                ctx.save();
+                ctx.lineCap = 'round';
+                if (this.laserState === 'warning') {
+                    const charge = 1 - (this.laserTimer / 60);
+                    const pulse = 0.55 + 0.45 * Math.sin(gameFrameCount * 0.45);
+                    const flicker = (Math.floor(gameFrameCount / 3) % 2) === 0 ? 1 : 0.5;
+                    ctx.globalAlpha = 0.75;
+                    ctx.setLineDash([16, 12]);
+                    ctx.lineDashOffset = -(gameFrameCount * 5) % 28;
+                    ctx.strokeStyle = `rgba(220, 20, 20, ${0.7 * flicker})`;
+                    ctx.lineWidth = (9 + charge * 11) * pulse;
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(endX, endY);
+                    ctx.stroke();
+                    ctx.strokeStyle = `rgba(255, 60, 60, ${0.85 * flicker})`;
+                    ctx.lineWidth = (3 + charge * 4) * pulse;
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(endX, endY);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    const coreR = 20 + charge * 22;
+                    const coreGrad = ctx.createRadialGradient(startX, startY, 2, startX, startY, coreR);
+                    coreGrad.addColorStop(0, `rgba(255, 180, 180, ${0.8 * flicker})`);
+                    coreGrad.addColorStop(0.45, `rgba(210, 20, 20, ${0.6 * flicker})`);
+                    coreGrad.addColorStop(1, 'rgba(150, 0, 0, 0)');
+                    ctx.fillStyle = coreGrad;
+                    ctx.beginPath();
+                    ctx.arc(startX, startY, coreR, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.globalAlpha = 1;
+                } else {
+                    const cx = startX, cy = startY;
+                    const t = gameFrameCount;
+                    const wob = Math.sin(t * 0.6) * 2.5;
+                    const ex = endX + Math.cos(this.laserAngle + Math.PI / 2) * wob;
+                    const ey = endY + Math.sin(this.laserAngle + Math.PI / 2) * wob;
+                    const flick = 0.82 + 0.18 * Math.sin(t * 1.1);
+
+                    ctx.globalCompositeOperation = 'lighter';
+
+                    const glowGrad = ctx.createLinearGradient(cx, cy, ex, ey);
+                    glowGrad.addColorStop(0, `rgba(190, 0, 0, ${0.55 * flick})`);
+                    glowGrad.addColorStop(0.5, `rgba(220, 10, 10, ${0.5 * flick})`);
+                    glowGrad.addColorStop(1, 'rgba(170, 0, 0, 0.12)');
+                    ctx.strokeStyle = glowGrad;
+                    ctx.lineWidth = 70 + Math.sin(t * 0.5) * 8;
+                    ctx.beginPath();
+                    ctx.moveTo(cx, cy);
+                    ctx.lineTo(ex, ey);
+                    ctx.stroke();
+
+                    const bodyGrad = ctx.createLinearGradient(cx, cy, ex, ey);
+                    bodyGrad.addColorStop(0, `rgba(230, 15, 15, ${0.95 * flick})`);
+                    bodyGrad.addColorStop(0.5, `rgba(255, 35, 35, ${0.9 * flick})`);
+                    bodyGrad.addColorStop(1, 'rgba(220, 10, 10, 0.25)');
+                    ctx.strokeStyle = bodyGrad;
+                    ctx.lineWidth = 30 + Math.sin(t * 0.5) * 4;
+                    ctx.beginPath();
+                    ctx.moveTo(cx, cy);
+                    ctx.lineTo(ex, ey);
+                    ctx.stroke();
+
+                    ctx.strokeStyle = `rgba(255, 90, 90, ${0.9 * flick})`;
+                    ctx.lineWidth = 12 + Math.sin(t * 0.7) * 2;
+                    ctx.beginPath();
+                    ctx.moveTo(cx, cy);
+                    ctx.lineTo(ex, ey);
+                    ctx.stroke();
+
+                    const hotGrad = ctx.createLinearGradient(cx, cy, ex, ey);
+                    hotGrad.addColorStop(0, `rgba(255, 210, 210, ${0.95 * flick})`);
+                    hotGrad.addColorStop(0.4, `rgba(255, 140, 140, ${0.8 * flick})`);
+                    hotGrad.addColorStop(1, 'rgba(255, 80, 80, 0.2)');
+                    ctx.strokeStyle = hotGrad;
+                    ctx.lineWidth = 4 + Math.sin(t * 0.9) * 1;
+                    ctx.beginPath();
+                    ctx.moveTo(cx, cy);
+                    ctx.lineTo(ex, ey);
+                    ctx.stroke();
+
+                    const coreGrad = ctx.createRadialGradient(cx, cy, 3, cx, cy, 38);
+                    coreGrad.addColorStop(0, `rgba(255, 230, 230, ${0.95 * flick})`);
+                    coreGrad.addColorStop(0.4, `rgba(255, 70, 70, ${0.85 * flick})`);
+                    coreGrad.addColorStop(1, 'rgba(160, 0, 0, 0)');
+                    ctx.fillStyle = coreGrad;
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, 38, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.globalCompositeOperation = 'source-over';
+
+                    if (this.laserSparks) {
+                        for (const s of this.laserSparks) {
+                            ctx.globalAlpha = Math.max(0, s.life / s.maxLife);
+                            ctx.fillStyle = s.color;
+                            ctx.beginPath();
+                            ctx.arc(s.x - cameraX, s.y - cameraY, s.r, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+                        ctx.globalAlpha = 1;
+                    }
+                }
+                ctx.restore();
+            }
         } else if (this.type === 'avianightmare') {
             ctx.beginPath();
             ctx.moveTo(centerX, centerY - radius * 0.95);
@@ -7315,24 +9134,6 @@ class Monster {
             ctx.restore();
         }
 
-        if ((this.stunTimer || 0) > 0) {
-            const goldFlash = (Math.floor(gameFrameCount / 4) % 2) === 0;
-            const goldAlpha = 0.3 + 0.22 * Math.sin(gameFrameCount * 0.4);
-            ctx.save();
-            ctx.globalAlpha = goldAlpha;
-            ctx.fillStyle = goldFlash ? 'rgba(255, 210, 50, 0.95)' : 'rgba(255, 235, 130, 0.82)';
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, radius * 1.02, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-
-            drawStunStars(centerX, centerY, radius, 1, true);
-
-            if (Math.random() < 0.12) {
-                spawnEvaporationEffect(centerX + (Math.random() - 0.5) * radius, centerY + (Math.random() - 0.5) * radius, '#ffe066', 4, 1);
-            }
-        }
-
         if (this.type === 'tank') {
             const tankRadius = Math.max(this.width, this.height) * 0.45;
             ctx.fillStyle = '#ffffcc';
@@ -7387,157 +9188,114 @@ class Monster {
         }
 
         if (this.type === 'caster') {
+            const portalCol = '#00ffff';
             if (this.portalWarningTimer > 0) {
+                const warningRadius = 42;
                 const warningProgress = 1 - this.portalWarningTimer / 30;
+                const spin = this.portalSpin || 0;
 
-                ctx.strokeStyle = 'rgba(0, 255, 255, 0.4)';
+                // charging glow
+                const warnGlow = ctx.createRadialGradient(this.portalX, this.portalY, 0, this.portalX, this.portalY, warningRadius * 1.4);
+                warnGlow.addColorStop(0, 'rgba(0, 255, 255, 0.45)');
+                warnGlow.addColorStop(1, 'rgba(0, 255, 255, 0)');
+                ctx.fillStyle = warnGlow;
+                ctx.beginPath();
+                ctx.arc(this.portalX, this.portalY, warningRadius * 1.4, 0, Math.PI * 2);
+                ctx.fill();
+
+                // outer faint ring
+                ctx.strokeStyle = 'rgba(0, 255, 255, 0.35)';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.arc(this.portalX, this.portalY, warningRadius, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // charging progress arc
+                ctx.strokeStyle = 'rgba(0, 255, 255, 0.95)';
                 ctx.lineWidth = 3;
                 ctx.beginPath();
-                ctx.arc(this.portalX, this.portalY, 44, 0, Math.PI * 2);
+                ctx.arc(this.portalX, this.portalY, warningRadius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * warningProgress);
                 ctx.stroke();
 
-                ctx.strokeStyle = 'rgba(0, 255, 255, 0.95)';
-                ctx.lineWidth = 2.5;
-                ctx.beginPath();
-                ctx.arc(this.portalX, this.portalY, 44, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * warningProgress);
-                ctx.stroke();
+                // rotating rune dashes forming as it charges
+                ctx.strokeStyle = `rgba(180, 255, 255, ${0.3 + 0.6 * warningProgress})`;
+                ctx.lineWidth = 2;
+                const segs = 9;
+                for (let i = 0; i < segs; i++) {
+                    const a0 = spin + (Math.PI * 2 * i) / segs;
+                    const a1 = a0 + 0.3 * warningProgress;
+                    ctx.beginPath();
+                    ctx.arc(this.portalX, this.portalY, warningRadius * 0.72, a0, a1);
+                    ctx.stroke();
+                }
 
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-                ctx.font = 'bold 13px sans-serif';
+                ctx.font = 'bold 14px sans-serif';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.fillText((this.portalWarningTimer / 60).toFixed(1), this.portalX, this.portalY);
-            }
+            } else if (this.portalTimer > 0) {
+                const spin = this.portalSpin || 0;
+                const pr = 42;
 
-            if (this.towerActive) {
-                const tx = this.towerX;
-                const ty = this.towerY;
-                ctx.save();
-                ctx.translate(tx, ty);
-
-                ctx.fillStyle = '#3a2a1a';
-                ctx.fillRect(-8, -4, 16, 8);
-                ctx.fillStyle = '#5c3d2e';
-                ctx.fillRect(-6, -8, 12, 4);
-                ctx.fillStyle = '#ff4444';
+                // hot core glow
+                const coreGlow = ctx.createRadialGradient(this.portalX, this.portalY, 0, this.portalX, this.portalY, pr * 1.5);
+                coreGlow.addColorStop(0, 'rgba(220, 255, 255, 0.7)');
+                coreGlow.addColorStop(0.5, 'rgba(0, 255, 255, 0.35)');
+                coreGlow.addColorStop(1, 'rgba(0, 255, 255, 0)');
+                ctx.fillStyle = coreGlow;
                 ctx.beginPath();
-                ctx.arc(0, -10, 3.5, 0, Math.PI * 2);
+                ctx.arc(this.portalX, this.portalY, pr * 1.5, 0, Math.PI * 2);
                 ctx.fill();
-                ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-                ctx.lineWidth = 1;
+
+                // active filled disc
+                ctx.fillStyle = 'rgba(0, 255, 255, 0.25)';
+                ctx.beginPath();
+                ctx.arc(this.portalX, this.portalY, pr, 0, Math.PI * 2);
+                ctx.fill();
+
+                // main ring with glow
+                ctx.shadowColor = 'transparent';
+                ctx.shadowBlur = 0;
+                ctx.strokeStyle = portalCol;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(this.portalX, this.portalY, pr, 0, Math.PI * 2);
                 ctx.stroke();
 
-                if (this.towerWarningTimer > 0 && this.towerTargetX !== null && this.towerTargetY !== null) {
-                    const warningDuration = 50;
-                    const warningProgress = 1 - this.towerWarningTimer / warningDuration;
-                    const angle = Math.atan2(this.towerTargetY - ty, this.towerTargetX - tx);
-                    const distance = Math.max(gameWidth, gameHeight) * 1.5;
-                    const hitX = Math.cos(angle) * distance;
-                    const hitY = Math.sin(angle) * distance;
-                    const color = 'rgba(255,140,0,0.95)';
-                    const thickness = 10;
-
-                    ctx.globalAlpha = Math.max(0.5, 0.85 * (0.7 + 0.3 * warningProgress));
-                    ctx.fillStyle = color;
-                    ctx.strokeStyle = color;
-                    ctx.lineWidth = thickness;
-                    ctx.shadowColor = color;
-                    ctx.shadowBlur = 18;
-
-                    const perp = thickness * 0.6;
-                    const dx = Math.cos(angle);
-                    const dy = Math.sin(angle);
-                    const ox = -dy * perp;
-                    const oy = dx * perp;
-
+                // rotating broken rune ring
+                ctx.strokeStyle = 'rgba(180, 255, 255, 0.85)';
+                ctx.lineWidth = 2;
+                const segs = 9;
+                for (let i = 0; i < segs; i++) {
+                    const a0 = spin + (Math.PI * 2 * i) / segs;
+                    const a1 = a0 + 0.28;
                     ctx.beginPath();
-                    ctx.moveTo(ox, oy);
-                    ctx.lineTo(hitX + ox, hitY + oy);
-                    ctx.lineTo(hitX - ox, hitY - oy);
-                    ctx.lineTo(-ox, -oy);
-                    ctx.closePath();
-                    ctx.fill();
-
-                    ctx.globalAlpha = Math.max(0.35, 0.85 * (0.6 + 0.4 * warningProgress));
-                    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-                    ctx.lineWidth = 3;
-                    ctx.beginPath();
-                    ctx.moveTo(0, 0);
-                    ctx.lineTo(hitX, hitY);
+                    ctx.arc(this.portalX, this.portalY, pr * 0.72, a0, a1);
                     ctx.stroke();
-
-                    ctx.restore();
-
-                    ctx.fillStyle = 'rgba(255,255,255,0.95)';
-                    ctx.font = 'bold 12px sans-serif';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText((this.towerWarningTimer / 60).toFixed(1), this.towerTargetX, this.towerTargetY);
-                } else {
-                    ctx.restore();
                 }
+
+                // counter-rotating inner arc
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+                ctx.lineWidth = 1.6;
+                ctx.beginPath();
+                ctx.arc(this.portalX, this.portalY, pr * 0.45, -spin * 1.6, -spin * 1.6 + Math.PI * 1.3);
+                ctx.stroke();
+
+                // bright core
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.arc(this.portalX, this.portalY, pr * 0.22, 0, Math.PI * 2);
+                ctx.fill();
             }
         }
 
-        if (this.type === 'smart' && this.hitscanWarningTimer > 0 && this.hitscanTargetX !== null && this.hitscanTargetY !== null) {
-            const warningDuration = 60;
-            const warningProgress = 1 - this.hitscanWarningTimer / warningDuration;
+        if (this.type === 'caster' && (this.remotePortalWarningTimer > 0 || this.remotePortalTimer > 0)) {
+            this.drawRemotePortal();
+        }
 
-            // draw a preview beam shaped like the final hitscan
-            const startX = this.x + this.width / 2;
-            const startY = this.y + this.height / 2;
-            const predictedX = this.hitscanTargetX;
-            const predictedY = this.hitscanTargetY;
-            const angle = Math.atan2(predictedY - startY, predictedX - startX);
-            const distance = Math.max(gameWidth, gameHeight) * 1.5;
-            const hitX = startX + Math.cos(angle) * distance;
-            const hitY = startY + Math.sin(angle) * distance;
-            const color = 'rgba(255,80,80,0.95)';
-            const thickness = 20;
-
-            ctx.save();
-            const flashFrames = 12;
-            const isFlashing = this.hitscanWarningTimer <= flashFrames;
-            const baseAlpha = 0.85;
-            const flashAlpha = isFlashing ? baseAlpha + Math.sin((this.hitscanWarningTimer / flashFrames) * Math.PI * 8) * 0.35 : baseAlpha;
-            ctx.globalAlpha = Math.max(0.5, flashAlpha * (0.7 + 0.3 * warningProgress));
-
-            ctx.fillStyle = color;
-            ctx.strokeStyle = color;
-            ctx.lineWidth = thickness;
-            ctx.shadowColor = color;
-            ctx.shadowBlur = 28;
-
-            const perp = thickness * 0.6;
-            const dx = Math.cos(angle);
-            const dy = Math.sin(angle);
-            const ox = -dy * perp;
-            const oy = dx * perp;
-
-            ctx.beginPath();
-            ctx.moveTo(startX + ox, startY + oy);
-            ctx.lineTo(hitX + ox, hitY + oy);
-            ctx.lineTo(hitX - ox, hitY - oy);
-            ctx.lineTo(startX - ox, startY - oy);
-            ctx.closePath();
-            ctx.fill();
-
-            ctx.globalAlpha = Math.max(0.35, (isFlashing ? 1.0 : 0.85) * (0.6 + 0.4 * warningProgress));
-            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-            ctx.lineWidth = 4;
-            ctx.beginPath();
-            ctx.moveTo(startX, startY);
-            ctx.lineTo(hitX, hitY);
-            ctx.stroke();
-
-            ctx.restore();
-
-            // small countdown at predicted target
-            ctx.fillStyle = 'rgba(255,255,255,0.95)';
-            ctx.font = 'bold 14px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText((this.hitscanWarningTimer / 60).toFixed(1), predictedX, predictedY);
+        if (this.type === 'caster' && !isFlashOverlay) {
+            this.drawTower();
         }
 
         if (this.flashTimer > 0 && !isFlashOverlay) {
@@ -7585,6 +9343,14 @@ class Monster {
                 ctx.stroke();
             }
         }
+        if (this.type === 'shooter') {
+            if (typeof this.drawShooterPatrolProgress === 'function') {
+                this.drawShooterPatrolProgress();
+            }
+            if (this.turret && !this.isDying) {
+                this.drawShooterTurret();
+            }
+        }
     }
 
     getAttackDamage() {
@@ -7594,14 +9360,52 @@ class Monster {
         if (this.type === 'caster') return 5.25 + this.phase * 1.5;
         if (this.type === 'avianightmare') return 2.25 + this.phase * 0.75;
         if (this.type === 'simple') return 2.25 + this.phase * 0.75;
-        if (this.type === 'croc') return (6 + this.phase * 2) * 0.25; // croc now deals much less damage
+        if (this.type === 'croc') return (12 + this.phase * 5) * 0.5; // croc now deals much less damage
+        if (this.type === 'boulder_tosser') return (12 + this.phase * 5) * 0.5;
+        if (this.type === 'skeleton_boss') return 8 + this.phase * 2.5;
+        if (this.type === 'castle_bone_sphere') return 6 + this.phase * 1.8;
         return 3.75 + this.phase * 1.5;
     }
 
     takeDamage(amount) {
-        const finalDamage = this.type === 'tank'
+        if (this.type === 'shooter' && this.patrolSpots.some(s => s.turret && s.turret.health > 0)) {
+            return 0;
+        }
+        if (this.type === 'boulder_tosser' && this.rollState === 'rolling') {
+            return 0;
+        }
+        if (this.type === 'boulder_tosser' && this.parryCooldown <= 0 && this.parryActiveTimer <= 0 && this.parryRecoveryTimer <= 0 && Math.random() < 0.45 + this.phase * 0.03) {
+            this.parryActiveTimer = 8;
+            this.parryFlashTimer = 8;
+            this.parryRecoveryTimer = 12;
+            this.parryCooldown = 60;
+            spawnEvaporationEffect(this.x + this.width / 2, this.y + this.height / 2, '#aaaaaa', 12, 8);
+            critEffects.push({
+                x: this.x + this.width / 2,
+                y: this.y - 20,
+                alpha: 1,
+                text: 'PARRIED',
+                rise: 0
+            });
+            return 0;
+        }
+        let finalDamage = this.type === 'tank'
             ? Math.max(0, amount * 0.85)
             : amount;
+        const ampSources = [];
+        if (this.mansionGhostCopyDamageAmp > 0 && !this.isDying) {
+            ampSources.push(this.mansionGhostCopyDamageAmp);
+        }
+        if (this.avianMarkDamageBonus > 0 && !this.isDying) {
+            ampSources.push(this.avianMarkDamageBonus);
+        }
+        if (this.boneCurseDamageBonus > 0 && !this.isDying) {
+            ampSources.push(this.boneCurseDamageBonus);
+        }
+        const totalAmp = ampSources.reduce((sum, v) => sum + v, 0);
+        if (totalAmp > 0) {
+            finalDamage = Math.round(finalDamage * (1 + totalAmp));
+        }
         this.health -= finalDamage;
         this.tookDamage = true;
         if (this.health > 0 && !this.isDying) {
@@ -7609,20 +9413,290 @@ class Monster {
         }
         return finalDamage;
     }
+
+    spawnShooterTurret(index) {
+        const spot = this.patrolSpots[index];
+        if (!spot || spot.turret) return;
+        const turretHealth = Math.max(1, Math.round(this.maxHealth * 0.5));
+        const turret = {
+            x: spot.x - 20,
+            y: spot.y - 20,
+            width: 40,
+            height: 40,
+            health: turretHealth,
+            maxHealth: turretHealth,
+            spin: 0,
+            fireCooldown: 0,
+            attackMode: 0,
+            attackTimer: 0,
+            warningTimer: 0,
+            warningMax: 30,
+            summonTimer: 30,
+            angle: 0
+        };
+        spot.turret = turret;
+        this.turret = turret;
+        spawnCastBanner('TURRET SUMMONED', '#44aaff');
+        try { spawnEvaporationEffect(spot.x, spot.y, '#44aaff', 50, 20); } catch (e) {}
+    }
+
+    updateShooterTurret() {
+        for (const spot of this.patrolSpots) {
+            if (spot.turret) {
+                this.updateShooterTurretInstance(spot);
+            }
+        }
+    }
+
+    updateShooterTurretInstance(spot) {
+        const turret = spot.turret;
+        turret.spin += 0.08;
+        turret.angle = Math.atan2(
+            (player.y + player.height / 2) - (turret.y + turret.height / 2),
+            (player.x + player.width / 2) - (turret.x + turret.width / 2)
+        );
+
+        if (turret.summonTimer > 0) {
+            turret.summonTimer--;
+            return;
+        }
+
+        if (turret.fireCooldown > 0) {
+            turret.fireCooldown--;
+        } else {
+            this.fireTurretAttack(turret);
+            turret.fireCooldown = Math.round((1.2 + Math.random() * 1.5) * 60);
+        }
+
+        if (turret.health <= 0) {
+            try { spawnEvaporationEffect(turret.x + turret.width / 2, turret.y + turret.height / 2, '#44aaff', 60, 30); } catch (e) {}
+            spawnCastBanner('TURRET DESTROYED', '#44aaff');
+            spot.turret = null;
+            this.turret = this.patrolSpots.map(s => s.turret).find(Boolean) || null;
+        }
+    }
+
+    fireTurretAttack(turret) {
+        const cx = turret.x + turret.width / 2;
+        const cy = turret.y + turret.height / 2;
+        const px = player.x + player.width / 2;
+        const py = player.y + player.height / 2;
+        const attack = turret.attackMode % 7;
+        turret.attackMode++;
+
+        switch (attack) {
+            case 0: {
+                spawnMonsterProjectile(cx, cy, px, py, Math.max(2, this.getAttackDamage()), '#44aaff', 7 + this.phase * 0.3, {
+                    monsterType: this.type, size: 8, style: 'turretBolt', homing: true, homingStrength: 0.04, homingDuration: 180, maxDistance: 1000, afterImageTrail: true, afterImageInterval: 2
+                });
+                break;
+            }
+            case 1: {
+                for (let i = -1; i <= 1; i++) {
+                    const a = turret.angle + i * 0.25;
+                    const tx = cx + Math.cos(a) * 400;
+                    const ty = cy + Math.sin(a) * 400;
+                    spawnMonsterProjectile(cx, cy, tx, ty, Math.max(2, this.getAttackDamage()), '#44aaff', 6 + this.phase * 0.2, {
+                        monsterType: this.type, size: 7, style: 'turretBolt', homing: false, maxDistance: 600, afterImageTrail: true, afterImageInterval: 3
+                    });
+                }
+                break;
+            }
+            case 2: {
+                const count = 8;
+                for (let i = 0; i < count; i++) {
+                    const a = (Math.PI * 2 * i) / count + turret.spin;
+                    const tx = cx + Math.cos(a) * 350;
+                    const ty = cy + Math.sin(a) * 350;
+                    spawnMonsterProjectile(cx, cy, tx, ty, Math.max(1, Math.round(this.getAttackDamage() * 0.7)), '#44aaff', 5 + this.phase * 0.15, {
+                        monsterType: this.type, size: 6, style: 'turretBolt', homing: false, maxDistance: 500, afterImageTrail: true, afterImageInterval: 4
+                    });
+                }
+                break;
+            }
+            case 3: {
+                spawnMonsterProjectile(cx, cy, px, py, Math.max(3, Math.round(this.getAttackDamage() * 1.3)), '#ff8844', 4.5 + this.phase * 0.2, {
+                    monsterType: this.type, size: 12, style: 'turretHomingMissile', homing: true, homingStrength: 0.08, homingDuration: 240, maxDistance: 1200, afterImageTrail: true, afterImageInterval: 2
+                });
+                break;
+            }
+            case 4: {
+                turret.warningTimer = 30;
+                turret.warningMax = 30;
+                const beamAngle = turret.angle;
+                const beamLength = 900;
+                const firingTurret = turret;
+                setTimeout(() => {
+                    if (!this.patrolSpots.some(s => s.turret === firingTurret)) return;
+                    const endX = cx + Math.cos(beamAngle) * beamLength;
+                    const endY = cy + Math.sin(beamAngle) * beamLength;
+                    for (let b = 0; b < 3; b++) {
+                        spawnMonsterProjectile(cx, cy, endX, endY, Math.max(4, Math.round(this.getAttackDamage() * 1.1)), '#ff4444', 16 + this.phase * 0.5, {
+                            monsterType: this.type, size: 10, style: 'turretBeam', homing: false, maxDistance: beamLength, afterImageTrail: true, afterImageInterval: 1, pierce: true
+                        });
+                    }
+                }, 30);
+                break;
+            }
+            case 5: {
+                turret.warningTimer = 45;
+                turret.warningMax = 45;
+                const markerX = px;
+                const markerY = py;
+                const firingTurret = turret;
+                setTimeout(() => {
+                    if (!this.patrolSpots.some(s => s.turret === firingTurret)) return;
+                    explosionEffects.push({
+                        x: markerX, y: markerY,
+                        radius: 0, maxRadius: 80 + this.phase * 5,
+                        life: 12, maxLife: 12,
+                        damage: Math.max(3, Math.round(this.getAttackDamage() * 1.2)),
+                        burn: false, burnDamage: 0, burnDuration: 0
+                    });
+                }, 45);
+                break;
+            }
+            case 6: {
+                const barrageCount = 12;
+                for (let i = 0; i < barrageCount; i++) {
+                    const spread = (Math.random() - 0.5) * 1.2;
+                    const a = turret.angle + spread;
+                    const dist = 200 + Math.random() * 300;
+                    const tx = px + Math.cos(a + Math.random() * 0.5) * dist;
+                    const ty = py + Math.sin(a + Math.random() * 0.5) * dist;
+                    spawnMonsterProjectile(cx, cy, tx, ty, Math.max(1, Math.round(this.getAttackDamage() * 0.5)), '#ffaa44', 8 + Math.random() * 3, {
+                        monsterType: this.type, size: 5, style: 'turretBolt', homing: true, homingStrength: 0.03, homingDuration: 120, maxDistance: 700, afterImageTrail: true, afterImageInterval: 3
+                    });
+                }
+                break;
+            }
+        }
+    }
+
+    drawShooterTurret() {
+        for (const spot of this.patrolSpots) {
+            if (spot.turret) {
+                this.drawShooterTurretInstance(spot.turret);
+            }
+        }
+    }
+
+    drawShooterTurretInstance(turret) {
+        const cx = turret.x + turret.width / 2;
+        const cy = turret.y + turret.height / 2;
+
+        ctx.save();
+
+        if (turret.summonTimer > 0) {
+            const progress = 1 - turret.summonTimer / 30;
+            ctx.globalAlpha = progress;
+            ctx.strokeStyle = '#44aaff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 25 * progress, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        const hpRatio = Math.max(0, turret.health / turret.maxHealth);
+
+        const auraGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 35);
+        auraGrad.addColorStop(0, 'rgba(68, 170, 255, 0.2)');
+        auraGrad.addColorStop(1, 'rgba(68, 170, 255, 0)');
+        ctx.fillStyle = auraGrad;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 35, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.translate(cx, cy);
+        ctx.rotate(turret.spin);
+
+        const bodyGrad = ctx.createLinearGradient(-18, -18, 18, 18);
+        bodyGrad.addColorStop(0, '#1a3a5c');
+        bodyGrad.addColorStop(0.5, '#2a5a8c');
+        bodyGrad.addColorStop(1, '#0a1a2c');
+        ctx.fillStyle = bodyGrad;
+        ctx.strokeStyle = '#44aaff';
+        ctx.lineWidth = 2;
+
+        ctx.beginPath();
+        ctx.moveTo(-18, 18);
+        ctx.lineTo(18, 18);
+        ctx.lineTo(14, -8);
+        ctx.lineTo(-14, -8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.rect(-12, -14, 24, 10);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.rotate(-turret.spin);
+        ctx.rotate(turret.angle);
+        ctx.fillStyle = '#88ccff';
+        ctx.fillRect(-6, -4, 28, 8);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(-6, -4, 28, 8);
+
+        ctx.restore();
+
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(cx - 22, cy + 24, 44, 5);
+        ctx.fillStyle = '#44aaff';
+        ctx.fillRect(cx - 22, cy + 24, 44 * hpRatio, 5);
+
+        if (turret.warningTimer > 0) {
+            const wp = 1 - turret.warningTimer / turret.warningMax;
+            ctx.strokeStyle = 'rgba(255, 68, 68, 0.8)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 30, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * wp);
+            ctx.stroke();
+        }
+    }
+
+    drawShooterPatrolProgress() {
+        if (this.type !== 'shooter') return;
+        for (let i = 0; i < this.patrolSpots.length; i++) {
+            const spot = this.patrolSpots[i];
+            const sx = spot.x;
+            const sy = spot.y;
+            const barW = 40;
+            const barH = 6;
+            const barX = sx - barW / 2;
+            const barY = sy - this.height / 2 - 12;
+
+            const pointProgress = spot.turret ? 1 : (spot.progress || 0) / 100;
+            const isCurrent = i === this.patrolIndex && !spot.turret;
+
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(barX, barY, barW, barH);
+
+            if (isCurrent && this.patrolStandTimer > 0) {
+                const standPct = this.patrolStandTimer / 120;
+                ctx.fillStyle = `rgba(68, 170, 255, ${0.5 + standPct * 0.5})`;
+                ctx.fillRect(barX, barY, barW * standPct, barH);
+            } else if (pointProgress > 0) {
+                ctx.fillStyle = '#44aaff';
+                ctx.fillRect(barX, barY, barW * pointProgress, barH);
+            }
+
+            ctx.strokeStyle = isCurrent ? '#ffffff' : (spot.turret ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.4)');
+            ctx.lineWidth = isCurrent ? 2 : 1;
+            ctx.strokeRect(barX, barY, barW, barH);
+
+            ctx.fillStyle = isCurrent ? '#ffffff' : (spot.turret ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.6)');
+            ctx.font = '10px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(`${i + 1}/${this.patrolSpots.length}`, sx, barY - 3);
+        }
+    }
 }
 
 // ===== VARIÁVEIS GLOBAIS =====
 let player = new Player();
-let _playerHealth = player.health;
-Object.defineProperty(player, 'health', {
-    get() { return _playerHealth; },
-    set(v) {
-        if (v < _playerHealth) player.lastDamageFrame = gameFrameCount;
-        _playerHealth = v;
-    },
-    configurable: true,
-    enumerable: true
-});
 let currentMonster;
 let phase = 1;
 let monstersDefeated = 0;
@@ -7664,7 +9738,10 @@ let projectiles = [];
 let thrownExplosives = [];
 let fireZones = [];
 let grenadeFragments = [];
+let landmines = [];
 let critEffects = [];
+let castBannerEffects = [];
+let towerSummonBigBanner = null;
 let sweatEffects = [];
 let evaporationEffects = [];
 let swarmMarks = [];
@@ -7680,14 +9757,13 @@ let ambientCritterSpawnTimer = 0;
 const ambientCritterMaxCount = 12;
 const ambientCritterSpawnIntervalMin = 90;
 const ambientCritterSpawnIntervalMax = 180;
-let monsterHitscans = [];
-let towerHitscans = [];
 let monsterTypeKills = {
     shooter: false,
     swarm: false,
     caster: false,
     avianightmare: false,
-    smart: false
+    smart: false,
+    boulder_tosser: false
 };
 let lastMonsterType = null;
 let phaseMonsterTypes = new Set();
@@ -7705,18 +9781,19 @@ let slowdownInsectSprites = [];
 let screenShakeTimer = 0;
 let cameraLockTarget = null;
 let roarFreezeTimer = 0;
+let gunSpinKeyPrompt = null;
+let gunSpinKeyPromptTimer = 0;
+const GUN_SPIN_KEY_PROMPT_FRAMES = 48;
+const GUN_SPIN_KEY_OPTIONS = ['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
 let afterImages = [];
 let accelParticles = [];
-// Controla o glow (shadowBlur) global dos projéteis/afterimages.
-// É desligado automaticamente quando há muitos projéteis na tela para manter o desempenho.
-let projectileGlowEnabled = true;
-const PROJECTILE_GLOW_DISABLE_THRESHOLD = 90;
 let weaponPickups = [];
 let weaponPickupSpawnCounter = 0;
 let monsterDeathEffects = [];
 let portalEffects = [];
 let machineGunEffects = [];
 let explosionEffects = [];
+let passiveImpactEffects = [];
 let trackerProjectiles = [];
 let ghostArmyUnlocked = false;
 let ghostArmyEntities = [];
@@ -7770,6 +9847,660 @@ const mansionGhostTypes = [
     { type: 'haunt', width: 60, height: 60, health: 20, speed: 0.95, damage: 8, color: '#8a7bff', accent: '#fff1ff', visuals: ['💀'], ranged: true, attackStyle: 'sigil', attackInterval: 98, attackEmoji: '🌀', windupFrames: 24, dashEnabled: false, teleportEnabled: false, dodgeChance: 0.16, attackStartMultiplier: 3.0, confusionOnAttackChance: 42 },
     { type: 'phantasm', width: 60, height: 60, health: 18, speed: 1.2, damage: 7, color: '#a89eff', accent: '#f2d4ff', visuals: ['🌙'], ranged: true, attackStyle: 'slam', attackInterval: 110, attackEmoji: '🌪️', windupFrames: 26, dashEnabled: true, teleportEnabled: true, dodgeChance: 0.20, attackStartMultiplier: 2.7, confusionOnAttackGuaranteed: true }
 ];
+
+// =====================================================================
+// MANSION DUNGEON CRAWLER
+// The mansion is now a dungeon: 10 possible rooms, each with doors on 1,
+// 2 or 3 sides. Rooms connect and are walkable. A new room opens every 8
+// ghosts killed. Ghosts patrol along the walls. The camera re-centers on
+// the current room whenever the player changes rooms. Rooms vary in size.
+// =====================================================================
+
+const DUNGEON_ROOM_COUNT = 10;
+const DUNGEON_KILLS_PER_ROOM = 8;
+const DUNGEON_WALL_THICKNESS = 26;
+// Room size tiers (in viewport units). Some rooms are bigger, others smaller.
+const DUNGEON_ROOM_SIZES = [
+    { w: 0.85, h: 0.85, label: 'small' },
+    { w: 1.00, h: 1.00, label: 'medium' },
+    { w: 1.20, h: 1.00, label: 'wide' },
+    { w: 1.00, h: 1.20, label: 'tall' },
+    { w: 1.40, h: 1.30, label: 'large' }
+];
+
+let dungeonRooms = [];
+let dungeonGraph = new Map(); // roomIndex -> Set(neighborIndex)
+let dungeonPlayerRoom = 0;
+let dungeonUnlockedRooms = 0;
+let dungeonCurrentRoom = 0;
+let dungeonCameraX = 0;
+let dungeonCameraY = 0;
+let dungeonDoorProgress = 0; // 0..1 animation when a room opens
+let dungeonRoomKills = 0; // ghosts killed since last room open
+let dungeonTotalKills = 0;
+let dungeonPlayerHome = { x: 0, y: 0 };
+// ghosts that patrol the walls instead of chasing the player
+let dungeonWallGhosts = [];
+
+function dungeonRoomPixelSize(room) {
+    const tier = DUNGEON_ROOM_SIZES[room.sizeTier] || DUNGEON_ROOM_SIZES[1];
+    return {
+        w: Math.max(220, Math.round(viewportWidth * tier.w)),
+        h: Math.max(180, Math.round(viewportHeight * tier.h))
+    };
+}
+
+function dungeonDoorRect(room, side, rect) {
+    const t = DUNGEON_WALL_THICKNESS;
+    const { w, h } = dungeonRoomPixelSize(room);
+    const dw = 46; // door opening width
+    const dh = 46;
+    if (side === 'top') return { x: rect.x + w / 2 - dw / 2, y: rect.y - t, w: dw, h: t + 8 };
+    if (side === 'bottom') return { x: rect.x + w / 2 - dw / 2, y: rect.y + h - 4, w: dw, h: t + 8 };
+    if (side === 'left') return { x: rect.x - t, y: rect.y + h / 2 - dh / 2, w: t + 8, h: dh };
+    return { x: rect.x + w - 4, y: rect.y + h / 2 - dh / 2, w: t + 8, h: dh };
+}
+
+function dungeonRectForRoom(index) {
+    const room = dungeonRooms[index];
+    if (!room) return { x: 0, y: 0 };
+    return { x: room.x, y: room.y };
+}
+
+function dungeonBuildLayout() {
+    dungeonRooms = [];
+    dungeonGraph = new Map();
+    for (let i = 0; i < DUNGEON_ROOM_COUNT; i++) {
+        dungeonGraph.set(i, new Set());
+    }
+
+    // Grid layout. Rooms are placed in POSITIVE world coordinates so the
+    // player's Math.max(0, ...) clamp (in player.update) never shoves them
+    // off the dungeon, and the camera stays inside the game map.
+    const gridCols = 4;
+    const cellW = viewportWidth * 1.05;
+    const cellH = viewportHeight * 1.05;
+    // 10 rooms -> 4 cols x 3 rows. Center the whole grid inside the map.
+    const gridPixelW = gridCols * cellW;
+    const gridPixelH = 3 * cellH;
+    const originX = Math.max(120, Math.round((gameWidth - gridPixelW) / 2));
+    const originY = Math.max(120, Math.round((gameHeight - gridPixelH) / 2));
+
+    for (let i = 0; i < DUNGEON_ROOM_COUNT; i++) {
+        const col = i % gridCols;
+        const row = Math.floor(i / gridCols);
+        const sizeTier = Math.floor(Math.random() * DUNGEON_ROOM_SIZES.length);
+        const { w, h } = dungeonRoomPixelSize({ sizeTier });
+        dungeonRooms.push({
+            index: i,
+            gridCol: col,
+            gridRow: row,
+            x: originX + col * cellW + (cellW - w) / 2,
+            y: originY + row * cellH + (cellH - h) / 2,
+            sizeTier,
+            w,
+            h,
+            doors: {}, // side -> neighborIndex
+            cleared: false
+        });
+    }
+
+    // Connect rooms that are grid-adjacent (shared walls).
+    const at = (col, row) => {
+        const idx = dungeonRooms.findIndex(r => r.gridCol === col && r.gridRow === row);
+        return idx >= 0 ? idx : null;
+    };
+    for (const room of dungeonRooms) {
+        const right = at(room.gridCol + 1, room.gridRow);
+        const down = at(room.gridCol, room.gridRow + 1);
+        if (right !== null) {
+            room.doors.right = right;
+            dungeonRooms[right].doors.left = room.index;
+            dungeonGraph.get(room.index).add(right);
+            dungeonGraph.get(right).add(room.index);
+        }
+        if (down !== null) {
+            room.doors.bottom = down;
+            dungeonRooms[down].doors.top = room.index;
+            dungeonGraph.get(room.index).add(down);
+            dungeonGraph.get(down).add(room.index);
+        }
+    }
+
+    // Ensure the entrance (room 0) has at least 2 connections so the dungeon
+    // sprawls; if not, link it to a random neighbor.
+    if (dungeonGraph.get(0).size < 2) {
+        let target = 1;
+        if (dungeonGraph.get(0).has(1)) target = 2;
+        if (!dungeonRooms[0].doors.right && dungeonRooms[target]) {
+            dungeonRooms[0].doors.right = target;
+            dungeonRooms[target].doors.left = 0;
+            dungeonGraph.get(0).add(target);
+            dungeonGraph.get(target).add(0);
+        } else {
+            // connect downward to whatever room exists in next row
+            const alt = dungeonRooms.find(r => r.gridRow === dungeonRooms[0].gridRow + 1);
+            if (alt) {
+                dungeonRooms[0].doors.bottom = alt.index;
+                alt.doors.top = 0;
+                dungeonGraph.get(0).add(alt.index);
+                dungeonGraph.get(alt.index).add(0);
+            }
+        }
+    }
+
+    // Prune a few edges so some rooms end up with a single door (1-side
+    // connection), while keeping the whole dungeon connected and room 0
+    // with at least 2 doors. Each removed edge turns two 2-door rooms
+    // into a 2-door + a 1-door (leaf) room.
+    const dungeonIsConnected = () => {
+        const seen = new Set([0]);
+        const stack = [0];
+        while (stack.length) {
+            const n = stack.pop();
+            for (const m of dungeonGraph.get(n)) {
+                if (!seen.has(m)) { seen.add(m); stack.push(m); }
+            }
+        }
+        return seen.size === DUNGEON_ROOM_COUNT;
+    };
+    let pruneAttempts = 0;
+    while (pruneAttempts < 40) {
+        pruneAttempts += 1;
+        const a = Math.floor(Math.random() * DUNGEON_ROOM_COUNT);
+        if (a === 0) continue; // keep the entrance well connected
+        const neighbors = [...dungeonGraph.get(a)];
+        // only prune a room that still has 2+ doors so it can drop to 1
+        if (neighbors.length < 2) continue;
+        const b = neighbors[Math.floor(Math.random() * neighbors.length)];
+        // remove edge a<->b
+        dungeonGraph.get(a).delete(b);
+        dungeonGraph.get(b).delete(a);
+        // clear the matching door sides
+        const sideA = Object.keys(dungeonRooms[a].doors).find(s => dungeonRooms[a].doors[s] === b);
+        const sideB = Object.keys(dungeonRooms[b].doors).find(s => dungeonRooms[b].doors[s] === a);
+        if (sideA) delete dungeonRooms[a].doors[sideA];
+        if (sideB) delete dungeonRooms[b].doors[sideB];
+        if (!dungeonIsConnected()) {
+            // revert: reconnect
+            dungeonGraph.get(a).add(b);
+            dungeonGraph.get(b).add(a);
+            if (sideA) dungeonRooms[a].doors[sideA] = b;
+            if (sideB) dungeonRooms[b].doors[sideB] = a;
+        }
+        // Stop once enough leaf rooms exist (roughly a third with 1 door).
+        const leaves = [...dungeonGraph.values()].filter(s => s.size === 1).length;
+        if (leaves >= 4) break;
+    }
+
+    // Guarantee the entrance keeps at least 2 doors (it may have been pruned
+    // down to 1). Re-link it to the nearest grid neighbor if needed.
+    if (dungeonGraph.get(0).size < 2) {
+        const start = dungeonRooms[0];
+        for (const cand of dungeonRooms) {
+            if (cand.index === 0) continue;
+            if (dungeonGraph.get(0).has(cand.index)) continue;
+            // connect on a shared axis if possible
+            let sideFrom, sideTo;
+            if (cand.gridRow === start.gridRow && cand.gridCol === start.gridCol + 1) { sideFrom = 'right'; sideTo = 'left'; }
+            else if (cand.gridRow === start.gridRow && cand.gridCol === start.gridCol - 1) { sideFrom = 'left'; sideTo = 'right'; }
+            else if (cand.gridCol === start.gridCol && cand.gridRow === start.gridRow + 1) { sideFrom = 'bottom'; sideTo = 'top'; }
+            else if (cand.gridCol === start.gridCol && cand.gridRow === start.gridRow - 1) { sideFrom = 'top'; sideTo = 'bottom'; }
+            if (sideFrom) {
+                start.doors[sideFrom] = cand.index;
+                cand.doors[sideTo] = 0;
+                dungeonGraph.get(0).add(cand.index);
+                dungeonGraph.get(cand.index).add(0);
+            }
+            if (dungeonGraph.get(0).size >= 2) break;
+        }
+    }
+
+    // Assign each room a door-count of 1, 2 or 3 (based on its connections).
+    for (const room of dungeonRooms) {
+        const count = dungeonGraph.get(room.index).size;
+        room.doorCount = Math.max(1, Math.min(3, count));
+    }
+
+    dungeonUnlockedRooms = 1;
+    dungeonCurrentRoom = 0;
+    dungeonPlayerRoom = 0;
+    dungeonRoomKills = 0;
+    dungeonTotalKills = 0;
+    dungeonDoorProgress = 1;
+    const start = dungeonRooms[0];
+    dungeonPlayerHome = { x: start.x + start.w / 2, y: start.y + start.h / 2 };
+}
+
+// Build the active walls for a given room (its 4 sides minus open doors).
+function dungeonWallsForRoom(index) {
+    const room = dungeonRooms[index];
+    if (!room) return [];
+    const t = DUNGEON_WALL_THICKNESS;
+    const walls = [];
+    const openSides = new Set(Object.keys(room.doors));
+    if (!openSides.has('top')) walls.push({ x: room.x, y: room.y - t, w: room.w, h: t });
+    if (!openSides.has('bottom')) walls.push({ x: room.x, y: room.y + room.h, w: room.w, h: t });
+    if (!openSides.has('left')) walls.push({ x: room.x - t, y: room.y, w: t, h: room.h });
+    if (!openSides.has('right')) walls.push({ x: room.x + room.w, y: room.y, w: t, h: room.h });
+    return walls;
+}
+
+function dungeonResolvedWallsForRoom(index) {
+    const room = dungeonRooms[index];
+    if (!room) return [];
+    return dungeonWallsForRoom(index).concat(room.lockedWalls || []);
+}
+
+// The full walkable rectangle for a room (interior).
+function dungeonRoomInterior(index) {
+    const room = dungeonRooms[index];
+    if (!room) return { x: 0, y: 0, w: 0, h: 0 };
+    return { x: room.x, y: room.y, w: room.w, h: room.h };
+}
+
+function dungeonIsUnlocked(index) {
+    return index >= 0 && index < dungeonUnlockedRooms;
+}
+
+function dungeonUpdateCameraForRoom(index, snap = false) {
+    const room = dungeonRooms[index];
+    if (!room) return;
+    // Desired: center the room in the viewport.
+    let targetX = room.x + room.w / 2 - viewportWidth / 2;
+    let targetY = room.y + room.h / 2 - viewportHeight / 2;
+    // If the room is smaller than the viewport on an axis, do not try to clamp
+    // past its bounds (that would push the room off-screen). Just center it.
+    if (room.w >= viewportWidth) {
+        targetX = Math.max(room.x, Math.min(targetX, room.x + room.w - viewportWidth));
+    } else {
+        targetX = room.x + (room.w - viewportWidth) / 2;
+    }
+    if (room.h >= viewportHeight) {
+        targetY = Math.max(room.y, Math.min(targetY, room.y + room.h - viewportHeight));
+    } else {
+        targetY = room.y + (room.h - viewportHeight) / 2;
+    }
+    if (snap) {
+        dungeonCameraX = targetX;
+        dungeonCameraY = targetY;
+    } else {
+        dungeonCameraX += (targetX - dungeonCameraX) * 0.18;
+        dungeonCameraY += (targetY - dungeonCameraY) * 0.18;
+    }
+}
+
+function dungeonRoomAtPoint(x, y) {
+    for (const room of dungeonRooms) {
+        if (x >= room.x && x <= room.x + room.w && y >= room.y && y <= room.y + room.h) {
+            return room.index;
+        }
+    }
+    return -1;
+}
+
+function dungeonDeterminePlayerRoom() {
+    if (!player) return dungeonCurrentRoom;
+    const px = player.x + player.width / 2;
+    const py = player.y + player.height / 2;
+    const idx = dungeonRoomAtPoint(px, py);
+    if (idx >= 0) return idx;
+    // Player is in a doorway corridor; keep the last room until they enter the next interior.
+    return dungeonCurrentRoom;
+}
+
+// Try to open the next locked room. Called every DUNGEON_KILLS_PER_ROOM kills.
+function dungeonTryOpenNextRoom() {
+    if (dungeonUnlockedRooms >= DUNGEON_ROOM_COUNT) return false;
+    // Prefer opening a locked neighbor of the room the player is currently in,
+    // otherwise any locked neighbor of an unlocked room.
+    let openIndex = -1;
+    const tryFrom = (src) => {
+        const neighbors = dungeonGraph.get(src);
+        if (!neighbors) return;
+        for (const n of neighbors) {
+            if (n >= dungeonUnlockedRooms) { openIndex = n; return; }
+        }
+    };
+    tryFrom(dungeonCurrentRoom);
+    if (openIndex < 0) {
+        for (let i = 0; i < dungeonUnlockedRooms; i += 1) {
+            tryFrom(i);
+            if (openIndex >= 0) break;
+        }
+    }
+    if (openIndex < 0) return false;
+    dungeonUnlockedRooms = Math.max(dungeonUnlockedRooms, openIndex + 1);
+    dungeonDoorProgress = 0;
+    screenShakeTimer = Math.max(screenShakeTimer, 14);
+    // Seed wall ghosts in the newly opened room.
+    const count = 2 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < count; i += 1) dungeonSpawnWallGhost(openIndex);
+    return true;
+}
+
+function dungeonReset() {
+    dungeonBuildLayout();
+    dungeonWallGhosts = [];
+    if (player) {
+        player.x = dungeonPlayerHome.x - player.width / 2;
+        player.y = dungeonPlayerHome.y - player.height / 2;
+    }
+    dungeonUpdateCameraForRoom(0, true);
+}
+
+function dungeonSpawnWallGhost(roomIndex) {
+    const room = dungeonRooms[roomIndex];
+    if (!room) return null;
+    const template = mansionGhostTypes[Math.floor(Math.random() * mansionGhostTypes.length)];
+    const w = template.width;
+    const h = template.height;
+    // start somewhere along a wall of this room
+    const side = ['top', 'bottom', 'left', 'right'][Math.floor(Math.random() * 4)];
+    let x, y;
+    const t = DUNGEON_WALL_THICKNESS;
+    if (side === 'top') { x = room.x + Math.random() * (room.w - w); y = room.y - t + 4; }
+    else if (side === 'bottom') { x = room.x + Math.random() * (room.w - w); y = room.y + room.h - 4; }
+    else if (side === 'left') { x = room.x - t + 4; y = room.y + Math.random() * (room.h - h); }
+    else { x = room.x + room.w - 4; y = room.y + Math.random() * (room.h - h); }
+    const ghost = {
+        id: mansionInteriorEnemyIdCounter++,
+        type: template.type,
+        x, y, width: w, height: h,
+        health: template.health, maxHealth: template.health,
+        speed: template.speed * 0.9,
+        damage: template.damage,
+        color: template.color, accent: template.accent,
+        visuals: template.visuals || ['👻'],
+        ranged: false,
+        attackState: 'idle', attackWindupTimer: 0, windupFrames: template.windupFrames || 18,
+        isDying: false, deathTimer: 24, deathMaxTimer: 24,
+        isAppearing: false, appearanceTimer: 0,
+        flashTimer: 0, stunTimer: 0,
+        isInvisible: false, invisibleTimer: 0, invisibilityCooldown: 0,
+        attackCooldown: 0, dashCooldown: 0, dashEnabled: false,
+        teleportCooldown: 0, teleportEnabled: false, dodgeChance: 0,
+        patrolDir: Math.floor(Math.random() * 4),
+        patrolTimer: 30 + Math.floor(Math.random() * 60),
+        isWallGhost: true,
+        contactCooldown: 0,
+        roomIndex
+    };
+    dungeonWallGhosts.push(ghost);
+    return ghost;
+}
+
+// Move a wall-ghost along the perimeter of its room, turning at corners.
+function dungeonUpdateWallGhost(ghost) {
+    if (ghost.isDying) {
+        ghost.deathTimer -= 1;
+        return;
+    }
+    if (ghost.flashTimer > 0) ghost.flashTimer -= 1;
+    const room = dungeonRooms[ghost.roomIndex];
+    if (!room) return;
+    const t = DUNGEON_WALL_THICKNESS;
+    const speed = ghost.speed;
+    let nx = ghost.x;
+    let ny = ghost.y;
+    const halfW = ghost.width / 2;
+    const halfH = ghost.height / 2;
+    if (ghost.patrolDir === 0) nx += speed;        // right (along top wall)
+    else if (ghost.patrolDir === 1) ny += speed;   // down (along right wall)
+    else if (ghost.patrolDir === 2) nx -= speed;   // left (along bottom wall)
+    else ny -= speed;                              // up (along left wall)
+
+    ghost.patrolTimer -= 1;
+
+    // Keep within the wall band and turn at corners or when timer expires.
+    let turned = false;
+    const cx = room.x + room.w / 2;
+    const cy = room.y + room.h / 2;
+    if (ghost.patrolDir === 0 && (nx + ghost.width >= room.x + room.w || (ghost.patrolTimer <= 0 && Math.random() < 0.04))) {
+        ghost.patrolDir = 1; ghost.x = room.x + room.w - ghost.width - 2; ny = room.y + t; turned = true;
+    } else if (ghost.patrolDir === 1 && (ny + ghost.height >= room.y + room.h || (ghost.patrolTimer <= 0 && Math.random() < 0.04))) {
+        ghost.patrolDir = 2; nx = room.x + room.w - ghost.width - 2; ghost.y = room.y + room.h - ghost.height - 2; turned = true;
+    } else if (ghost.patrolDir === 2 && (nx <= room.x || (ghost.patrolTimer <= 0 && Math.random() < 0.04))) {
+        ghost.patrolDir = 3; ny = room.y + room.h - ghost.height - 2; ghost.x = room.x + 2; turned = true;
+    } else if (ghost.patrolDir === 3 && (ny <= room.y || (ghost.patrolTimer <= 0 && Math.random() < 0.04))) {
+        ghost.patrolDir = 0; ghost.y = room.y + 2; nx = room.x + 2; turned = true;
+    }
+    if (turned) ghost.patrolTimer = 30 + Math.floor(Math.random() * 60);
+
+    ghost.x = nx;
+    ghost.y = ny;
+
+    // Contact damage to the player (respecting i-frames/invulnerability).
+    if (player && ghost.contactCooldown > 0) ghost.contactCooldown -= 1;
+    const invuln = player && (player.dashTimer > 0 || player.postDashInvulnTimer > 0 ||
+        player.slashDashInvulnTimer > 0 || player.invulnTimer > 0);
+    if (player && !invuln && ghost.contactCooldown <= 0 &&
+        isRectOverlap(player.x, player.y, player.width, player.height, ghost.x, ghost.y, ghost.width, ghost.height)) {
+        player.health = Math.max(0, player.health - ghost.damage);
+        ghost.contactCooldown = 40;
+    }
+}
+
+function dungeonUpdateWallGhosts() {
+    for (let i = dungeonWallGhosts.length - 1; i >= 0; i -= 1) {
+        const g = dungeonWallGhosts[i];
+        const wasDying = g.isDying;
+        dungeonUpdateWallGhost(g);
+        if (g.isDying && g.deathTimer <= 0) {
+            if (!wasDying) dungeonNotifyGhostKilled();
+            dungeonWallGhosts.splice(i, 1);
+        }
+    }
+    // Keep the current room populated with patrolling ghosts.
+    if (player) {
+        const inRoom = dungeonWallGhosts.filter(g => g.roomIndex === dungeonCurrentRoom).length;
+        if (inRoom < 3 && Math.random() < 0.05) {
+            dungeonSpawnWallGhost(dungeonCurrentRoom);
+        }
+    }
+}
+
+function dungeonDrawRoom(room, isCurrent) {
+    const interior = dungeonRoomInterior(room.index);
+    // floor
+    ctx.fillStyle = room.cleared ? 'rgba(70, 60, 80, 1)' : 'rgba(150, 120, 95, 1)';
+    ctx.fillRect(interior.x, interior.y, interior.w, interior.h);
+
+    // wood planks
+    ctx.fillStyle = 'rgba(130, 100, 75, 0.8)';
+    for (let i = interior.x; i < interior.x + interior.w; i += 46) {
+        ctx.fillRect(i, interior.y, 2, interior.h);
+    }
+    for (let j = interior.y; j < interior.y + interior.h; j += 30) {
+        ctx.fillRect(interior.x, j, interior.w, 1);
+    }
+
+    // walls (drawn as stone blocks) - skip open door sides
+    const t = DUNGEON_WALL_THICKNESS;
+    ctx.fillStyle = 'rgba(60, 55, 70, 1)';
+    const open = new Set(Object.keys(room.doors));
+    if (!open.has('top')) ctx.fillRect(room.x, room.y - t, room.w, t);
+    if (!open.has('bottom')) ctx.fillRect(room.x, room.y + room.h, room.w, t);
+    if (!open.has('left')) ctx.fillRect(room.x - t, room.y, t, room.h);
+    if (!open.has('right')) ctx.fillRect(room.x + room.w, room.y, t, room.h);
+
+    // wall texture
+    ctx.fillStyle = 'rgba(80, 75, 92, 0.7)';
+    for (let i = room.x - t; i < room.x + room.w + t; i += 24) {
+        for (let j = room.y - t; j < room.y + room.h + t; j += 24) {
+            if (i >= room.x && i < room.x + room.w && j >= room.y && j < room.y + room.h) continue;
+            ctx.fillRect(i, j, 22, 22);
+        }
+    }
+
+    // door openings -> glowing portals
+    for (const side of Object.keys(room.doors)) {
+        const neighbor = room.doors[side];
+        const rect = dungeonDoorRect(room, side, interior);
+        const isOpen = dungeonIsUnlocked(neighbor);
+        ctx.save();
+        ctx.fillStyle = isOpen ? 'rgba(120, 220, 255, 0.85)' : 'rgba(40, 20, 55, 0.92)';
+        ctx.shadowColor = isOpen ? '#6fe0ff' : '#200b33';
+        ctx.shadowBlur = isOpen ? 16 : 0;
+        ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+        if (isOpen) {
+            const pulse = 0.5 + 0.4 * Math.sin(performance.now() * 0.004 + room.index);
+            ctx.globalAlpha = pulse;
+            ctx.fillStyle = 'rgba(220, 250, 255, 0.6)';
+            ctx.fillRect(rect.x + 3, rect.y + 3, rect.w - 6, rect.h - 6);
+        }
+        ctx.restore();
+    }
+
+    // current room highlight
+    if (isCurrent) {
+        ctx.strokeStyle = 'rgba(255, 220, 120, 0.5)';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(room.x - 2, room.y - 2, room.w + 4, room.h + 4);
+    }
+
+    // room label + size
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = 'bold 14px Arial';
+    ctx.textAlign = 'left';
+    const tier = DUNGEON_ROOM_SIZES[room.sizeTier].label;
+    ctx.fillText(`Sala ${room.index + 1} · ${tier} · ${room.doorCount} portas`, room.x + 10, room.y + 22);
+    ctx.restore();
+}
+
+function dungeonDraw() {
+    // draw only rooms near the camera (and their unlocked neighbors)
+    for (const room of dungeonRooms) {
+        if (!dungeonIsUnlocked(room.index)) {
+            // draw a faint locked silhouette
+            const interior = dungeonRoomInterior(room.index);
+            ctx.fillStyle = 'rgba(20, 16, 28, 0.85)';
+            ctx.fillRect(interior.x - DUNGEON_WALL_THICKNESS, interior.y - DUNGEON_WALL_THICKNESS,
+                room.w + DUNGEON_WALL_THICKNESS * 2, room.h + DUNGEON_WALL_THICKNESS * 2);
+            continue;
+        }
+        const onScreen =
+            room.x + room.w >= dungeonCameraX - 40 && room.x <= dungeonCameraX + viewportWidth + 40 &&
+            room.y + room.h >= dungeonCameraY - 40 && room.y <= dungeonCameraY + viewportHeight + 40;
+        if (onScreen || room.index === dungeonCurrentRoom) {
+            dungeonDrawRoom(room, room.index === dungeonCurrentRoom);
+        }
+    }
+
+    // door-progress flash when a room opens
+    if (dungeonDoorProgress < 1) {
+        dungeonDoorProgress = Math.min(1, dungeonDoorProgress + 0.05);
+    }
+}
+
+function drawDungeonWallGhosts() {
+    for (const ghost of dungeonWallGhosts) {
+        if (ghost.isAppearing) continue;
+        const alpha = ghost.isDying ? Math.max(0, ghost.deathTimer / ghost.deathMaxTimer) : 1;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = ghost.color;
+        ctx.fillRect(ghost.x, ghost.y, ghost.width, ghost.height);
+        ctx.strokeStyle = ghost.accent;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(ghost.x, ghost.y, ghost.width, ghost.height);
+        ctx.fillStyle = '#2d2d2d';
+        ctx.font = `${Math.max(16, Math.round(ghost.width * 0.18))}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(ghost.visuals[0] || '👻', ghost.x + ghost.width / 2, ghost.y + ghost.height / 2);
+        ctx.restore();
+
+        const healthFrac = Math.max(0, Math.min(1, ghost.health / ghost.maxHealth));
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(ghost.x, ghost.y - 8, ghost.width, 5);
+        ctx.fillStyle = '#a8d7ff';
+        ctx.fillRect(ghost.x, ghost.y - 8, ghost.width * healthFrac, 5);
+        ctx.restore();
+    }
+}
+
+function dungeonResolvePlayerWalls(prevX, prevY) {
+    const room = dungeonRooms[dungeonCurrentRoom];
+    if (!room) return false;
+    const walls = dungeonResolvedWallsForRoom(dungeonCurrentRoom);
+
+    // First resolve X (only touch X here)
+    if (walls.some(w => isRectOverlap(player.x, prevY, player.width, player.height, w.x, w.y, w.w, w.h))) {
+        player.x = prevX;
+    }
+    // Then resolve Y
+    if (walls.some(w => isRectOverlap(player.x, player.y, player.width, player.height, w.x, w.y, w.w, w.h))) {
+        player.y = prevY;
+    }
+    // keep player inside the current room interior (unless passing through an open door)
+    const interior = dungeonRoomInterior(dungeonCurrentRoom);
+    const open = new Set(Object.keys(room.doors));
+    const pad = 2;
+    if (!open.has('left') && player.x < interior.x + pad) player.x = interior.x + pad;
+    if (!open.has('right') && player.x + player.width > interior.x + interior.w - pad) player.x = interior.x + interior.w - player.width - pad;
+    if (!open.has('top') && player.y < interior.y + pad) player.y = interior.y + pad;
+    if (!open.has('bottom') && player.y + player.height > interior.y + interior.h - pad) player.y = interior.y + interior.h - player.height - pad;
+    return false;
+}
+
+function dungeonCheckRoomTransition() {
+    if (!player) return;
+    const px = player.x + player.width / 2;
+    const py = player.y + player.height / 2;
+    const room = dungeonRooms[dungeonCurrentRoom];
+    if (!room) return;
+    const interior = dungeonRoomInterior(dungeonCurrentRoom);
+    const t = DUNGEON_WALL_THICKNESS;
+    const open = room.doors;
+
+    // Determine if player crossed into a doorway corridor of an unlocked neighbor.
+    let crossedTo = -1;
+    if (open.top !== undefined && px > interior.x + interior.w / 2 - 30 && px < interior.x + interior.w / 2 + 30 && py < interior.y - t + player.height) {
+        crossedTo = open.top;
+    } else if (open.bottom !== undefined && px > interior.x + interior.w / 2 - 30 && px < interior.x + interior.w / 2 + 30 && py > interior.y + interior.h - player.height) {
+        crossedTo = open.bottom;
+    } else if (open.left !== undefined && py > interior.y + interior.h / 2 - 30 && py < interior.y + interior.h / 2 + 30 && px < interior.x - t + player.width) {
+        crossedTo = open.left;
+    } else if (open.right !== undefined && py > interior.y + interior.h / 2 - 30 && py < interior.y + interior.h / 2 + 30 && px > interior.x + interior.w - player.width) {
+        crossedTo = open.right;
+    }
+
+    if (crossedTo >= 0 && dungeonIsUnlocked(crossedTo)) {
+        const target = dungeonRooms[crossedTo];
+        dungeonCurrentRoom = crossedTo;
+        dungeonPlayerRoom = crossedTo;
+        // place player just inside the new room, opposite the door they entered
+        const tIn = DUNGEON_WALL_THICKNESS;
+        if (open.top !== undefined && crossedTo === room.doors.top) {
+            player.x = target.x + target.w / 2 - player.width / 2;
+            player.y = target.y + target.h - player.height - tIn - 4;
+        } else if (open.bottom !== undefined && crossedTo === room.doors.bottom) {
+            player.x = target.x + target.w / 2 - player.width / 2;
+            player.y = target.y + tIn + 4;
+        } else if (open.left !== undefined && crossedTo === room.doors.left) {
+            player.x = target.x + target.w - player.width - tIn - 4;
+            player.y = target.y + target.h / 2 - player.height / 2;
+        } else if (open.right !== undefined && crossedTo === room.doors.right) {
+            player.x = target.x + tIn + 4;
+            player.y = target.y + target.h / 2 - player.height / 2;
+        }
+        dungeonUpdateCameraForRoom(crossedTo, false);
+    }
+}
+
+function dungeonNotifyGhostKilled() {
+    dungeonRoomKills += 1;
+    dungeonTotalKills += 1;
+    if (dungeonRoomKills >= DUNGEON_KILLS_PER_ROOM) {
+        dungeonRoomKills = 0;
+        dungeonTryOpenNextRoom();
+    }
+    const room = dungeonRooms[dungeonCurrentRoom];
+    if (room) room.cleared = true;
+}
 
 const castleInteriorWaves = [3, 5, 7, 10, 15, 25, 35];
 const castleSkeletonTypes = [
@@ -8145,20 +10876,30 @@ function spawnCastleBoneOrbiters() {
 
     const centerX = player.x + player.width / 2;
     const centerY = player.y + player.height / 2;
-    const boneCount = 3;
+    const baseCount = 3;
+    const extraBones = Math.floor((player.baseDamage + player.weaponDamage) / 8);
+    const boneCount = Math.min(8, baseCount + extraBones);
     const baseAngle = Math.random() * Math.PI * 2;
+    const damageScaling = 1 + (player.castleBoneKills || 0) * 0.15;
 
     for (let i = 0; i < boneCount; i += 1) {
         const angle = baseAngle + (i / boneCount) * Math.PI * 2;
         player.castleBoneOrbiters.push({
             angle,
-            radius: 34 + i * 7 + Math.random() * 4,
-            orbitSpeed: 0.024 + Math.random() * 0.008,
-            size: 7 + Math.random() * 2,
-            spin: (Math.random() - 0.5) * 0.12,
+            radius: 36 + i * 8 + Math.random() * 5,
+            orbitSpeed: 0.028 + Math.random() * 0.012,
+            size: 8 + Math.random() * 3,
+            spin: (Math.random() - 0.5) * 0.15,
             hitCooldown: 0,
             x: centerX,
-            y: centerY
+            y: centerY,
+            damage: Math.round(10 * damageScaling),
+            explodeOnKill: true,
+            explosionRadius: 50,
+            explosionDamage: Math.round(6 * damageScaling),
+            curse: true,
+            curseDamageBonus: 0.2,
+            curseDuration: 300
         });
     }
 }
@@ -8182,6 +10923,7 @@ function updateCastleBoneOrbiters() {
                 if (enemy.isDying || bone.hitCooldown > 0) continue;
                 if (bone.x + boneHalf > enemy.x && bone.x - boneHalf < enemy.x + enemy.width && bone.y + boneHalf > enemy.y && bone.y - boneHalf < enemy.y + enemy.height) {
                     applyDamageToCastleEnemy(enemy, 10);
+                    spawnPassiveImpactEffect(bone.x, bone.y, 'boneCrack', '#aaaaaa', { maxRadius: 28, particleCount: 8, particleSpeed: 2, particleSize: 2.5, lineWidth: 2.5 });
                     bone.hitCooldown = 14;
                     break;
                 }
@@ -8190,8 +10932,14 @@ function updateCastleBoneOrbiters() {
             const mx = currentMonster.x + currentMonster.width / 2;
             const my = currentMonster.y + currentMonster.height / 2;
             if (Math.hypot(bone.x - mx, bone.y - my) <= (currentMonster.width + currentMonster.height) / 4 + boneHalf) {
-                currentMonster.takeDamage(10);
-                bone.hitCooldown = 14;
+                const boneDamage = bone.damage || 10;
+                currentMonster.takeDamage(boneDamage);
+                spawnPassiveImpactEffect(bone.x, bone.y, 'boneCrack', '#aaaaaa', { maxRadius: 32, particleCount: 10, particleSpeed: 2.5, particleSize: 3, lineWidth: 3 });
+                bone.hitCooldown = 12;
+                if (bone.curse && !currentMonster.isDying) {
+                    currentMonster.boneCurseTimer = Math.max(currentMonster.boneCurseTimer || 0, bone.curseDuration || 300);
+                    currentMonster.boneCurseDamageBonus = Math.max(currentMonster.boneCurseDamageBonus || 0, bone.curseDamageBonus || 0.2);
+                }
             }
         }
     }
@@ -8665,24 +11413,6 @@ function drawCastleInteriorEnemies() {
             ctx.lineWidth = 4;
             ctx.strokeRect(enemy.x + 2, enemy.y + 2, enemy.width - 4, enemy.height - 4);
         }
-
-        if (enemy.stunTimer > 0) {
-            const enemyX = enemy.x + enemy.width / 2;
-            const enemyY = enemy.y + enemy.height / 2;
-            const goldFlash = (Math.floor(gameFrameCount / 4) % 2) === 0;
-            const goldAlpha = 0.35 + 0.25 * Math.sin(gameFrameCount * 0.4);
-            ctx.save();
-            ctx.globalAlpha = goldAlpha;
-            ctx.fillStyle = goldFlash ? 'rgba(255, 215, 60, 0.95)' : 'rgba(255, 240, 150, 0.85)';
-            ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
-            ctx.restore();
-
-            drawStunStars(enemyX, enemyY, enemy.width * 0.62, 1, true);
-
-            if (Math.random() < 0.08) {
-                spawnEvaporationEffect(enemyX + (Math.random() - 0.5) * enemy.width, enemyY + (Math.random() - 0.5) * enemy.height, '#ffe066', 4, 1);
-            }
-        }
         ctx.restore();
 
         const healthFrac = Math.max(0, Math.min(1, enemy.health / enemy.maxHealth));
@@ -8739,6 +11469,7 @@ function applyDamageToCastleEnemy(enemy, damage) {
     if (!enemy || enemy.isDying) return;
     enemy.health = Math.max(0, enemy.health - damage);
     enemy.flashTimer = 10;
+    enemy.impactShakeTimer = 12;
     if (enemy.health <= 0) {
         enemy.isDying = true;
         enemy.deathTimer = enemy.deathMaxTimer;
@@ -8749,17 +11480,20 @@ function applyDamageToCastleEnemy(enemy, damage) {
 function maybeSpawnMansionGhostCopy(target, originalDamage) {
     if (!player || !player.mansionGhostCopyUnlocked || !target || target.isDying) return false;
     if (typeof target.health !== 'number' || target.health <= 0) return false;
-    if (Math.random() >= (player.mansionGhostCopyChance || 0.33)) return false;
+    if (Math.random() >= (player.mansionGhostCopyChance || 0.45)) return false;
 
-    const ghostDamage = Math.max(1, Math.round((originalDamage || 0) * (player.mansionGhostCopyDamageRatio || 0.5)));
-    const stunFrames = Math.max(6, Math.round(player.mansionGhostCopyStunFrames || 24));
+    const ghostDamage = Math.max(1, Math.round((originalDamage || 0) * (player.mansionGhostCopyDamageRatio || 0.7)));
+    const stunFrames = Math.max(6, Math.round(player.mansionGhostCopyStunFrames || 32));
     const targetCenterX = (target.x || 0) + (target.width || 0) / 2;
     const targetCenterY = (target.y || 0) + (target.height || 0) / 2;
 
     target.health = Math.max(0, target.health - ghostDamage);
     target.tookDamage = true;
-    target.flashTimer = Math.max(target.flashTimer || 0, 12);
+    target.flashTimer = Math.max(target.flashTimer || 0, 18);
+    target.impactShakeTimer = 16;
     target.stunTimer = Math.max(target.stunTimer || 0, stunFrames);
+    target.mansionGhostCopyMark = Math.max(target.mansionGhostCopyMark || 0, 5);
+    target.mansionGhostCopyDamageAmp = Math.max(target.mansionGhostCopyDamageAmp || 0, 0.35);
 
     if (target.health <= 0) {
         target.isDying = true;
@@ -8767,26 +11501,55 @@ function maybeSpawnMansionGhostCopy(target, originalDamage) {
         spawnMonsterDeathEffect(target);
     }
 
-    spawnEvaporationEffect(targetCenterX, targetCenterY, '#f7eaff', 16, 12);
+    screenShakeTimer = Math.max(screenShakeTimer, 8);
+    frameFreeze = Math.max(frameFreeze || 0, 3);
+    spawnEvaporationEffect(targetCenterX, targetCenterY, '#f7eaff', 24, 20);
     spawnAfterImage({
         kind: 'monster',
-        x: targetCenterX - 12,
-        y: targetCenterY - 12,
-        width: 24,
-        height: 24,
-        life: 14,
-        maxLife: 14,
-        baseAlpha: 0.42,
+        x: targetCenterX - 16,
+        y: targetCenterY - 16,
+        width: 32,
+        height: 32,
+        life: 20,
+        maxLife: 20,
+        baseAlpha: 0.55,
         color: '#f4e2ff',
         type: target.type || 'ghost'
     });
+    spawnPassiveImpactEffect(targetCenterX, targetCenterY, 'ghostEcho', '#f4e2ff', { maxRadius: 45, particleCount: 16, particleSpeed: 2.5, particleSize: 4, lineWidth: 3 });
+
+    if (player.mansionGhostCopyChain && currentMonster && !currentMonster.isDying) {
+        const chainRadius = 220;
+        const mx = currentMonster.x + currentMonster.width / 2;
+        const my = currentMonster.y + currentMonster.height / 2;
+        const chainTargets = [];
+        for (const other of projectiles) {
+            if (other.owner === 'monster' && !other.isDying) {
+                const ox = other.x + other.width / 2;
+                const oy = other.y + other.height / 2;
+                if (Math.hypot(ox - mx, oy - my) <= chainRadius) {
+                    chainTargets.push({ x: ox, y: oy });
+                }
+            }
+        }
+        for (let c = 0; c < Math.min(3, chainTargets.length); c++) {
+            const ct = chainTargets[c];
+            spawnEvaporationEffect(ct.x, ct.y, '#f4e2ff', 12, 8);
+            spawnPassiveImpactEffect(ct.x, ct.y, 'ghostEcho', '#f4e2ff', { maxRadius: 28, particleCount: 8, particleSpeed: 2, particleSize: 2.5, lineWidth: 2 });
+        }
+        if (chainTargets.length > 0) {
+            frameFreeze = Math.max(frameFreeze || 0, 2);
+        }
+    }
+
     return true;
 }
 
 function getCurrentInteriorEnemies() {
     const construction = constructions.find(c => c.id === currentConstructionId);
     if (!construction) return [];
-    return construction.type === 'mansion' ? mansionInteriorEnemies : castleInteriorEnemies;
+    if (construction.type === 'mansion') return mansionInteriorEnemies.concat(dungeonWallGhosts);
+    return castleInteriorEnemies;
 }
 
 function findInteriorEnemyInRectangle(x, y, width, height) {
@@ -8869,6 +11632,11 @@ function clearMansionInterior() {
     mansionGhostCountTier1 = 35;
     mansionGhostCountTier2 = 35;
     mansionGhostCountTier3 = 30;
+    // Build the dungeon layout and seed wall ghosts in the starting room.
+    dungeonReset();
+    const startRoom = dungeonRooms[0];
+    for (let i = 0; i < 3; i += 1) dungeonSpawnWallGhost(0);
+    if (startRoom) startRoom.cleared = false;
 }
 
 function getMansionGhostTierToSpawn() {
@@ -8947,9 +11715,18 @@ function spawnMansionGhost() {
     if (tierIndex < 0) return false;
 
     const typeTemplate = getMansionGhostTypeForTier(tierIndex);
-    const margin = 40;
-    const x = margin + Math.random() * Math.max(0, viewportWidth - margin * 2 - typeTemplate.width);
-    const y = margin + Math.random() * Math.max(0, viewportHeight - margin * 2 - typeTemplate.height);
+    let x, y;
+    const room = dungeonRooms[dungeonCurrentRoom];
+    if (room) {
+        // spawn inside the current dungeon room, in world coordinates
+        const margin = 40;
+        x = room.x + margin + Math.random() * Math.max(0, room.w - margin * 2 - typeTemplate.width);
+        y = room.y + margin + Math.random() * Math.max(0, room.h - margin * 2 - typeTemplate.height);
+    } else {
+        const margin = 40;
+        x = margin + Math.random() * Math.max(0, viewportWidth - margin * 2 - typeTemplate.width);
+        y = margin + Math.random() * Math.max(0, viewportHeight - margin * 2 - typeTemplate.height);
+    }
 
     spawnMansionGhostFromTemplate(typeTemplate, x, y);
     mansionInteriorSpawnIndex += 1;
@@ -9006,6 +11783,7 @@ function updateMansionInteriorEnemies() {
             if (enemy.deathTimer <= 0) {
                 mansionInteriorEnemies.splice(i, 1);
                 mansionInteriorKills += 1;
+                dungeonNotifyGhostKilled();
                 if (mansionInteriorEnemies.length === 0 && mansionInteriorSpawnIndex >= mansionTotalGhosts) {
                     mansionExitOpen = true;
                 }
@@ -9110,8 +11888,15 @@ function updateMansionInteriorEnemies() {
             enemy.teleportCooldown -= 1;
         }
 
-        enemy.x = Math.max(16, Math.min(enemy.x, viewportWidth - enemy.width - 16));
-        enemy.y = Math.max(16, Math.min(enemy.y, viewportHeight - enemy.height - 16));
+        // constrain to the current dungeon room interior (world coordinates)
+        const room = dungeonRooms[dungeonCurrentRoom];
+        if (room) {
+            enemy.x = Math.max(room.x + 8, Math.min(enemy.x, room.x + room.w - enemy.width - 8));
+            enemy.y = Math.max(room.y + 8, Math.min(enemy.y, room.y + room.h - enemy.height - 8));
+        } else {
+            enemy.x = Math.max(16, Math.min(enemy.x, viewportWidth - enemy.width - 16));
+            enemy.y = Math.max(16, Math.min(enemy.y, viewportHeight - enemy.height - 16));
+        }
     }
 
     if (mansionInteriorEnemies.length === 0 && mansionInteriorSpawnIndex >= mansionTotalGhosts) {
@@ -9152,23 +11937,6 @@ function drawMansionInteriorEnemies() {
         }
         if (enemy.isDying) {
             ctx.globalAlpha = alpha;
-        }
-        if (enemy.stunTimer > 0) {
-            const enemyX = enemy.x + enemy.width / 2;
-            const enemyY = enemy.y + enemy.height / 2;
-            const goldFlash = (Math.floor(gameFrameCount / 4) % 2) === 0;
-            const goldAlpha = 0.35 + 0.25 * Math.sin(gameFrameCount * 0.4);
-            ctx.save();
-            ctx.globalAlpha = goldAlpha;
-            ctx.fillStyle = goldFlash ? 'rgba(255, 215, 60, 0.95)' : 'rgba(255, 240, 150, 0.85)';
-            ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
-            ctx.restore();
-
-            drawStunStars(enemyX, enemyY, enemy.width * 0.62, 1, true);
-
-            if (Math.random() < 0.08) {
-                spawnEvaporationEffect(enemyX + (Math.random() - 0.5) * enemy.width, enemyY + (Math.random() - 0.5) * enemy.height, '#ffe066', 4, 1);
-            }
         }
         ctx.restore();
 
@@ -9356,20 +12124,6 @@ function drawPlayerAfterImage(effect) {
         ctx.restore();
         return;
     }
-    if (effect.variant === 'gunSpin') {
-        ctx.rotate(effect.angle || 0);
-        ctx.fillStyle = '#fbbf24';
-        ctx.shadowColor = 'rgba(251, 191, 36, 0.9)';
-        ctx.shadowBlur = 12;
-        ctx.fillRect(-10, -5.5, 18, 11);
-        ctx.fillRect(-10, -3.5, 8, 7);
-        ctx.fillStyle = '#fde68a';
-        ctx.fillRect(8.8, -4, 7.2, 8);
-        ctx.fillRect(12.4, -2.6, 3.4, 5.2);
-        ctx.fillRect(4.2, -2.8, 4.4, 5.6);
-        ctx.restore();
-        return;
-    }
     ctx.scale(1.7, 1.7);
     ctx.fillStyle = '#55ff7f';
     ctx.beginPath();
@@ -9393,9 +12147,6 @@ function drawMonsterAfterImage(effect) {
         portalTimer: 0,
         portalX: effect.x + effect.width / 2,
         portalY: effect.y + effect.height / 2,
-        hitscanWarningTimer: 0,
-        hitscanTargetX: null,
-        hitscanTargetY: null,
         orbitalAngle: effect.orbitalAngle || 0,
         shakeTimer: 0
     }, effect);
@@ -9406,12 +12157,10 @@ function drawProjectileAfterImage(effect) {
     ctx.save();
     const size = effect.size || 8;
     const color = effect.color || '#ffffff';
+    const isCaster = effect.style === 'casterShard' || effect.style === 'casterBurst' || effect.style === 'casterSniper' || effect.style === 'casterFlameCircle' || effect.style === 'casterFlameSpiral' || effect.style === 'casterFlameRing' || effect.style === 'casterFlameVolley';
     ctx.fillStyle = color;
-    // Respeita o glow global: com muitos projéteis na tela, desliga o blur do afterimage também.
-    if (projectileGlowEnabled) {
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 14;
-    }
+    ctx.shadowColor = isCaster ? 'transparent' : color;
+    ctx.shadowBlur = isCaster ? 0 : 14;
     ctx.beginPath();
     ctx.arc(effect.x, effect.y, size * 0.8, 0, Math.PI * 2);
     ctx.fill();
@@ -9498,7 +12247,7 @@ function spawnAmbientAnimal() {
         idleOffset: Math.random() * Math.PI * 2,
         driftX: (Math.random() - 0.5) * 0.12,
         driftY: (Math.random() - 0.5) * 0.12,
-        appearTimer: 18 + Math.floor(Math.random() * 18)
+        appearTimer: 18
     });
 }
 
@@ -9664,81 +12413,6 @@ function drawAmbientCritters() {
     }
 }
 
-function generateSlowdownInsects() {
-    slowdownInsectSprites = Array.from({ length: 80 }, () => {
-        const edge = Math.floor(Math.random() * 4);
-        let x, y;
-        const edgeOffset = 50;
-        if (edge === 0) {
-            x = Math.random() * gameWidth;
-            y = edgeOffset + Math.random() * edgeOffset;
-        } else if (edge === 1) {
-            x = Math.random() * gameWidth;
-            y = gameHeight - edgeOffset - Math.random() * edgeOffset;
-        } else if (edge === 2) {
-            x = edgeOffset + Math.random() * edgeOffset;
-            y = Math.random() * gameHeight;
-        } else {
-            x = gameWidth - edgeOffset - Math.random() * edgeOffset;
-            y = Math.random() * gameHeight;
-        }
-        return {
-            x,
-            y,
-            size: Math.random() * 18 + 26,
-            rotation: Math.random() * Math.PI * 2,
-            phase: Math.random() * Math.PI * 2
-        };
-    });
-}
-
-function drawSlowdownInsects() {
-    if (timeScale >= 1 || slowdownInsectSprites.length === 0) return;
-
-    ctx.save();
-    ctx.globalAlpha = 0.15;
-    ctx.fillStyle = '#ad5cff';
-    ctx.strokeStyle = 'rgba(170, 90, 255, 0.12)';
-    ctx.lineWidth = 1;
-
-    const time = performance.now() * 0.002;
-    for (const insect of slowdownInsectSprites) {
-        ctx.save();
-        ctx.translate(insect.x, insect.y);
-        ctx.rotate(insect.rotation + Math.sin(time + insect.phase) * 0.14);
-
-        const bodyW = insect.size * 0.5;
-        const bodyH = insect.size * 0.24;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, bodyW, bodyH, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.ellipse(-bodyW * 0.55, 0, bodyW * 0.4, bodyH * 0.95, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.ellipse(bodyW * 0.55, 0, bodyW * 0.22, bodyH * 0.85, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        const wingW = insect.size * 0.42;
-        const wingH = insect.size * 0.18;
-        ctx.beginPath();
-        ctx.ellipse(-bodyW * 0.1, -wingH * 1.2, wingW, wingH, -0.45, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.ellipse(-bodyW * 0.1, wingH * 1.2, wingW, wingH, 0.45, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.restore();
-    }
-    ctx.restore();
-}
-
 const selectionBackgroundParticles = Array.from({ length: 24 }, () => ({
     x: Math.random() * (canvas.width || 800),
     y: Math.random() * (canvas.height || 600),
@@ -9755,6 +12429,7 @@ function getAllowedMonsterTypes() {
         allowed.push('simple');
     }
     allowed.push('croc');
+    allowed.push('boulder_tosser');
     const allOtherTypesKilled = baseMonsterTypes.every(type => monsterTypeKills[type]);
     if (allOtherTypesKilled) {
         allowed.push('tank');
@@ -9856,119 +12531,74 @@ function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
     return Math.hypot(px - projX, py - projY);
 }
 
-function spawnMonsterHitscan(startX, startY, targetX, targetY, damage, color, thickness = 42, duration = 60, damageInterval = 20) {
-    const beam = {
-        x: startX,
-        y: startY,
-        targetX,
-        targetY,
-        damage,
-        color,
-        thickness,
-        lifetime: duration,
-        maxLifetime: duration,
-        alpha: 1,
-        hitChecked: false,
-        damageInterval: damageInterval,
-        damageTimer: 0
-    };
-
-    monsterHitscans.push(beam);
-    return beam;
-}
-
-function spawnTowerHitscan(startX, startY, targetX, targetY, damage, color, thickness = 14, duration = 40, damageInterval = 20) {
-    const beam = {
-        x: startX,
-        y: startY,
-        targetX,
-        targetY,
-        damage,
-        color,
-        thickness,
-        lifetime: duration,
-        maxLifetime: duration,
-        alpha: 1,
-        damageInterval: damageInterval,
-        damageTimer: 0
-    };
-
-    towerHitscans.push(beam);
-    return beam;
-}
-
-function updateTowerHitscans() {
-    for (let i = towerHitscans.length - 1; i >= 0; i--) {
-        const beam = towerHitscans[i];
-        beam.lifetime--;
-        beam.alpha = Math.max(0, beam.lifetime / beam.maxLifetime);
-
-        if (beam.lifetime <= 0) {
-            towerHitscans.splice(i, 1);
-            continue;
+function generateSlowdownInsects() {
+    slowdownInsectSprites = Array.from({ length: 80 }, () => {
+        const edge = Math.floor(Math.random() * 4);
+        let x, y;
+        const edgeOffset = 50;
+        if (edge === 0) {
+            x = Math.random() * gameWidth;
+            y = edgeOffset + Math.random() * edgeOffset;
+        } else if (edge === 1) {
+            x = Math.random() * gameWidth;
+            y = gameHeight - edgeOffset - Math.random() * edgeOffset;
+        } else if (edge === 2) {
+            x = edgeOffset + Math.random() * edgeOffset;
+            y = Math.random() * gameHeight;
+        } else {
+            x = gameWidth - edgeOffset - Math.random() * edgeOffset;
+            y = Math.random() * gameHeight;
         }
-
-        beam.damageTimer = (beam.damageTimer || 0) + 1;
-        if (beam.damageTimer >= beam.damageInterval) {
-            beam.damageTimer = 0;
-            const playerCenterX = player.x + player.width / 2;
-            const playerCenterY = player.y + player.height / 2;
-            const distanceToBeam = pointToSegmentDistance(playerCenterX, playerCenterY, beam.x, beam.y, beam.targetX, beam.targetY);
-            const hitRadius = beam.thickness * 0.75;
-            if (distanceToBeam <= hitRadius && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0 && player.slashDashInvulnTimer <= 0) {
-                let effectiveDamage = Math.max(0, beam.damage - player.damageReduction);
-                if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
-                    effectiveDamage *= (1 - player.parryDefenseBonus / 100);
-                }
-                player.health -= effectiveDamage;
-            }
-        }
-    }
+        return {
+            x,
+            y,
+            size: Math.random() * 18 + 26,
+            rotation: Math.random() * Math.PI * 2,
+            phase: Math.random() * Math.PI * 2
+        };
+    });
 }
 
-function drawTowerHitscans() {
-    for (const beam of towerHitscans) {
+function drawSlowdownInsects() {
+    if (timeScale >= 1 || slowdownInsectSprites.length === 0) return;
+
+    ctx.save();
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = '#ad5cff';
+    ctx.strokeStyle = 'rgba(170, 90, 255, 0.12)';
+    ctx.lineWidth = 1;
+
+    const time = performance.now() * 0.002;
+    for (const insect of slowdownInsectSprites) {
         ctx.save();
-        const flashFrames = 10;
-        const isFlashing = beam.lifetime <= flashFrames;
-        const baseAlpha = 0.7;
-        const flashAlpha = isFlashing ? baseAlpha + Math.sin((beam.lifetime / flashFrames) * Math.PI * 8) * 0.3 : baseAlpha;
-        ctx.globalAlpha = Math.max(0.4, flashAlpha);
-        ctx.fillStyle = beam.color;
-        ctx.strokeStyle = beam.color;
-        ctx.lineWidth = beam.thickness;
-        ctx.shadowColor = beam.color;
-        ctx.shadowBlur = 14;
-        const angle = Math.atan2(beam.targetY - beam.y, beam.targetX - beam.x);
-        const perp = beam.thickness * 0.6;
-        const dx = Math.cos(angle);
-        const dy = Math.sin(angle);
-        const ox = -dy * perp;
-        const oy = dx * perp;
+        ctx.translate(insect.x, insect.y);
+        ctx.rotate(insect.rotation + Math.sin(time + insect.phase) * 0.14);
 
+        const bodyW = insect.size * 0.5;
+        const bodyH = insect.size * 0.24;
         ctx.beginPath();
-        ctx.moveTo(beam.x + ox, beam.y + oy);
-        ctx.lineTo(beam.targetX + ox, beam.targetY + oy);
-        ctx.lineTo(beam.targetX - ox, beam.targetY - oy);
-        ctx.lineTo(beam.x - ox, beam.y - oy);
-        ctx.closePath();
+        ctx.ellipse(0, 0, bodyW, bodyH, 0, 0, Math.PI * 2);
         ctx.fill();
+        ctx.stroke();
 
-        ctx.globalAlpha = Math.max(0.3, 0.75 * (0.6 + 0.4 * (1 - beam.lifetime / beam.maxLifetime)));
-        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-        ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(beam.x, beam.y);
-        ctx.lineTo(beam.targetX, beam.targetY);
+        ctx.ellipse(-bodyW * 0.55, 0, bodyW * 0.4, bodyH * 0.95, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.ellipse(bodyW * 0.55, 0, bodyW * 0.4, bodyH * 0.95, 0, 0, Math.PI * 2);
+        ctx.fill();
         ctx.stroke();
 
         ctx.restore();
     }
+    ctx.restore();
 }
 
 const weapons = [
-    { name: 'Revolver 🔫', type: 'gun', color: '#ffff00', cooldown: 12, range: 50, damage: 2, speed: 10 },
-    { name: 'Arco 🏹', type: 'bow', color: '#00ff00', cooldown: 110, range: 37.5, damage: 18, speed: 15 },
+    { name: 'Revolver 🔫', type: 'gun', color: '#ffff00', cooldown: 12, range: 50, damage: 4, speed: 50 },
+    { name: 'Arco 🏹', type: 'bow', color: '#00ff00', cooldown: 110, range: 37.5, damage: 18, speed: 65 },
     { name: 'Varinha 🔮', type: 'staff', color: '#ff00ff', cooldown: 35, range: 25, damage: 22, speed: 0.75 },
     { name: 'Espada ⚔️', type: 'sword', color: '#ffaa00', cooldown: 0, range: 90, damage: 14 },
     { name: 'Granada & Bomba 💣', type: 'grenade', color: '#ff8c1a', cooldown: 26, range: 80, damage: 10 },
@@ -9999,8 +12629,8 @@ const EXTREME_CHANCE = 0.05;
 const weaponUpgradeOptions = {
     gun: [
         { name: 'Câmara Extra +4', effect: 'gunAmmoMax', value: 4, desc: 'Aumenta a capacidade de munição do revólver. Mais tiros antes de precisar recarregar.' },
-        { name: 'Rajada de Choque +1', effect: 'gunBurstFire', value: 1, desc: 'Cada disparo do revólver também solta um projétil adicional em ângulo levemente variado, transformando o tiro em rajada.' },
-        { name: 'Munição Explosiva', effect: 'gunExplosiveAmmo', value: 1, desc: 'Os projéteis detonam ao atingir o inimigo e ao fim do trajeto, explodindo como uma pequena bomba, causando dano em área e atordoando o alvo por 0.1s por nível.' },
+        { name: 'Rajada de Choque +1', effect: 'gunBurstFire', value: 1, desc: 'O revólver só dispara enquanto você gira a arma (recarregando). Cada nível adiciona um projétil extra à rajada durante o giro.' },
+        { name: 'Munição Explosiva', effect: 'gunExplosiveAmmo', value: 1, desc: 'Os projéteis detonam ao atingir o inimigo, causando dano extra em uma pequena área.' },
         { name: 'Pólvora Extra', effect: 'gunExtraPowder', value: 1, desc: 'Adiciona 20% mais dano, 20% mais recuo e 20% mais fumaça nos disparos do revólver.' }
     ],
     grenade: [
@@ -10042,8 +12672,6 @@ const weaponUpgradeOptions = {
 // ===== EVENT LISTENERS =====
 document.addEventListener('keydown', (e) => {
     keys[e.key.toLowerCase()] = true;
-    const transitionLocked = isMonsterTransitionActive();
-
     if (e.key.toLowerCase() === 'o' && !isSelectingWeapon && !gameOver) {
         e.preventDefault();
         toggleDebugMenu();
@@ -10059,8 +12687,10 @@ document.addEventListener('keydown', (e) => {
         } else {
             passiveMenuMode = true;
             isDebugMenuOpen = true;
+            debugMenuTabIndex = 0;
             debugMenuUpgradeChoices = getPassiveMenuChoices();
             selectedDebugUpgradeIndex = 0;
+            selectedDebugActionIndex = 0;
             debugMenuQuantity = 1;
             debugMenuFlashTimer = 0;
             if (overlayCanvas) { overlayCanvas.style.display = 'block'; overlayCanvas.style.pointerEvents = 'auto'; resizeDebugOverlay(); }
@@ -10153,7 +12783,7 @@ document.addEventListener('keydown', (e) => {
             e.preventDefault();
             applyUpgrade(selectedUpgradeIndex);
         }
-    } else if (transitionLocked) {
+    } else if (isMonsterTransitionActive()) {
         // Ignorar ações de movimento e ataque durante a animação de morte/upgrade.
     } else {
         if (e.key === 'i') {
@@ -10164,8 +12794,6 @@ document.addEventListener('keydown', (e) => {
             createConstructionEntrancePortalsAroundPlayer();
         } else if (e.key === ' ') {
             e.preventDefault();
-            // Ignorar auto-repeat do teclado: segurar o botão não deve atacar repetidamente.
-            if (e.repeat) return;
             if (player && player.weapon && player.weapon.type === 'sword') {
                 player.performSwordDash();
             } else {
@@ -10250,6 +12878,17 @@ canvas.addEventListener('click', (e) => {
                 break;
             }
         }
+    } else if (gameOver) {
+        const rect = canvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+        const btnX = canvas.width / 2 - 110;
+        const btnY = canvas.height / 2 + 80;
+        const btnW = 220;
+        const btnH = 50;
+        if (clickX >= btnX && clickX <= btnX + btnW && clickY >= btnY && clickY <= btnY + btnH) {
+            location.reload();
+        }
     } else if (isMonsterTransitionActive()) {
         // Ignorar cliques de ataque durante a animação de morte/upgrade.
     } else {
@@ -10260,6 +12899,23 @@ canvas.addEventListener('click', (e) => {
         }
     }
 });
+
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 2) return;
+    e.preventDefault();
+    if (!gameStarted || !player || !player.weapon) return;
+    if (isSelectingWeapon || isUpgrading || isMonsterTransitionActive()) return;
+    if (player.weapon.type === 'sword') {
+        player.performSwordDash();
+    } else if (player.weapon.type === 'grenade') {
+        attemptAttack('rightClick');
+    } else {
+        attemptAttack('space');
+    }
+});
+
 
 function applyCooldownBarBaseBackground() {
     try {
@@ -10323,6 +12979,31 @@ function selectWeapon(index) {
     initializeMapDecor();
 }
 
+function chargePassives(trigger = 'onHit') {
+    const shouldCharge = (flag, countKey, threshold) => {
+        if (!player[flag]) return false;
+        const passiveTrigger = getPassiveTrigger(player, flag);
+        if (passiveTrigger !== trigger) return false;
+        if (countKey) {
+            player[countKey] = (player[countKey] || 0) + 1;
+            if (player[countKey] >= threshold) {
+                player[countKey] = 0;
+                return true;
+            }
+        }
+        return false;
+    };
+
+    if (shouldCharge('shooterMachineGunUnlocked', 'shooterMachineGunCount', 4)) triggerShooterMachineGun();
+    if (shouldCharge('swarmNubeUnlocked', 'swarmNubeCount', 3)) triggerSwarmNube();
+    if (shouldCharge('casterPortalUnlocked', 'casterPortalCount', 5)) triggerCasterPortalBurst();
+    if (shouldCharge('avianTrackerUnlocked', 'avianTrackerCount', 5)) triggerAvianTracker();
+    if (shouldCharge('smartRicochetUnlocked', 'smartRicochetCount', 4)) triggerSmartRicochet();
+    if (shouldCharge('simpleExplosiveUnlocked', 'simpleExplosiveCount', 3)) triggerSimpleExplosive();
+    if (shouldCharge('crocFreezerUnlocked', 'crocFreezerCount', 4)) triggerCrocFreezer();
+    if (shouldCharge('tankImpulseUnlocked', 'tankImpulseCount', 5)) triggerTankImpulse();
+}
+
 function registerPlayerHit() {
     if (player.castleBoneUnlocked) {
         player.castleBoneHitCounter = (player.castleBoneHitCounter || 0) + 1;
@@ -10353,6 +13034,8 @@ function registerPlayerHit() {
     if (player.parryChargePerHit > 0 && player.parryCooldown === 0) {
         player.parryChargeAccumulator += player.parryChargePerHit;
     }
+
+    chargePassives();
 }
 
 function updateCooldownBar() {
@@ -10503,7 +13186,7 @@ function spawnFireZone(x, y, options = {}) {
     return zone;
 }
 
-function spawnSmokeBurst(x, y, count = 18) {
+function spawnSmokeBurst(x, y, count = 18, size = 8) {
     for (let i = 0; i < count; i++) {
         const angle = (Math.random() * Math.PI * 2);
         const speed = Math.random() * 0.8 + 0.3;
@@ -10515,7 +13198,7 @@ function spawnSmokeBurst(x, y, count = 18) {
             vy: Math.sin(angle) * speed - 0.7 - Math.random() * 0.4,
             life: 48 + Math.floor(Math.random() * 14),
             alpha: 1,
-            size: 8 + Math.random() * 8,
+            size: size + Math.random() * size,
             color: `rgba(${gray}, ${gray}, ${gray}, 0.9)`
         });
     }
@@ -10545,16 +13228,135 @@ function spawnGrenadeFragments(x, y) {
     }
 }
 
+function placeLandmine() {
+    const centerX = player.x + player.width / 2;
+    const centerY = player.y + player.height / 2;
+    const aim = typeof player.swordAimAngle === 'number' ? player.swordAimAngle : 0;
+    const offset = 44;
+    const x = centerX + Math.cos(aim) * offset;
+    const y = centerY + Math.sin(aim) * offset;
+    const weapon = player.weapon;
+    const baseDamage = (weapon.damage || 1) + (player.weaponDamage || 0) + (player.baseDamage || 0);
+    const damage = Math.max(1, Math.round(baseDamage * 2 * (player.damageOutputMultiplier || 1)));
+    landmines.push({
+        x,
+        y,
+        radius: 15,
+        armTimer: 16,
+        life: 25 * 60,
+        damage: damage
+    });
+    spawnBombThrowEffect(centerX, centerY, x, y);
+}
+
+function detonateLandmine(mine) {
+    spawnFireZone(mine.x, mine.y, { applyStun: true });
+    applyAreaDamageAt(mine.x, mine.y, 60, mine.damage);
+    spawnGrenadeFragments(mine.x, mine.y);
+    spawnEvaporationEffect(mine.x, mine.y, '#ff7a00', 18, 12);
+    spawnSmokeBurst(mine.x, mine.y, 60);
+    explosionEffects.push({
+        x: mine.x,
+        y: mine.y,
+        radius: 0,
+        maxRadius: 60,
+        life: 20,
+        maxLife: 20,
+        damage: mine.damage
+    });
+    screenShakeTimer = Math.max(screenShakeTimer, 20);
+    frameFreeze = Math.max(frameFreeze || 0, 4);
+    if (player) {
+        player.health -= mine.damage;
+        player.hitFlash = Math.max(player.hitFlash || 0, 1);
+    }
+}
+
+function updateLandmines() {
+    if (!player) return;
+    for (let i = landmines.length - 1; i >= 0; i--) {
+        const mine = landmines[i];
+        if (mine.armTimer > 0) {
+            mine.armTimer -= 1;
+        } else {
+            let triggered = false;
+
+            const px = player.x + player.width / 2;
+            const py = player.y + player.height / 2;
+            const reach = mine.radius + Math.max(player.width, player.height) * 0.5;
+            if (Math.hypot(px - mine.x, py - mine.y) <= reach) {
+                triggered = true;
+            }
+
+            if (!triggered && currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
+                const mx = currentMonster.x + currentMonster.width / 2;
+                const my = currentMonster.y + currentMonster.height / 2;
+                const monsterReach = mine.radius + Math.max(currentMonster.width, currentMonster.height) * 0.35;
+                if (Math.hypot(mx - mine.x, my - mine.y) <= monsterReach) {
+                    triggered = true;
+                }
+            }
+
+            if (triggered) {
+                detonateLandmine(mine);
+                landmines.splice(i, 1);
+                continue;
+            }
+        }
+        mine.life -= 1;
+        if (mine.life <= 0) {
+            detonateLandmine(mine);
+            landmines.splice(i, 1);
+        }
+    }
+}
+
+function drawLandmines() {
+    for (const mine of landmines) {
+        ctx.save();
+        ctx.translate(mine.x, mine.y);
+        const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.01);
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        ctx.beginPath();
+        ctx.ellipse(0, mine.radius * 0.5, mine.radius * 1.1, mine.radius * 0.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = mine.armTimer > 0 ? 'rgba(120,120,130,0.95)' : 'rgba(40,40,48,0.98)';
+        ctx.beginPath();
+        ctx.arc(0, 0, mine.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(70,70,80,0.98)';
+        for (let a = 0; a < 6; a++) {
+            const ang = (Math.PI * 2 / 6) * a;
+            ctx.beginPath();
+            ctx.moveTo(Math.cos(ang) * mine.radius, Math.sin(ang) * mine.radius);
+            ctx.lineTo(Math.cos(ang) * (mine.radius + 5), Math.sin(ang) * (mine.radius + 5));
+            ctx.lineTo(Math.cos(ang + 0.4) * mine.radius, Math.sin(ang + 0.4) * mine.radius);
+            ctx.closePath();
+            ctx.fill();
+        }
+        const lightColor = mine.armTimer > 0
+            ? 'rgba(180,180,180,0.9)'
+            : `rgba(255,${Math.round(60 + 120 * (1 - pulse))},0,${0.6 + 0.4 * pulse})`;
+        ctx.fillStyle = lightColor;
+        ctx.shadowColor = lightColor;
+        ctx.shadowBlur = mine.armTimer > 0 ? 0 : 10;
+        ctx.beginPath();
+        ctx.arc(0, 0, mine.radius * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
 function launchThrowingExplosive(attackType = 'bomb') {
     const startX = player.x + player.width / 2;
     const startY = player.y + player.height / 2;
     const targetX = mouseX + cameraX;
     const targetY = mouseY + cameraY;
     const baseTravelTime = attackType === 'bomb' ? 38 : 32;
-    const travelSpeedMultiplier = 1 + Math.max(0, player?.bombThrowSpeedBonus || 0);
+    const travelSpeedMultiplier = 1 + Math.max(0, player?.bombThrowSpeedBonus || 0) + Math.max(0, player?.projectileSpeedBonus || 0);
     const travelTime = Math.max(10, Math.round(baseTravelTime / travelSpeedMultiplier));
     const arcHeight = attackType === 'bomb' ? 180 : 150;
-    
+
     spawnBombThrowEffect(startX, startY, targetX, targetY);
 
     thrownExplosives.push({
@@ -10569,6 +13371,27 @@ function launchThrowingExplosive(attackType = 'bomb') {
         arcHeight,
         type: attackType
     });
+
+    const extraCount = Math.floor(Math.max(0, player?.extraProjectiles || 0));
+    const spread = player?.spreadProjectiles || 0;
+    for (let i = 0; i < extraCount; i++) {
+        const angleOffset = ((i + 1) * spread * 0.5) * (i % 2 === 0 ? 1 : -1);
+        const baseAngle = Math.atan2(targetY - startY, targetX - startX);
+        const tX = startX + Math.cos(baseAngle + angleOffset) * 400;
+        const tY = startY + Math.sin(baseAngle + angleOffset) * 400;
+        thrownExplosives.push({
+            x: startX,
+            y: startY,
+            startX,
+            startY,
+            targetX: tX,
+            targetY: tY,
+            travelTime,
+            elapsed: 0,
+            arcHeight,
+            type: attackType
+        });
+    }
 }
 
 function updateThrownExplosives() {
@@ -10581,6 +13404,7 @@ function updateThrownExplosives() {
         projectile.y = projectile.startY + (projectile.targetY - projectile.startY) * eased - projectile.arcHeight * 4 * eased * (1 - eased);
 
         if (progress >= 1) {
+            registerPlayerHit();
             if (projectile.type === 'bomb') {
                 spawnFireZone(projectile.targetX, projectile.targetY, { applyStun: true });
                 spawnSmokeBurst(projectile.targetX, projectile.targetY, 20);
@@ -10589,6 +13413,24 @@ function updateThrownExplosives() {
                 spawnGrenadeFragments(projectile.targetX, projectile.targetY);
                 spawnEvaporationEffect(projectile.targetX, projectile.targetY, '#ff7a00', 18, 12);
                 spawnSmokeBurst(projectile.targetX, projectile.targetY, 20);
+            }
+            const lateCount = Math.floor(Math.max(0, player?.lateShots || 0));
+            for (let li = 0; li < lateCount; li++) {
+                delayedProjectileSpawns.push({
+                    kind: 'bombLateShot',
+                    timer: 20 + li * 12,
+                    srcX: projectile.targetX,
+                    srcY: projectile.targetY,
+                    targetX: projectile.targetX,
+                    targetY: projectile.targetY,
+                    damage: 0,
+                    color: projectile.type === 'bomb' ? '#ff8c1a' : '#ff7a00',
+                    size: 6,
+                    maxDistance: 0,
+                    style: 'bombLateShot',
+                    baseActualSpeed: 0,
+                    attackType: projectile.type
+                });
             }
             thrownExplosives.splice(i, 1);
         }
@@ -10687,104 +13529,6 @@ function updateGrenadeFragments() {
         } else if (fragment.life <= 0) {
             grenadeFragments.splice(i, 1);
         }
-    }
-}
-
-function updateBoulderMarks() {
-    for (let i = boulderMarks.length - 1; i >= 0; i--) {
-        const mark = boulderMarks[i];
-        mark.growTimer++;
-        const progress = Math.min(1, mark.growTimer / mark.growDuration);
-        mark.radius = mark.maxRadius * progress;
-        if (progress >= 1) {
-            boulderMarks.splice(i, 1);
-        }
-    }
-}
-
-function updateBoulderProjectiles() {
-    for (let i = boulderProjectiles.length - 1; i >= 0; i--) {
-        const proj = boulderProjectiles[i];
-        proj.elapsed += 1;
-        const progress = Math.min(1, proj.elapsed / proj.travelTime);
-        const eased = 1 - Math.pow(1 - progress, 2);
-        proj.x = proj.startX + (proj.targetX - proj.startX) * eased;
-        proj.y = proj.startY + (proj.targetY - proj.startY) * eased - proj.arcHeight * 4 * eased * (1 - eased);
-
-        if (progress >= 1) {
-            const impactX = proj.targetX;
-            const impactY = proj.targetY;
-            const impactRadius = proj.markRef ? proj.markRef.maxRadius : 50;
-
-            spawnSmokeBurst(impactX, impactY, 24);
-            spawnEvaporationEffect(impactX, impactY, '#8b5e3c', 16, 12);
-            spawnEvaporationEffect(impactX, impactY, '#a67c52', 12, 8);
-
-            const playerCenterX = player.x + player.width / 2;
-            const playerCenterY = player.y + player.height / 2;
-            const distToPlayer = Math.hypot(playerCenterX - impactX, playerCenterY - impactY);
-
-            if (distToPlayer <= impactRadius + Math.max(player.width, player.height) * 0.5) {
-                const damage = 32;
-                player.health -= damage;
-                player.stunTimer = Math.max(player.stunTimer || 0, 120);
-                tryApplyPlayerConfusionFromAttack('croc', {
-                    chance: 100,
-                    durationFrames: 240
-                });
-                spawnAfterImage({
-                    kind: 'player',
-                    x: player.x,
-                    y: player.y,
-                    width: player.width,
-                    height: player.height,
-                    life: 18,
-                    maxLife: 18,
-                    baseAlpha: 0.55
-                });
-            }
-
-            boulderProjectiles.splice(i, 1);
-        }
-    }
-}
-
-function drawBoulderMarks() {
-    for (const mark of boulderMarks) {
-        ctx.save();
-        ctx.translate(mark.x, mark.y);
-        ctx.strokeStyle = 'rgba(255, 80, 80, 0.8)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(0, 0, mark.radius, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.fillStyle = 'rgba(255, 60, 60, 0.15)';
-        ctx.beginPath();
-        ctx.arc(0, 0, mark.radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-    }
-}
-
-function drawBoulderProjectiles() {
-    for (const proj of boulderProjectiles) {
-        ctx.save();
-        ctx.translate(proj.x, proj.y);
-        const progress = Math.min(1, proj.elapsed / proj.travelTime);
-        const targetRadius = proj.markRef ? proj.markRef.maxRadius : 50;
-        const startRadius = 6;
-        const currentRadius = startRadius + (targetRadius - startRadius) * progress;
-        ctx.fillStyle = '#5a3d2b';
-        ctx.shadowColor = '#3e2723';
-        ctx.shadowBlur = 10;
-        ctx.beginPath();
-        ctx.arc(0, 0, currentRadius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#7d5a3c';
-        ctx.beginPath();
-        ctx.arc(-currentRadius * 0.25, -currentRadius * 0.25, currentRadius * 0.35, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
     }
 }
 
@@ -10892,75 +13636,9 @@ function drawGrenadeFragments() {
     }
 }
 
-function updateExplosionEffects() {
-    for (let i = explosionEffects.length - 1; i >= 0; i--) {
-        const fx = explosionEffects[i];
-        // Aplica o dano em área uma única vez, quando a explosão surge
-        if (!fx.damageApplied) {
-            fx.damageApplied = true;
-            if (fx.damage > 0 && fx.maxRadius > 0) {
-                const stunFrames = Math.max(0, Math.round(fx.stunFrames || 0));
-                applyAreaDamageAt(fx.x, fx.y, fx.maxRadius, fx.damage, {
-                    onHit: stunFrames > 0 ? (target) => {
-                        if (target && typeof target.stunTimer === 'number') {
-                            target.stunTimer = Math.max(target.stunTimer || 0, stunFrames);
-                        }
-                    } : undefined
-                });
-            }
-        }
-        fx.life -= 1;
-        const progress = 1 - Math.max(0, fx.life / fx.maxLife);
-        // Expande rapidamente até o raio máximo
-        fx.radius = fx.maxRadius * Math.min(1, progress * 1.4);
-        if (fx.life <= 0) {
-            explosionEffects.splice(i, 1);
-        }
-    }
-}
-
-function drawExplosionEffects() {
-    for (const fx of explosionEffects) {
-        const alpha = Math.max(0, fx.life / fx.maxLife);
-        const r = fx.radius;
-        ctx.save();
-        ctx.translate(fx.x, fx.y);
-
-        // Halo externo (mesma paleta da bomba)
-        ctx.globalAlpha = alpha * 0.35;
-        ctx.fillStyle = '#ff8c1a';
-        ctx.beginPath();
-        ctx.arc(0, 0, r * 1.25, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Corpo da explosão
-        ctx.globalAlpha = alpha * 0.7;
-        ctx.fillStyle = '#ffb347';
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Núcleo brilhante
-        ctx.globalAlpha = alpha * 0.9;
-        ctx.fillStyle = '#fff2c4';
-        ctx.beginPath();
-        ctx.arc(0, 0, r * 0.45, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Anel de choque
-        ctx.globalAlpha = alpha * 0.85;
-        ctx.strokeStyle = 'rgba(255, 220, 120, 0.9)';
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.stroke();
-
-        ctx.restore();
-    }
-}
-
 function attemptAttack(source = 'mouse') {
     if (!player.weapon) return;
+    if (source === 'auto' && (player.weapon.type === 'gun' || player.weapon.type === 'grenade')) return;
     // Remover ataque ativo para espadas: não executar attemptAttack() quando a arma for espada
     if (player.weapon && player.weapon.type === 'sword') return;
     // Se a arma for staff e já houver 5 orbs, tentar atirar incrementa a carga em vez de spawnar
@@ -10996,7 +13674,14 @@ function attemptAttack(source = 'mouse') {
 
     const weapon = player.weapon;
     if (weapon.type === 'grenade') {
-        const attackType = source === 'space' ? 'bomb' : 'grenade';
+        if (source === 'mouse') {
+            const cooldownFrames = Math.max(60, (player.landmineCooldownMax || 12 * 60) - player.cooldownReduction);
+            if (player.landmineCooldown > 0) return;
+            placeLandmine();
+            player.landmineCooldown = cooldownFrames;
+            return;
+        }
+        const attackType = source === 'rightClick' ? 'bomb' : 'grenade';
         const cooldownFrames = 5 * 60;
         if (attackType === 'bomb') {
             if (player.bombCooldown > 0) return;
@@ -11058,14 +13743,19 @@ function attemptAttack(source = 'mouse') {
             if (player.gunSpinLockTimer > 0) {
                 return;
             }
+            if (keys['w'] || keys['arrowup'] || keys['a'] || keys['arrowleft'] || keys['s'] || keys['arrowdown'] || keys['d'] || keys['arrowright']) {
+                return;
+            }
             // Recharge spin. Each consecutive spin performed without firing a
             // regular shot doubles the chance of "burning through" 4 bullets.
-            if (player.gunRechargeBoost) {
+            const previousGunRechargeBoost = !!player.gunRechargeBoost;
+            if (previousGunRechargeBoost) {
                 player.gunSpinBurnChance = Math.min(1, (player.gunSpinBurnChance || 0.05) * 2);
             } else {
                 player.gunSpinBurnChance = 0.05;
-                player.gunRechargeBoost = true;
             }
+            player.gunRechargeBoost = false;
+            player.gunSpinBoostPending = true;
             // Rajada de Choque: solta `gunBurstFire` tiros no INÍCIO do giro
             // e mais `gunBurstFire` tiros no FIM do giro (1 tiro por nível em cada ponta).
             if (player.gunBurstFire > 0) {
@@ -11075,6 +13765,15 @@ function attemptAttack(source = 'mouse') {
             // Iniciar a animação de giro do revólver
             player.gunSpinTimer = GUN_SPIN_FRAMES;
             player.gunFireQueued = false;
+            const randomKey = GUN_SPIN_KEY_OPTIONS[Math.floor(Math.random() * GUN_SPIN_KEY_OPTIONS.length)];
+            gunSpinKeyPrompt = {
+                key: randomKey,
+                alpha: 1,
+                scale: 1,
+                startTime: performance.now()
+            };
+            gunSpinKeyPromptTimer = GUN_SPIN_KEY_PROMPT_FRAMES;
+            frameFreeze = Math.max(frameFreeze || 0, 48);
             // Skip most of the cooldown, leaving a short window to shoot
             // (or to spin again and stack the burn chance).
             player.attackCooldown = GUN_SPIN_FRAMES;
@@ -11184,11 +13883,15 @@ function attemptAttack(source = 'mouse') {
             let lastProjY = player.y + player.height / 2;
 
             for (let i = 0; i < shots; i++) {
-                // Revólver: tiro normal é bem reto (0.04); o tiro turbinado pós-giro
-                // tem mira bem pior (0.28). Outras armas usam o spread padrão.
+                // Tiros sem spin (revolver) são bem retos; o tiro turbinado
+                // (pós-giro, gunRechargeBoost) sai com um ângulo errado de até 15 graus
+                // (metade dos 30 originais), aleatório dentro desse cone.
+                const isGunNoSpin = weapon.type === 'gun' && !gunRechargeBoosted && player.gunSpinTimer === 0;
                 let spread;
-                if (weapon.type === 'gun') {
-                    spread = gunRechargeBoosted ? (Math.random() - 0.5) * 0.45 : (Math.random() - 0.5) * 0.04;
+                if (weapon.type === 'gun' && gunRechargeBoosted) {
+                    spread = (Math.random() - 0.5) * 2 * (Math.PI / 16); // +-11.25 graus (25% menor que 15), aleatório no cone
+                } else if (isGunNoSpin) {
+                    spread = (Math.random() - 0.5) * 0.04;
                 } else {
                     spread = (Math.random() - 0.5) * 0.2 * shots;
                 }
@@ -11200,11 +13903,9 @@ function attemptAttack(source = 'mouse') {
                     isGunOriginal: weapon.type === 'gun' && i === 0,
                     isPlayerOriginal: i === 0,
                     explosive: weapon.type === 'gun' && player.gunExplosiveAmmo > 0,
-                    explosiveRadius: (weapon.type === 'gun' && player.gunExplosiveAmmo > 0) ? (48 + 12 * player.gunExplosiveAmmo) : undefined,
                     maxDistance: gunRechargeBoosted ? 1960 : undefined,
                     style: (weapon.type === 'gun' && gunRechargeBoosted) ? 'gunBulletBoosted' : undefined,
                     afterImageTrail: (weapon.type === 'gun' && gunRechargeBoosted),
-                    afterImageInterval: 2,
                 };
                 // Smoke + kickback only for the "original" revolver shot
                 if (projOpts && projOpts.isGunOriginal) {
@@ -11214,15 +13915,15 @@ function attemptAttack(source = 'mouse') {
                         // Extra smoke from Pólvora Extra
                         const smokeCount = Math.round(5 * powderMult);
                         for (let si = 0; si < smokeCount; si++) {
-                            const smokeSpread = (Math.random() - 0.5) * 0.6;
-                            const dir = recoilAngle + smokeSpread;
-                            const smokeSpeed = 0.4 + Math.random() * 0.9;
+                            const spread = (Math.random() - 0.5) * 0.6;
+                            const dir = recoilAngle + spread;
+                            const speed = 0.4 + Math.random() * 0.9;
                             const gray = 70 + Math.floor(Math.random() * 30);
                             evaporationEffects.push({
                                 x: weaponInfo.tipX + Math.cos(recoilAngle) * (2 + Math.random() * 2),
                                 y: weaponInfo.tipY + Math.sin(recoilAngle) * (2 + Math.random() * 2),
-                                vx: Math.cos(dir) * smokeSpeed,
-                                vy: Math.sin(dir) * smokeSpeed - 0.4 - Math.random() * 0.3,
+                                vx: Math.cos(dir) * speed,
+                                vy: Math.sin(dir) * speed - 0.4 - Math.random() * 0.3,
                                 life: 22 + Math.floor(Math.random() * 8),
                                 alpha: 0.5,
                                 size: 3 + Math.random() * 3,
@@ -11231,12 +13932,12 @@ function attemptAttack(source = 'mouse') {
                             });
                         }
 
-                        const recoilStrength = 10 * powderMult * (gunRechargeBoosted ? 2.2 : 1);
+                        const recoilStrength = 10 * powderMult;
                         player.kickbackVX = Math.cos(recoilAngle) * recoilStrength;
                         player.kickbackVY = Math.sin(recoilAngle) * recoilStrength;
                         player.kickbackTimer = 4;
 
-                        screenShakeTimer = Math.max(screenShakeTimer || 0, gunRechargeBoosted ? 14 : 7);
+                        screenShakeTimer = Math.max(screenShakeTimer || 0, 7);
                     } catch (e) {}
                 }
 
@@ -11244,7 +13945,7 @@ function attemptAttack(source = 'mouse') {
             }
 
             if (weapon.type === 'gun') {
-                // Gun uses a fixed recharging cooldown between shots
+                // Gun uses a fixed 1.6s recharging cooldown between shots
                 player.attackCooldown = GUN_RECHARGE_FRAMES;
             } else {
                 player.attackCooldown = Math.max(1, cooldown - Math.round(cooldown * player.attackSpeed));
@@ -11264,12 +13965,11 @@ function attemptAttack(source = 'mouse') {
                     player.gunReloadCooldown = player.gunReloadCooldownMax;
                 }
                 spawnGunMuzzleSmoke(weaponInfo.tipX, weaponInfo.tipY, baseAngle, player.gunExtraPowder || 0);
-                const kickbackPower = 6 * (1 + 0.2 * (player.gunExtraPowder || 0)) * (gunRechargeBoosted ? 2.2 : 1);
+                const kickbackPower = 6 * (1 + 0.2 * (player.gunExtraPowder || 0));
                 player.kickbackVX = -Math.cos(baseAngle) * kickbackPower;
                 player.kickbackVY = -Math.sin(baseAngle) * kickbackPower;
                 player.gunRechargeBoost = false;
                 player.gunSpinBurnChance = 0;
-                // Um disparo real limpa o bloqueio de giro e a fila de disparo.
                 player.gunSpinLockTimer = 0;
                 player.gunFireQueued = false;
             }
@@ -11278,6 +13978,92 @@ function attemptAttack(source = 'mouse') {
                 spawnSpinAttackRoulette(targetX, targetY, attackDamage, weapon.color, specialAttackSpeed, critPercent);
                 player.spinAttackCharges -= 1;
             }
+        }
+    }
+}
+
+function updateBoulderMarks() {
+    for (let i = boulderMarks.length - 1; i >= 0; i--) {
+        const mark = boulderMarks[i];
+        mark.growTimer++;
+        const progress = Math.min(1, mark.growTimer / mark.growDuration);
+        mark.radius = mark.maxRadius * progress;
+    }
+}
+
+function updateBoulderProjectiles() {
+    for (let i = boulderProjectiles.length - 1; i >= 0; i--) {
+        const proj = boulderProjectiles[i];
+        proj.elapsed += 1;
+        const progress = Math.min(1, proj.elapsed / proj.travelTime);
+
+        if (proj.elapsed < 40) {
+            const playerCenterX = player.x + player.width / 2;
+            const playerCenterY = player.y + player.height / 2;
+            const lerpFactor = 0.12;
+            proj.targetX += (playerCenterX - proj.targetX) * lerpFactor;
+            proj.targetY += (playerCenterY - proj.targetY) * lerpFactor;
+            if (proj.markRef) {
+                proj.markRef.x += (playerCenterX - proj.markRef.x) * lerpFactor;
+                proj.markRef.y += (playerCenterY - proj.markRef.y) * lerpFactor;
+            }
+        }
+
+        const eased = 1 - Math.pow(1 - progress, 2);
+        proj.x = proj.startX + (proj.targetX - proj.startX) * eased;
+        proj.y = proj.startY + (proj.targetY - proj.startY) * eased - proj.arcHeight * 4 * eased * (1 - eased);
+
+        if (proj.trailTimer > 0) {
+            proj.trailTimer--;
+        } else {
+            proj.trailTimer = 2;
+            spawnEvaporationEffect(proj.x, proj.y, '#5d4037', 10, 3);
+            spawnEvaporationEffect(proj.x, proj.y, '#795548', 8, 2);
+        }
+
+        if (progress >= 1) {
+            const impactX = proj.targetX;
+            const impactY = proj.targetY;
+            const impactRadius = proj.markRef ? proj.markRef.maxRadius : 50;
+
+            if (proj.markRef) {
+                const markIndex = boulderMarks.indexOf(proj.markRef);
+                if (markIndex >= 0) {
+                    boulderMarks.splice(markIndex, 1);
+                }
+            }
+
+            spawnSmokeBurst(impactX, impactY, 125, 100);
+            spawnEvaporationEffect(impactX, impactY, '#ff5722', 20, 20);
+            spawnEvaporationEffect(impactX, impactY, '#8d6e63', 16, 16);
+            spawnEvaporationEffect(impactX, impactY, '#ffab91', 12, 12);
+            screenShakeTimer = Math.max(screenShakeTimer, 24);
+
+            const playerCenterX = player.x + player.width / 2;
+            const playerCenterY = player.y + player.height / 2;
+            const distToPlayer = Math.hypot(playerCenterX - impactX, playerCenterY - impactY);
+
+            if (distToPlayer <= impactRadius + Math.max(player.width, player.height) * 0.5) {
+                const damage = 32;
+                player.health -= damage;
+                player.stunTimer = Math.max(player.stunTimer || 0, 120);
+                tryApplyPlayerConfusionFromAttack('croc', {
+                    chance: 100,
+                    durationFrames: 240
+                });
+                spawnAfterImage({
+                    kind: 'player',
+                    x: player.x,
+                    y: player.y,
+                    width: player.width,
+                    height: player.height,
+                    life: 18,
+                    maxLife: 18,
+                    baseAlpha: 0.55
+                });
+            }
+
+            boulderProjectiles.splice(i, 1);
         }
     }
 }
@@ -11457,72 +14243,6 @@ function updateProjectiles() {
         }
     }
     
-    // Verificar colisões com marcas do swarm
-    for (let i = projectiles.length - 1; i >= 0; i--) {
-        const p = projectiles[i];
-        for (let j = swarmMarks.length - 1; j >= 0; j--) {
-            const mark = swarmMarks[j];
-            const dx = p.x - mark.x;
-            const dy = p.y - mark.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            
-            if (distance < mark.radius + p.size) {
-                // Projectile atingiu a marca - liberar vespas de todos os lados
-                const waspCount = Math.floor(Math.random() * 11) + 5;
-                for (let k = 0; k < waspCount; k++) {
-                    const modeRoll = Math.random();
-                    const baseAngle = Math.random() * Math.PI * 2;
-                    let targetX;
-                    let targetY;
-                    const speed = 10 + (currentMonster ? currentMonster.phase * 0.5 : 0);
-                    let projectileOptions = {
-                        monsterType: 'swarm',
-                        style: 'swarmBug',
-                        size: 8,
-                        afterImageTrail: true,
-                        afterImageInterval: 3,
-                        homing: false
-                    };
-
-                    if (modeRoll < 0.25) {
-                        // Direção baseada no jogador atual
-                        targetX = player.x + player.width / 2;
-                        targetY = player.y + player.height / 2;
-                    } else if (modeRoll < 0.55) {
-                        // Direção preditiva: onde o jogador vai
-                        const predict = getPredictedPlayerPosition(12);
-                        targetX = predict.x;
-                        targetY = predict.y;
-                    } else if (modeRoll < 0.75) {
-                        // Homing parcial por pouco tempo
-                        const offsetAngle = baseAngle;
-                        targetX = mark.x + Math.cos(offsetAngle) * 320;
-                        targetY = mark.y + Math.sin(offsetAngle) * 320;
-                        projectileOptions.homing = true;
-                        projectileOptions.homingDuration = 6; // ~0.1s
-                        projectileOptions.homingStrength = 0.14;
-                        projectileOptions.homingTarget = player;
-                    } else {
-                        // Direção aleatória pura
-                        targetX = mark.x + Math.cos(baseAngle) * 320;
-                        targetY = mark.y + Math.sin(baseAngle) * 320;
-                    }
-
-                    const waspDamage = Math.max(1, Math.round((currentMonster ? currentMonster.getAttackDamage() : 8) * 0.35));
-                    spawnMonsterProjectile(mark.x, mark.y, targetX, targetY, waspDamage, '#9e4cff', speed, projectileOptions);
-                }
-
-                // Remover a marca e desacelerar o tempo por ~0.225s com rampas suaves
-                if (slowdownTimer <= 0) {
-                    generateSlowdownInsects();
-                }
-                slowdownTimer = Math.max(slowdownTimer, slowdownRampFrames * 2 + slowdownHoldFrames);
-                swarmMarks.splice(j, 1);
-                break;
-            }
-        }
-    }
-    
     // Only decrement hurricane cooldown when no active tornado hurricane projectiles exist
     const hurricaneActive = projectiles.some(proj => proj.style === 'tornadoHurricane');
     if (player.hurricaneCooldown > 0 && !hurricaneActive) {
@@ -11532,6 +14252,37 @@ function updateProjectiles() {
     for (let i = projectiles.length - 1; i >= 0; i--) {
         projectiles[i].update();
         if (projectiles[i].pendingRicochetDestroy) continue;
+
+        // Moe-style bouncing rock attack (Boulder monster secondary attack)
+        {
+            const mp = projectiles[i];
+            if (mp.style === 'moeRock' || mp.style === 'moeStone' || mp.style === 'moePebble') {
+                if (mp._moeSplitDone) continue;
+                const projRectSize = mp.size * 2;
+                const hitWall = mapWalls.some(wall => isRectOverlap(mp.x - mp.size, mp.y - mp.size, projRectSize, projRectSize, wall.x, wall.y, wall.width, wall.height));
+                const hitPlayer = !playerInsideConstruction && (
+                    mp.x < player.x + player.width &&
+                    mp.x > player.x &&
+                    mp.y < player.y + player.height &&
+                    mp.y > player.y
+                );
+                const reachedMax = mp.traveled >= mp.maxDistance;
+                if (hitWall || hitPlayer || reachedMax) {
+                    if (hitPlayer) {
+                        const effectiveDamage = Math.max(0, mp.damage - (player.damageReduction || 0));
+                        if (player.dashTimer <= 0 && player.postDashInvulnTimer <= 0 && player.slashDashInvulnTimer <= 0) {
+                            player.health -= effectiveDamage;
+                        }
+                        mp._moeHitPlayer = true;
+                    }
+                    mp._moeSplitDone = true;
+                    spawnMoeSplit(mp);
+                    projectiles.splice(i, 1);
+                    continue;
+                }
+            }
+        }
+
         // If this projectile was parried and can destroy others on touch, check collisions
         if (player.dashTimer > 0 && projectiles[i].owner === 'monster') {
             const playerCenterX = player.x + player.width / 2;
@@ -11654,23 +14405,11 @@ function updateProjectiles() {
 
         if (!projectiles[i].isAlive()) {
             const p = projectiles[i];
+            if (p.owner === 'monster' && (p.monsterType === 'caster' || p.style === 'casterFlameCircle' || p.style === 'casterFlameSpiral' || p.style === 'casterFlameRing' || p.style === 'casterFlameVolley' || p.style === 'casterBurst' || p.style === 'casterShard' || p.style === 'arcaneBolt') && p.explodeOnExpire && !p._casterBurstTriggered) {
+                spawnCasterProjectileBurst(p);
+            }
             if (p.style === 'tornadoHurricane') {
                 player.hurricaneCooldown = player.hurricaneCooldownMax || 360;
-            }
-            // Munição explosiva: ao fim do trajeto do próprio tiro, detona uma pequena bomba com dano em área
-            if (p.owner === 'player' && p.explosive && p.explosiveRadius && player.gunExplosiveAmmo > 0) {
-                const blastDamage = Math.max(1, Math.round((p.damage || 1) * (0.5 + 0.15 * player.gunExplosiveAmmo)));
-                spawnEvaporationEffect(p.x, p.y, '#ff8c1a', 20, 16);
-                explosionEffects.push({
-                    x: p.x,
-                    y: p.y,
-                    radius: 0,
-                    maxRadius: p.explosiveRadius,
-                    life: 12,
-                    maxLife: 12,
-                    damage: blastDamage,
-                    stunFrames: Math.round(0.1 * 60 * player.gunExplosiveAmmo)
-                });
             }
             spawnEvaporationForProjectile(p);
             projectiles.splice(i, 1);
@@ -11733,6 +14472,87 @@ function updateProjectiles() {
         }
         
         if (p.owner === 'player' && !p.ignoreCollision) {
+            // Colisão com a torre invocada pelo caster
+            if (currentMonster && currentMonster.type === 'caster' && currentMonster.tower && currentMonster.tower.health > 0) {
+                const tower = currentMonster.tower;
+                const hitTower =
+                    p.x > tower.x && p.x < tower.x + tower.width &&
+                    p.y > tower.y && p.y < tower.y + tower.height;
+                if (hitTower) {
+                    const towerDmg = Math.max(1, Math.round(p.damage));
+                    tower.health -= towerDmg;
+                    try { spawnEvaporationEffect(p.x, p.y, '#ff5555', 10, 6); } catch (e) {}
+                    if (tower.health <= 0) {
+                        try { spawnEvaporationEffect(tower.x + tower.width / 2, tower.y + tower.height / 2, '#ff4444', 50, 24); } catch (e) {}
+                        currentMonster.tower = null;
+                        currentMonster.towerSummoned = false;
+                        spawnCastBanner('TOWER DESTROYED', '#ff4444');
+                    }
+                    if (p.explosive && p.explosiveRadius) {
+                        const explosionX = p.x;
+                        const explosionY = p.y;
+                        spawnEvaporationEffect(explosionX, explosionY, '#ff6644', 28, 24);
+                        explosionEffects.push({
+                            x: explosionX,
+                            y: explosionY,
+                            radius: 0,
+                            maxRadius: p.explosiveRadius,
+                            life: 14,
+                            maxLife: 14,
+                            damage: Math.round(towerDmg * 0.7),
+                            burn: p.burn || false,
+                            burnDamage: p.burnDamage || 0,
+                            burnDuration: p.burnDuration || 0
+                        });
+                    }
+                    if (!p.pierce) {
+                        projectiles.splice(i, 1);
+                        continue;
+                    }
+                }
+            }
+            // Colisão com as torretas do shooter (cada ponto de patrulha tem a sua)
+            if (currentMonster && currentMonster.type === 'shooter') {
+                for (const spot of currentMonster.patrolSpots) {
+                    const turret = spot.turret;
+                    if (!turret || turret.health <= 0) continue;
+                    const hitTurret =
+                        p.x > turret.x && p.x < turret.x + turret.width &&
+                        p.y > turret.y && p.y < turret.y + turret.height;
+                    if (hitTurret) {
+                        const turretDmg = Math.max(1, Math.round(p.damage));
+                        turret.health -= turretDmg;
+                        try { spawnEvaporationEffect(p.x, p.y, '#44aaff', 10, 6); } catch (e) {}
+                        if (turret.health <= 0) {
+                            try { spawnEvaporationEffect(turret.x + turret.width / 2, turret.y + turret.height / 2, '#44aaff', 50, 24); } catch (e) {}
+                            spot.turret = null;
+                            currentMonster.turret = currentMonster.patrolSpots.map(s => s.turret).find(Boolean) || null;
+                            spawnCastBanner('TURRET DESTROYED', '#44aaff');
+                        }
+                    if (p.explosive && p.explosiveRadius) {
+                        const explosionX = p.x;
+                        const explosionY = p.y;
+                        spawnEvaporationEffect(explosionX, explosionY, '#ff6644', 28, 24);
+                        explosionEffects.push({
+                            x: explosionX,
+                            y: explosionY,
+                            radius: 0,
+                            maxRadius: p.explosiveRadius,
+                            life: 14,
+                            maxLife: 14,
+                            damage: Math.round(turretDmg * 0.7),
+                            burn: p.burn || false,
+                            burnDamage: p.burnDamage || 0,
+                            burnDuration: p.burnDuration || 0
+                        });
+                    }
+                    if (!p.pierce) {
+                        projectiles.splice(i, 1);
+                        continue;
+                    }
+                }
+                }
+            }
             if (playerInsideConstruction) {
                 const enemy = findInteriorEnemyInRectangle(p.x - p.size - 4, p.y - p.size - 4, p.size * 2 + 8, p.size * 2 + 8);
                 if (enemy) {
@@ -11755,21 +14575,6 @@ function updateProjectiles() {
                     }
 
                     applyDamageToInteriorEnemy(enemy, finalDamage);
-                    if (p.explosive && p.explosiveRadius) {
-                        const explosionX = enemy.x + enemy.width / 2;
-                        const explosionY = enemy.y + enemy.height / 2;
-                        spawnEvaporationEffect(explosionX, explosionY, '#ff6644', 24, 20);
-                        explosionEffects.push({
-                            x: explosionX,
-                            y: explosionY,
-                            radius: 0,
-                            maxRadius: p.explosiveRadius,
-                            life: 12,
-                            maxLife: 12,
-                            damage: Math.round(finalDamage * 0.6),
-                            stunFrames: (player.gunExplosiveAmmo > 0) ? Math.round(0.1 * 60 * player.gunExplosiveAmmo) : 0
-                        });
-                    }
                     if (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') {
                         const hitX = enemy.x + enemy.width / 2;
                         const hitY = enemy.y + enemy.height / 2;
@@ -11803,6 +14608,12 @@ function updateProjectiles() {
                             rise: 0
                         });
                     }
+                    if (p.pierce) {
+                        p.pierceRemaining = Math.max(0, (p.pierceRemaining || 1) - 1);
+                        if (p.pierceRemaining > 0) {
+                            continue;
+                        }
+                    }
                     projectiles.splice(i, 1);
                 }
             } else {
@@ -11813,6 +14624,10 @@ function updateProjectiles() {
                     p.y > currentMonster.y;
                 
                 if (isHit) {
+                    // Boulder tosser uses the sword's parry mechanic: reflect player projectiles back
+                    if (currentMonster.type === 'boulder_tosser' && boulderTryParry(currentMonster, p)) {
+                        continue;
+                    }
                     // Calculate base damage (lances do 1.5x)
                     let baseDamage = (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') ? p.damage * 1.5 : p.damage;
                     if (p.style === 'gunBullet' && player.gunExplosiveAmmo > 0 && p.explosive) {
@@ -11835,9 +14650,16 @@ function updateProjectiles() {
 
                     currentMonster.takeDamage(finalDamage);
                     
+                    if (p.owner === 'monster' && (p.monsterType === 'caster' || p.style === 'casterFlameCircle' || p.style === 'casterFlameSpiral' || p.style === 'casterFlameRing' || p.style === 'casterFlameVolley' || p.style === 'casterBurst' || p.style === 'casterShard') && !p._casterBurstTriggered) {
+                        spawnCasterProjectileBurst(p);
+                    }
+                    
                     // Apply special projectile effects
                     if (p.ricochet && p.ricochetCount > 0) {
                         p.ricochetCount--;
+                        if (p.ricochetDamageScale && p.ricochetDamageScale !== 1) {
+                            p.damage = Math.round(p.damage * p.ricochetDamageScale);
+                        }
                         const wallOffsets = [{x: 1, y: 0}, {x: -1, y: 0}, {x: 0, y: 1}, {x: 0, y: -1}];
                         const randomWall = wallOffsets[Math.floor(Math.random() * wallOffsets.length)];
                         p.vx = randomWall.x * Math.abs(p.vx);
@@ -11848,22 +14670,111 @@ function updateProjectiles() {
                     if (p.explosive && p.explosiveRadius) {
                         const explosionX = currentMonster.x + currentMonster.width / 2;
                         const explosionY = currentMonster.y + currentMonster.height / 2;
-                        spawnEvaporationEffect(explosionX, explosionY, '#ff6644', 24, 20);
+                        spawnEvaporationEffect(explosionX, explosionY, '#ff6644', 28, 24);
                         explosionEffects.push({
                             x: explosionX,
                             y: explosionY,
                             radius: 0,
                             maxRadius: p.explosiveRadius,
-                            life: 12,
-                            maxLife: 12,
-                            damage: Math.round(finalDamage * 0.6),
-                            stunFrames: (player.gunExplosiveAmmo > 0) ? Math.round(0.1 * 60 * player.gunExplosiveAmmo) : 0
+                            life: 14,
+                            maxLife: 14,
+                            damage: Math.round(finalDamage * 0.7),
+                            burn: p.burn || false,
+                            burnDamage: p.burnDamage || 0,
+                            burnDuration: p.burnDuration || 0,
+                            secondary: p.secondaryExplosion || false,
+                            secondaryRadius: p.secondaryRadius || 0,
+                            secondaryDamage: p.secondaryDamage || 0
                         });
+                        if (p.burn && p.burnDamage > 0 && currentMonster) {
+                            applyBurnToTarget(currentMonster, p.burnDamage, (p.burnDuration || 180) / 60);
+                        }
+                        if (p.secondaryExplosion && p.secondaryRadius > 0 && currentMonster && currentMonster.health <= 0 && !currentMonster.isDying) {
+                            const sx = currentMonster.x + currentMonster.width / 2;
+                            const sy = currentMonster.y + currentMonster.height / 2;
+                            spawnEvaporationEffect(sx, sy, '#ff8855', 20, 14);
+                            explosionEffects.push({
+                                x: sx,
+                                y: sy,
+                                radius: 0,
+                                maxRadius: p.secondaryRadius,
+                                life: 10,
+                                maxLife: 10,
+                                damage: p.secondaryDamage || 0,
+                                burn: true,
+                                burnDamage: Math.round((p.secondaryDamage || 0) * 0.3),
+                                burnDuration: 120
+                            });
+                        }
+                    }
+                    
+                    if (p.chainLightningOnFinalBounce && p.ricochetCount <= 0 && currentMonster) {
+                        const chainRadius = p.chainLightningRadius || 160;
+                        const chainDamage = p.chainLightningDamage || Math.round(finalDamage * 0.8);
+                        const mx = currentMonster.x + currentMonster.width / 2;
+                        const my = currentMonster.y + currentMonster.height / 2;
+                        const targets = [];
+                        if (currentMonster.health > 0 && !currentMonster.isDying) {
+                            targets.push({ x: mx, y: my, damage: chainDamage });
+                        }
+                        for (const other of projectiles) {
+                            if (other === p || other.owner !== 'monster' || other.isDying) continue;
+                            const ox = other.x + other.width / 2;
+                            const oy = other.y + other.height / 2;
+                            if (Math.hypot(ox - mx, oy - my) <= chainRadius) {
+                                targets.push({ x: ox, y: oy, damage: Math.round(chainDamage * 0.5) });
+                            }
+                        }
+                        for (const t of targets) {
+                            spawnEvaporationEffect(t.x, t.y, '#aaffaa', 10, 6);
+                            if (t !== targets[0]) {
+                                screenShakeTimer = Math.max(screenShakeTimer, 4);
+                            }
+                        }
+                        if (targets.length > 1) {
+                            frameFreeze = Math.max(frameFreeze || 0, 3);
+                        }
                     }
                     
                     if (p.freezer && p.freezeDuration) {
-                        currentMonster.freezeTimer = (currentMonster.freezeTimer || 0) + p.freezeDuration;
-                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#55ddff', 18, 12);
+                        currentMonster.freezeTimer = Math.max(currentMonster.freezeTimer || 0, p.freezeDuration);
+                        currentMonster.frozenByPassive = true;
+                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#55ddff', 24, 16);
+                        screenShakeTimer = Math.max(screenShakeTimer, 6);
+                        frameFreeze = Math.max(frameFreeze || 0, 2);
+                        if (p.iceShards && p.iceShardCount > 0) {
+                            const cx = currentMonster.x + currentMonster.width / 2;
+                            const cy = currentMonster.y + currentMonster.height / 2;
+                            for (let s = 0; s < p.iceShardCount; s++) {
+                                const sAngle = Math.random() * Math.PI * 2;
+                                const sDist = 20 + Math.random() * (p.iceShardRadius || 100);
+                                const sx = cx + Math.cos(sAngle) * sDist;
+                                const sy = cy + Math.sin(sAngle) * sDist;
+                                spawnPlayerProjectile(cx, cy, sx, sy, p.iceShardDamage || 2, '#aaeeff', 6, {
+                                    style: 'gunBullet',
+                                    size: 5,
+                                    maxDistance: 200,
+                                    explosive: false,
+                                    freezer: false,
+                                    pierce: false
+                                });
+                            }
+                        }
+                        if (p.frostExplosion && p.frostExplosionRadius > 0) {
+                            const fex = currentMonster.x + currentMonster.width / 2;
+                            const fey = currentMonster.y + currentMonster.height / 2;
+                            explosionEffects.push({
+                                x: fex,
+                                y: fey,
+                                radius: 0,
+                                maxRadius: p.frostExplosionRadius,
+                                life: 16,
+                                maxLife: 16,
+                                damage: p.frostExplosionDamage || 0,
+                                frost: true,
+                                freezeDuration: 30
+                            });
+                        }
                     }
                     
                     if (p.knockback && p.knockbackPower) {
@@ -11871,7 +14782,27 @@ function updateProjectiles() {
                         const knockY = Math.sin(Math.atan2(currentMonster.y - p.y, currentMonster.x - p.x)) * p.knockbackPower;
                         currentMonster.vx = (currentMonster.vx || 0) + knockX;
                         currentMonster.vy = (currentMonster.vy || 0) + knockY;
-                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#ff3333', 22, 14);
+                        spawnEvaporationEffect(currentMonster.x + currentMonster.width / 2, currentMonster.y + currentMonster.height / 2, '#ff3333', 26, 18);
+                        if (p.stun && p.stunDuration > 0) {
+                            currentMonster.stunTimer = Math.max(currentMonster.stunTimer || 0, p.stunDuration);
+                        }
+                        if (p.shockwave && p.shockwaveRadius > 0) {
+                            const swX = currentMonster.x + currentMonster.width / 2;
+                            const swY = currentMonster.y + currentMonster.height / 2;
+                            explosionEffects.push({
+                                x: swX,
+                                y: swY,
+                                radius: 0,
+                                maxRadius: p.shockwaveRadius,
+                                life: 12,
+                                maxLife: 12,
+                                damage: p.shockwaveDamage || 0,
+                                shockwave: true,
+                                chainStun: p.chainStun || false,
+                                chainStunRadius: p.chainStunRadius || 0,
+                                chainStunDuration: p.chainStunDuration || 0
+                            });
+                        }
                     }
                     
                     if (p.parried && player.parryHealOnUse > 0) {
@@ -11915,73 +14846,9 @@ function updateProjectiles() {
                             updateCooldownBar();
                         }
                     }
-                    // All monster-based gun passives
-                    if (p.style === 'gunBullet' && player.weapon && player.weapon.type === 'gun' && !p._monsterPassiveTracked) {
+                    // All monster-based passives
+                    if (p.isPlayerOriginal && !p._monsterPassiveTracked) {
                         p._monsterPassiveTracked = true;
-
-                        if (player.shooterMachineGunUnlocked) {
-                            player.shooterMachineGunCount = (player.shooterMachineGunCount || 0) + 1;
-                            if (player.shooterMachineGunCount >= 4) {
-                                player.shooterMachineGunCount = 0;
-                                triggerShooterMachineGun();
-                            }
-                        }
-
-                        if (player.swarmNubeUnlocked) {
-                            player.swarmNubeCount = (player.swarmNubeCount || 0) + 1;
-                            if (player.swarmNubeCount >= 3) {
-                                player.swarmNubeCount = 0;
-                                triggerSwarmNube();
-                            }
-                        }
-
-                        if (player.casterPortalUnlocked) {
-                            player.casterPortalCount = (player.casterPortalCount || 0) + 1;
-                            if (player.casterPortalCount >= 5) {
-                                player.casterPortalCount = 0;
-                                triggerCasterPortalBurst();
-                            }
-                        }
-
-                        if (player.avianTrackerUnlocked) {
-                            player.avianTrackerCount = (player.avianTrackerCount || 0) + 1;
-                            if (player.avianTrackerCount >= 5) {
-                                player.avianTrackerCount = 0;
-                                triggerAvianTracker();
-                            }
-                        }
-
-                        if (player.smartRicochetUnlocked) {
-                            player.smartRicochetCount = (player.smartRicochetCount || 0) + 1;
-                            if (player.smartRicochetCount >= 4) {
-                                player.smartRicochetCount = 0;
-                                triggerSmartRicochet();
-                            }
-                        }
-
-                        if (player.simpleExplosiveUnlocked) {
-                            player.simpleExplosiveCount = (player.simpleExplosiveCount || 0) + 1;
-                            if (player.simpleExplosiveCount >= 3) {
-                                player.simpleExplosiveCount = 0;
-                                triggerSimpleExplosive();
-                            }
-                        }
-
-                        if (player.crocFreezerUnlocked) {
-                            player.crocFreezerCount = (player.crocFreezerCount || 0) + 1;
-                            if (player.crocFreezerCount >= 4) {
-                                player.crocFreezerCount = 0;
-                                triggerCrocFreezer();
-                            }
-                        }
-
-                        if (player.tankImpulseUnlocked) {
-                            player.tankImpulseCount = (player.tankImpulseCount || 0) + 1;
-                            if (player.tankImpulseCount >= 5) {
-                                player.tankImpulseCount = 0;
-                                triggerTankImpulse();
-                            }
-                        }
                     }
                     // preserve lance hit flag
                     if (p.style === 'tornadoLance' || p.style === 'tornadoLanceCopy') p.hitTarget = true;
@@ -11997,6 +14864,14 @@ function updateProjectiles() {
                             spawnTankCounterAttack();
                             player.tankHitCount = 0;
                             player.tankHitWindow = 0;
+                        }
+                    }
+                    
+                    if (p.pierce) {
+                        p.pierceRemaining = Math.max(0, (p.pierceRemaining || 1) - 1);
+                        if (p.pierceRemaining > 0) {
+                            p._monsterPassiveTracked = false;
+                            continue;
                         }
                     }
                     
@@ -12153,6 +15028,39 @@ function updateProjectiles() {
                 continue;
             }
 
+            if (req.kind === 'parryLateShot') {
+                const dx = req.targetX - req.srcX;
+                const dy = req.targetY - req.srcY;
+                const desiredActual = (req.baseActualSpeed || 5) * 8.0;
+                const proj = new Projectile(req.srcX, req.srcY, req.targetX, req.targetY, req.damage, req.color, desiredActual * 2, 'player', req.size || 8, {
+                    style: req.style || 'gunBullet',
+                    maxDistance: req.maxDistance || 800,
+                    canDestroyOnTouch: true,
+                    afterImageTrail: true,
+                    afterImageInterval: 1
+                });
+                proj.parried = true;
+                proj.canDestroyOnTouch = true;
+                projectiles.push(proj);
+                delayedProjectileSpawns.splice(i, 1);
+                continue;
+            }
+
+            if (req.kind === 'bombLateShot') {
+                const attackType = req.attackType || 'bomb';
+                if (attackType === 'bomb') {
+                    spawnFireZone(req.srcX, req.srcY, { applyStun: true });
+                    spawnSmokeBurst(req.srcX, req.srcY, 20);
+                } else {
+                    applyAreaDamageAt(req.srcX, req.srcY, 30, 10);
+                    spawnGrenadeFragments(req.srcX, req.srcY);
+                    spawnEvaporationEffect(req.srcX, req.srcY, '#ff7a00', 18, 12);
+                    spawnSmokeBurst(req.srcX, req.srcY, 20);
+                }
+                delayedProjectileSpawns.splice(i, 1);
+                continue;
+            }
+
             // Calcular direção geral para o monstro com leve imprecisão
             let targetX, targetY;
             if (currentMonster) {
@@ -12221,82 +15129,46 @@ function updateProjectiles() {
             delayedProjectileSpawns.splice(i, 1);
         }
     }
-}
 
-function updateMonsterHitscans() {
-    for (let i = monsterHitscans.length - 1; i >= 0; i--) {
-        const beam = monsterHitscans[i];
-        beam.lifetime--;
-        beam.alpha = Math.max(0, beam.lifetime / beam.maxLifetime);
-
-        if (beam.lifetime <= 0) {
-            monsterHitscans.splice(i, 1);
-            continue;
+    const moeIndices = [];
+    for (let i = 0; i < projectiles.length; i++) {
+        const p = projectiles[i];
+        if (p._moeFromSplit && (p.style === 'moeRock' || p.style === 'moeStone' || p.style === 'moePebble')) {
+            moeIndices.push(i);
         }
-
-        beam.damageTimer = (beam.damageTimer || 0) + 1;
-        if (beam.damageTimer >= beam.damageInterval) {
-            beam.damageTimer = 0;
-            const playerCenterX = player.x + player.width / 2;
-            const playerCenterY = player.y + player.height / 2;
-            const distanceToBeam = pointToSegmentDistance(playerCenterX, playerCenterY, beam.x, beam.y, beam.targetX, beam.targetY);
-            const hitRadius = beam.thickness * 0.75;
-            if (distanceToBeam <= hitRadius && player.dashTimer <= 0 && player.postDashInvulnTimer <= 0 && player.slashDashInvulnTimer <= 0) {
-                let effectiveDamage = Math.max(0, beam.damage - player.damageReduction);
-                if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
-                    effectiveDamage *= (1 - player.parryDefenseBonus / 100);
-                }
-                player.health -= effectiveDamage;
+    }
+    const moeToRemove = new Set();
+    for (let a = 0; a < moeIndices.length; a++) {
+        for (let b = a + 1; b < moeIndices.length; b++) {
+            const idxA = moeIndices[a];
+            const idxB = moeIndices[b];
+            if (moeToRemove.has(idxA) || moeToRemove.has(idxB)) {
+                moeToRemove.add(idxA);
+                moeToRemove.add(idxB);
+                continue;
+            }
+            const pA = projectiles[idxA];
+            const pB = projectiles[idxB];
+            const dx = pA.x - pB.x;
+            const dy = pA.y - pB.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const collisionDist = pA.size + pB.size + 4;
+            if (dist < collisionDist) {
+                const midX = (pA.x + pB.x) / 2;
+                const midY = (pA.y + pB.y) / 2;
+                try { spawnSmokeBurst(midX, midY, 20, 10); } catch (e) {}
+                moeToRemove.add(idxA);
+                moeToRemove.add(idxB);
             }
         }
     }
-}
-
-function drawMonsterHitscans() {
-    for (let beam of monsterHitscans) {
-        ctx.save();
-        const flashFrames = 12;
-        const isFlashing = beam.lifetime <= flashFrames;
-        const baseAlpha = 0.55;
-        const flashAlpha = isFlashing ? baseAlpha + Math.sin((beam.lifetime / flashFrames) * Math.PI * 8) * 0.35 : baseAlpha;
-        const glowAlpha = isFlashing ? 1.0 : 0.65;
-        ctx.globalAlpha = Math.max(0.3, flashAlpha);
-        ctx.fillStyle = beam.color;
-        ctx.strokeStyle = beam.color;
-        ctx.lineWidth = beam.thickness;
-        ctx.shadowColor = beam.color;
-        ctx.shadowBlur = 36;
-        const angle = Math.atan2(beam.targetY - beam.y, beam.targetX - beam.x);
-        const perp = beam.thickness * 0.6;
-        const dx = Math.cos(angle);
-        const dy = Math.sin(angle);
-        const ox = -dy * perp;
-        const oy = dx * perp;
-
-        ctx.beginPath();
-        ctx.moveTo(beam.x + ox, beam.y + oy);
-        ctx.lineTo(beam.targetX + ox, beam.targetY + oy);
-        ctx.lineTo(beam.targetX - ox, beam.targetY - oy);
-        ctx.lineTo(beam.x - ox, beam.y - oy);
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.globalAlpha = Math.max(0.25, glowAlpha * 0.7);
-        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(beam.x, beam.y);
-        ctx.lineTo(beam.targetX, beam.targetY);
-        ctx.stroke();
-
-        ctx.globalAlpha = Math.max(0.15, glowAlpha * 0.35);
-        ctx.lineWidth = Math.max(8, beam.thickness * 0.4);
-        ctx.strokeStyle = beam.color;
-        ctx.beginPath();
-        ctx.moveTo(beam.x, beam.y);
-        ctx.lineTo(beam.targetX, beam.targetY);
-        ctx.stroke();
-        ctx.restore();
+    if (moeToRemove.size > 0) {
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+            if (moeToRemove.has(i)) {
+                spawnEvaporationForProjectile(projectiles[i]);
+                projectiles.splice(i, 1);
+            }
+        }
     }
 }
 
@@ -12771,6 +15643,119 @@ function resolveEntityWallCollision(entity, prevX, prevY) {
     return collided;
 }
 
+function drawBoulderMarks() {
+    for (const mark of boulderMarks) {
+        ctx.save();
+        ctx.translate(mark.x, mark.y);
+        const progress = Math.min(1, mark.growTimer / mark.growDuration);
+        const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.008);
+
+        ctx.strokeStyle = `rgba(255, 60, 60, ${0.6 + pulse * 0.4})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, mark.radius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = `rgba(255, 140, 60, ${0.3 + pulse * 0.3})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, mark.radius * 1.15, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = `rgba(255, 60, 60, ${0.08 + progress * 0.12})`;
+        ctx.beginPath();
+        ctx.arc(0, 0, mark.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        const spikeCount = 12;
+        const spikeLen = mark.radius * 0.25;
+        for (let i = 0; i < spikeCount; i++) {
+            const angle = (Math.PI * 2 / spikeCount) * i + gameFrameCount * 0.02;
+            const innerR = mark.radius * 1.05;
+            const outerR = mark.radius * 1.05 + spikeLen;
+            ctx.fillStyle = `rgba(255, 100, 60, ${0.5 + pulse * 0.5})`;
+            ctx.beginPath();
+            ctx.moveTo(Math.cos(angle) * innerR, Math.sin(angle) * innerR);
+            ctx.lineTo(Math.cos(angle - 0.12) * outerR, Math.sin(angle - 0.12) * outerR);
+            ctx.lineTo(Math.cos(angle + 0.12) * outerR, Math.sin(angle + 0.12) * outerR);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.3 + pulse * 0.4})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(-mark.radius * 0.6, 0);
+        ctx.lineTo(mark.radius * 0.6, 0);
+        ctx.moveTo(0, -mark.radius * 0.6);
+        ctx.lineTo(0, mark.radius * 0.6);
+        ctx.stroke();
+
+        ctx.restore();
+    }
+}
+
+function drawBoulderProjectiles() {
+    for (const proj of boulderProjectiles) {
+        ctx.save();
+        ctx.translate(proj.x, proj.y);
+        const progress = Math.min(1, proj.elapsed / proj.travelTime);
+        const targetRadius = proj.markRef ? proj.markRef.maxRadius : 50;
+        const startRadius = 6;
+        const currentRadius = (startRadius + (targetRadius - startRadius) * progress) * 1.25;
+
+        ctx.fillStyle = '#5d4037';
+        ctx.shadowColor = '#3e2723';
+        ctx.shadowBlur = 16;
+        ctx.beginPath();
+        ctx.arc(0, 0, currentRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#4e342e';
+        ctx.beginPath();
+        ctx.arc(-currentRadius * 0.35, -currentRadius * 0.25, currentRadius * 0.75, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#795548';
+        ctx.beginPath();
+        ctx.arc(currentRadius * 0.25, -currentRadius * 0.3, currentRadius * 0.45, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#6d4c41';
+        ctx.beginPath();
+        ctx.arc(currentRadius * 0.1, currentRadius * 0.2, currentRadius * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+
+        const spikeCount = 10;
+        for (let i = 0; i < spikeCount; i++) {
+            const angle = (Math.PI * 2 / spikeCount) * i;
+            const innerR = currentRadius * 0.85;
+            const outerR = currentRadius * 1.15;
+            ctx.fillStyle = '#3e2723';
+            ctx.beginPath();
+            ctx.moveTo(Math.cos(angle) * innerR, Math.sin(angle) * innerR);
+            ctx.lineTo(Math.cos(angle - 0.15) * outerR, Math.sin(angle - 0.15) * outerR);
+            ctx.lineTo(Math.cos(angle + 0.15) * outerR, Math.sin(angle + 0.15) * outerR);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        ctx.strokeStyle = '#3e2723';
+        ctx.lineWidth = Math.max(1, currentRadius * 0.06);
+        ctx.beginPath();
+        ctx.moveTo(-currentRadius * 0.6, currentRadius * 0.1);
+        ctx.quadraticCurveTo(-currentRadius * 0.2, -currentRadius * 0.3, currentRadius * 0.4, currentRadius * 0.15);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(-currentRadius * 0.3, -currentRadius * 0.5);
+        ctx.quadraticCurveTo(currentRadius * 0.1, -currentRadius * 0.1, currentRadius * 0.5, -currentRadius * 0.4);
+        ctx.stroke();
+
+        ctx.restore();
+    }
+}
+
 function drawProjectiles() {
     for (let proj of projectiles) {
         proj.draw();
@@ -12886,6 +15871,76 @@ function spawnBombThrowEffect(x, y, targetX, targetY) {
     }
 }
 
+function fireGunBurst(count) {
+    if (!player || !player.weapon || player.weapon.type !== 'gun' || !count || count <= 0) return;
+    const preferred = getPreferredTarget();
+    const targetX = preferred.x;
+    const targetY = preferred.y;
+    const baseAngle = Math.atan2(targetY - (player.y + player.height / 2), targetX - (player.x + player.width / 2));
+    const weaponInfo = player.getWeaponMountPoint(baseAngle);
+    const baseWeaponDamage = player.weapon.damage + player.weaponDamage + player.baseDamage;
+    const critRoll = Math.random() * 100;
+    const totalCritChance = player.critChance;
+    const critMultiplier = critRoll < totalCritChance ? 1 + player.critDamage : 1;
+    const gunPowderMult = (1 + 0.2 * (player.gunExtraPowder || 0));
+    const burstDamage = Math.max(1, Math.round(baseWeaponDamage * critMultiplier * (player.damageOutputMultiplier || 1) * gunPowderMult));
+    const burstSpeed = (player.weapon.speed + player.projectileSpeedBonus) * getPlayerInteriorScale();
+    const burstRange = player.weapon.range * getPlayerInteriorScale();
+    for (let burstIndex = 0; burstIndex < count; burstIndex++) {
+        const extraAngle = baseAngle + ((burstIndex + 1) - (count + 1) / 2) * 0.14;
+        const burstTargetX = player.x + player.width / 2 + Math.cos(extraAngle) * burstRange * 0.9;
+        const burstTargetY = player.y + player.height / 2 + Math.sin(extraAngle) * burstRange * 0.9;
+        spawnPlayerProjectile(weaponInfo.tipX, weaponInfo.tipY, burstTargetX, burstTargetY, Math.max(1, Math.round(burstDamage * 0.75)), player.weapon.color, burstSpeed * 0.95, {
+            critPercent: critMultiplier > 1 ? player.critDamage : 0,
+            explosive: player.gunExplosiveAmmo > 0,
+            isGunOriginal: false
+        });
+    }
+}
+
+function spawnGunMuzzleSmoke(x, y, angle, extraPowderLevel = 0) {
+    if (typeof evaporationEffects === 'undefined') return;
+    const count = Math.round(6 * (1 + 0.2 * extraPowderLevel));
+    for (let i = 0; i < count; i++) {
+        const spread = (Math.random() - 0.5) * 0.7;
+        const dir = angle + Math.PI + spread;
+        const speed = 0.5 + Math.random() * 1.1;
+        evaporationEffects.push({
+            x: x + Math.cos(angle) * (2 + Math.random() * 3),
+            y: y + Math.sin(angle) * (2 + Math.random() * 3),
+            vx: Math.cos(dir) * speed,
+            vy: Math.sin(dir) * speed - 0.3,
+            life: 18 + Math.floor(Math.random() * 8),
+            alpha: 0.45,
+            size: 3 + Math.random() * 3,
+            color: '#c4c4c4',
+            smoke: true
+        });
+    }
+}
+
+function spawnGunSmoke(x, y, angle) {
+    if (typeof evaporationEffects === 'undefined') return;
+    const count = 5;
+    for (let i = 0; i < count; i++) {
+        const spread = (Math.random() - 0.5) * 0.6;
+        const dir = angle + spread;
+        const speed = 0.4 + Math.random() * 0.9;
+        const gray = 70 + Math.floor(Math.random() * 30);
+        evaporationEffects.push({
+            x: x + Math.cos(angle) * (2 + Math.random() * 2),
+            y: y + Math.sin(angle) * (2 + Math.random() * 2),
+            vx: Math.cos(dir) * speed,
+            vy: Math.sin(dir) * speed - 0.4 - Math.random() * 0.3,
+            life: 22 + Math.floor(Math.random() * 8),
+            alpha: 0.5,
+            size: 3 + Math.random() * 3,
+            color: `rgba(${gray}, ${gray}, ${gray}, 0.9)`,
+            smoke: true
+        });
+    }
+}
+
 function spawnBombFireZoneEffect(x, y, radiusMultiplier = 1) {
     if (!player || (player.bombFireZoneRadiusBonus <= 0 && player.bombBurnDamagePerSecond <= 0)) return;
     const effectCount = 8 + Math.floor(radiusMultiplier * 4);
@@ -12920,7 +15975,13 @@ function spawnCasterPortalEffect(x, y, color = '#6ef2ff') {
         maxLife: 26,
         alpha: 1,
         pulse: Math.random() * Math.PI * 2,
-        color
+        spin: Math.random() * Math.PI * 2,
+        color,
+        sparks: Array.from({ length: 10 }, () => {
+            const a = Math.random() * Math.PI * 2;
+            const sp = 0.6 + Math.random() * 1.4;
+            return { a, sp, r: 0.4 + Math.random() * 0.6, life: 14 + Math.floor(Math.random() * 12) };
+        })
     });
 }
 
@@ -12931,20 +15992,29 @@ function triggerShooterMachineGun() {
     const preferred = getPreferredTarget();
     const targetX = preferred.x || (currentMonster ? currentMonster.x + currentMonster.width / 2 : gunX + 200);
     const targetY = preferred.y || (currentMonster ? currentMonster.y + currentMonster.height / 2 : gunY);
-    const gunDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+    const baseDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+    const critChance = player.critChance || 0;
+    const pierceChance = Math.min(0.6, critChance * 0.015);
 
-    for (let i = 0; i < 4; i++) {
-        const spread = (Math.random() - 0.5) * 0.25;
+    for (let i = 0; i < 5; i++) {
+        const spread = (Math.random() - 0.5) * 0.35;
         const angle = Math.atan2(targetY - gunY, targetX - gunX) + spread;
-        const projectileTargetX = gunX + Math.cos(angle) * 280;
-        const projectileTargetY = gunY + Math.sin(angle) * 280;
-        spawnPlayerProjectile(gunX, gunY, projectileTargetX, projectileTargetY, gunDamage, '#ffaa33', 8.5, {
+        const projectileTargetX = gunX + Math.cos(angle) * 300;
+        const projectileTargetY = gunY + Math.sin(angle) * 300;
+        const bulletDamage = baseDamage + Math.floor(Math.random() * 3);
+        spawnPlayerProjectile(gunX, gunY, projectileTargetX, projectileTargetY, bulletDamage, '#ffaa33', 9, {
             style: 'gunBullet',
-            size: 8,
-            maxDistance: 900
+            size: 6 + Math.random() * 3,
+            maxDistance: 1000,
+            pierce: Math.random() < pierceChance,
+            tracer: true,
+            tracerColor: '#ffcc66',
+            tracerLife: 8
         });
     }
-    machineGunEffects.push({ x: gunX, y: gunY, life: 10, alpha: 0.8, color: '#ffaa33' });
+    machineGunEffects.push({ x: gunX, y: gunY, life: 14, alpha: 0.9, color: '#ffaa33' });
+    applyPassiveImpactFrame(10);
+    spawnPassiveImpactEffect(gunX, gunY, 'muzzleFlash', '#ffaa33', { maxRadius: 40, particleCount: 20, particleSpeed: 5, particleSize: 3.5, lineWidth: 3.5 });
 }
 
 function triggerSwarmNube() {
@@ -12956,17 +16026,25 @@ function triggerSwarmNube() {
     const targetY = preferred.y || (currentMonster ? currentMonster.y + currentMonster.height / 2 : nubeY);
     const nubeDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
 
-    for (let i = 0; i < 6; i++) {
-        const angle = (Math.PI * 2 * i) / 6 + Math.atan2(targetY - nubeY, targetX - nubeX);
-        const projectileTargetX = nubeX + Math.cos(angle) * 220;
-        const projectileTargetY = nubeY + Math.sin(angle) * 220;
-        spawnPlayerProjectile(nubeX, nubeY, projectileTargetX, projectileTargetY, nubeDamage, '#9c4fff', 7, {
+    for (let i = 0; i < 8; i++) {
+        const angle = (Math.PI * 2 * i) / 8 + Math.atan2(targetY - nubeY, targetX - nubeX);
+        const projectileTargetX = nubeX + Math.cos(angle) * 260;
+        const projectileTargetY = nubeY + Math.sin(angle) * 260;
+        spawnPlayerProjectile(nubeX, nubeY, projectileTargetX, projectileTargetY, nubeDamage, '#9c4fff', 7.5, {
             style: 'swarmPod',
             size: 7,
-            maxDistance: 800,
-            noBounce: true
+            maxDistance: 900,
+            noBounce: true,
+            homing: true,
+            homingStrength: 0.12,
+            homingDuration: 180,
+            poison: true,
+            poisonDamage: Math.max(1, Math.floor(nubeDamage * 0.4)),
+            poisonDuration: 180
         });
     }
+    applyPassiveImpactFrame(10);
+    spawnPassiveImpactEffect(nubeX, nubeY, 'radialBurst', '#9c4fff', { maxRadius: 60, particleCount: 16, particleSpeed: 3, particleSize: 4.5, lineWidth: 3 });
 }
 
 function triggerCasterPortalBurst() {
@@ -12974,27 +16052,45 @@ function triggerCasterPortalBurst() {
     const portalX = player.x + player.width / 2;
     const portalY = player.y + player.height / 2 - 16;
     spawnCasterPortalEffect(portalX, portalY, '#70e7ff');
-    spawnEvaporationEffect(portalX, portalY, '#70e7ff', 24, 14);
+    spawnEvaporationEffect(portalX, portalY, '#70e7ff', 30, 18);
     const preferred = getPreferredTarget();
     const targetX = preferred.x || (currentMonster ? currentMonster.x + currentMonster.width / 2 : portalX + 200);
     const targetY = preferred.y || (currentMonster ? currentMonster.y + currentMonster.height / 2 : portalY);
     const portalDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
 
-    for (let i = 0; i < 3; i++) {
-        const spread = (i - 1) * 0.18;
+    const burstCount = 3 + Math.floor((player.critChance || 0) / 15);
+    for (let i = 0; i < burstCount; i++) {
+        const spread = (i - (burstCount - 1) / 2) * 0.16;
         const angle = Math.atan2(targetY - portalY, targetX - portalX) + spread;
-        const projectileTargetX = portalX + Math.cos(angle) * 220;
-        const projectileTargetY = portalY + Math.sin(angle) * 220;
-        spawnPlayerProjectile(portalX, portalY, projectileTargetX, projectileTargetY, portalDamage, '#70e7ff', 9.2, {
+        const projectileTargetX = portalX + Math.cos(angle) * 260;
+        const projectileTargetY = portalY + Math.sin(angle) * 260;
+        spawnPlayerProjectile(portalX, portalY, projectileTargetX, projectileTargetY, portalDamage, '#70e7ff', 10, {
             style: 'casterBurst',
-            size: 12,
-            maxDistance: 900,
-            afterImageTrail: true,
-            afterImageInterval: 2,
+            size: 14,
+            maxDistance: 1100,
+            afterImageTrail: false,
+            afterImageInterval: 0,
             ignoreHurricanePull: true,
-            skipHurricaneRemoval: true
+            skipHurricaneRemoval: true,
+            pierce: true
         });
     }
+    portalEffects.push({
+        x: portalX,
+        y: portalY,
+        radius: 4,
+        maxRadius: 32,
+        life: 90,
+        maxLife: 90,
+        alpha: 0.8,
+        pulse: Math.random() * Math.PI * 2,
+        color: '#70e7ff',
+        damage: Math.round(portalDamage * 0.6),
+        fireTimer: 0,
+        fireInterval: 18
+    });
+    applyPassiveImpactFrame(12);
+    spawnPassiveImpactEffect(portalX, portalY, 'portalRipple', '#70e7ff', { maxRadius: 55, particleCount: 14, particleSpeed: 2.5, particleSize: 4, lineWidth: 3.5 });
 }
 
 function triggerAvianTracker() {
@@ -13002,26 +16098,34 @@ function triggerAvianTracker() {
     const trackerX = player.x + player.width / 2;
     const trackerY = player.y + player.height / 2;
     const trackerDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+    const trackerCount = 2 + Math.floor((player.critChance || 0) / 20);
 
-    for (let i = 0; i < 2; i++) {
-        const angle = (Math.PI * i);
-        const projectileTargetX = trackerX + Math.cos(angle) * 300;
-        const projectileTargetY = trackerY + Math.sin(angle) * 300;
+    for (let i = 0; i < trackerCount; i++) {
+        const angle = (Math.PI * 2 * i) / trackerCount;
+        const projectileTargetX = trackerX + Math.cos(angle) * 320;
+        const projectileTargetY = trackerY + Math.sin(angle) * 320;
         trackerProjectiles.push({
             x: trackerX,
             y: trackerY,
             targetX: currentMonster.x + currentMonster.width / 2,
             targetY: currentMonster.y + currentMonster.height / 2,
-            vx: Math.cos(angle) * 5.5,
-            vy: Math.sin(angle) * 5.5,
+            vx: Math.cos(angle) * 6,
+            vy: Math.sin(angle) * 6,
             damage: trackerDamage,
             color: '#ff88cc',
-            size: 10,
-            maxDistance: 1000,
+            size: 11,
+            maxDistance: 1200,
             distanceTraveled: 0,
-            life: 200
+            life: 240,
+            mark: true,
+            markDamageBonus: 0.25,
+            chainOnKill: true,
+            chainRadius: 180,
+            chainDamage: Math.round(trackerDamage * 0.6)
         });
     }
+    applyPassiveImpactFrame(10);
+    spawnPassiveImpactEffect(trackerX, trackerY, 'feathers', '#ff88cc', { maxRadius: 50, particleCount: 18, particleSpeed: 2.5, particleSize: 4, lineWidth: 2.5 });
 }
 
 function triggerSmartRicochet() {
@@ -13030,18 +16134,27 @@ function triggerSmartRicochet() {
     const ricochetY = player.y + player.height / 2;
     const targetX = currentMonster.x + currentMonster.width / 2;
     const targetY = currentMonster.y + currentMonster.height / 2;
-    const ricochetDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
+    const baseDamage = Math.max(2, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
 
     const angle = Math.atan2(targetY - ricochetY, targetX - ricochetX);
-    const projectileTargetX = ricochetX + Math.cos(angle) * 300;
-    const projectileTargetY = ricochetY + Math.sin(angle) * 300;
-    spawnPlayerProjectile(ricochetX, ricochetY, projectileTargetX, projectileTargetY, ricochetDamage, '#88ff88', 9, {
+    const projectileTargetX = ricochetX + Math.cos(angle) * 320;
+    const projectileTargetY = ricochetY + Math.sin(angle) * 320;
+    spawnPlayerProjectile(ricochetX, ricochetY, projectileTargetX, projectileTargetY, baseDamage, '#88ff88', 10, {
         style: 'gunBullet',
-        size: 11,
-        maxDistance: 1200,
+        size: 12,
+        maxDistance: 1400,
         ricochet: true,
-        ricochetCount: 2
+        ricochetCount: 3 + Math.floor((player.critChance || 0) / 20),
+        ricochetDamageScale: 1.35,
+        tracer: true,
+        tracerColor: '#aaffaa',
+        tracerLife: 10,
+        chainLightningOnFinalBounce: true,
+        chainLightningDamage: Math.round(baseDamage * 0.8),
+        chainLightningRadius: 160
     });
+    applyPassiveImpactFrame(9);
+    spawnPassiveImpactEffect(ricochetX, ricochetY, 'sparks', '#88ff88', { maxRadius: 30, particleCount: 14, particleSpeed: 6, particleSize: 3, lineWidth: 2.5 });
 }
 
 function triggerSimpleExplosive() {
@@ -13051,17 +16164,28 @@ function triggerSimpleExplosive() {
     const targetX = currentMonster.x + currentMonster.width / 2;
     const targetY = currentMonster.y + currentMonster.height / 2;
     const explosiveDamage = Math.max(3, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage + 1));
+    const healthPercent = currentMonster.health / Math.max(1, currentMonster.maxHealth);
+    const radiusScale = 1 + (1 - healthPercent) * 0.8;
+    const finalRadius = Math.round(60 * radiusScale);
 
     const angle = Math.atan2(targetY - explosiveY, targetX - explosiveX);
-    const projectileTargetX = explosiveX + Math.cos(angle) * 300;
-    const projectileTargetY = explosiveY + Math.sin(angle) * 300;
-    spawnPlayerProjectile(explosiveX, explosiveY, projectileTargetX, projectileTargetY, explosiveDamage, '#ff6644', 10, {
+    const projectileTargetX = explosiveX + Math.cos(angle) * 320;
+    const projectileTargetY = explosiveY + Math.sin(angle) * 320;
+    spawnPlayerProjectile(explosiveX, explosiveY, projectileTargetX, projectileTargetY, explosiveDamage, '#ff6644', 11, {
         style: 'gunBullet',
-        size: 13,
-        maxDistance: 900,
+        size: 15,
+        maxDistance: 1000,
         explosive: true,
-        explosiveRadius: 60
+        explosiveRadius: finalRadius,
+        burn: true,
+        burnDamage: Math.max(2, Math.floor(explosiveDamage * 0.5)),
+        burnDuration: 180,
+        secondaryExplosion: true,
+        secondaryRadius: Math.round(finalRadius * 0.5),
+        secondaryDamage: Math.round(explosiveDamage * 0.4)
     });
+    applyPassiveImpactFrame(14);
+    spawnPassiveImpactEffect(explosiveX, explosiveY, 'explosion', '#ff6644', { maxRadius: 80, particleCount: 24, particleSpeed: 5, particleSize: 4.5, lineWidth: 4.5 });
 }
 
 function triggerCrocFreezer() {
@@ -13073,15 +16197,24 @@ function triggerCrocFreezer() {
     const freezerDamage = Math.max(1, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage));
 
     const angle = Math.atan2(targetY - freezerY, targetX - freezerX);
-    const projectileTargetX = freezerX + Math.cos(angle) * 280;
-    const projectileTargetY = freezerY + Math.sin(angle) * 280;
-    spawnPlayerProjectile(freezerX, freezerY, projectileTargetX, projectileTargetY, freezerDamage, '#55ddff', 9, {
+    const projectileTargetX = freezerX + Math.cos(angle) * 300;
+    const projectileTargetY = freezerY + Math.sin(angle) * 300;
+    spawnPlayerProjectile(freezerX, freezerY, projectileTargetX, projectileTargetY, freezerDamage, '#55ddff', 10, {
         style: 'gunBullet',
-        size: 10,
-        maxDistance: 800,
+        size: 12,
+        maxDistance: 1000,
         freezer: true,
-        freezeDuration: 45
+        freezeDuration: 60,
+        iceShards: true,
+        iceShardCount: 10,
+        iceShardDamage: Math.round(freezerDamage * 0.4),
+        iceShardRadius: 100,
+        frostExplosion: true,
+        frostExplosionRadius: 120,
+        frostExplosionDamage: Math.round(freezerDamage * 0.5)
     });
+    applyPassiveImpactFrame(12);
+    spawnPassiveImpactEffect(freezerX, freezerY, 'frostRing', '#55ddff', { maxRadius: 65, particleCount: 18, particleSpeed: 3, particleSize: 3.5, lineWidth: 3 });
 }
 
 function triggerTankImpulse() {
@@ -13093,15 +16226,25 @@ function triggerTankImpulse() {
     const impulseDamage = Math.max(3, Math.round((player.weapon && player.weapon.damage ? player.weapon.damage : 2) + player.baseDamage + player.weaponDamage + 1));
 
     const angle = Math.atan2(targetY - impulseY, targetX - impulseX);
-    const projectileTargetX = impulseX + Math.cos(angle) * 250;
-    const projectileTargetY = impulseY + Math.sin(angle) * 250;
-    spawnPlayerProjectile(impulseX, impulseY, projectileTargetX, projectileTargetY, impulseDamage, '#ff3333', 11, {
+    const projectileTargetX = impulseX + Math.cos(angle) * 280;
+    const projectileTargetY = impulseY + Math.sin(angle) * 280;
+    spawnPlayerProjectile(impulseX, impulseY, projectileTargetX, projectileTargetY, impulseDamage, '#ff3333', 12, {
         style: 'gunBullet',
-        size: 14,
-        maxDistance: 850,
+        size: 16,
+        maxDistance: 1000,
         knockback: true,
-        knockbackPower: 8
+        knockbackPower: 12,
+        stun: true,
+        stunDuration: 45,
+        shockwave: true,
+        shockwaveRadius: 140,
+        shockwaveDamage: Math.round(impulseDamage * 0.5),
+        chainStun: true,
+        chainStunRadius: 200,
+        chainStunDuration: 25
     });
+    applyPassiveImpactFrame(16);
+    spawnPassiveImpactEffect(impulseX, impulseY, 'shockwave', '#ff3333', { maxRadius: 80, particleCount: 22, particleSpeed: 4.5, particleSize: 5, lineWidth: 5 });
 }
 
 function updatePortalEffects() {
@@ -13109,31 +16252,141 @@ function updatePortalEffects() {
         const effect = portalEffects[i];
         effect.life -= 1;
         effect.pulse += 0.18;
+        effect.spin += 0.12;
+        if (effect.sparks) for (const sp of effect.sparks) sp.life -= 1;
         effect.radius = Math.max(0, (effect.maxRadius * (1 - effect.life / effect.maxLife)) + Math.sin(effect.pulse) * 1.2);
         effect.alpha = Math.max(0, effect.life / effect.maxLife);
         if (effect.life <= 0 || effect.alpha <= 0) {
             portalEffects.splice(i, 1);
+            continue;
+        }
+        if (effect.damage && effect.fireInterval) {
+            effect.fireTimer = (effect.fireTimer || 0) + 1;
+            if (effect.fireTimer >= effect.fireInterval && currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
+                effect.fireTimer = 0;
+                const mx = currentMonster.x + currentMonster.width / 2;
+                const my = currentMonster.y + currentMonster.height / 2;
+                const angle = Math.atan2(my - effect.y, mx - effect.x);
+                for (let j = 0; j < 2; j++) {
+                    const spread = (j - 0.5) * 0.3;
+                    const tx = effect.x + Math.cos(angle + spread) * 300;
+                    const ty = effect.y + Math.sin(angle + spread) * 300;
+                    spawnPlayerProjectile(effect.x, effect.y, tx, ty, effect.damage, effect.color || '#70e7ff', 9.5, {
+                        style: 'casterBurst',
+                        size: 10,
+                        maxDistance: 900,
+                        afterImageTrail: false,
+                        afterImageInterval: 0,
+                        ignoreHurricanePull: true,
+                        skipHurricaneRemoval: true,
+                        pierce: true
+                    });
+                }
+                spawnEvaporationEffect(effect.x, effect.y, effect.color || '#70e7ff', 14, 6);
+            }
         }
     }
 }
 
+function hexToRgba(hex, alpha) {
+    let h = (hex || '#ffffff').replace('#', '');
+    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    const n = parseInt(h, 16);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function drawPortalEffects() {
     for (const effect of portalEffects) {
+        const r = effect.radius;
+        const col = effect.color;
         ctx.save();
-        ctx.globalAlpha = effect.alpha * 0.95;
-        ctx.strokeStyle = effect.color;
-        ctx.lineWidth = 2.8;
-        ctx.shadowColor = effect.color;
-        ctx.shadowBlur = 18;
-        ctx.beginPath();
-        ctx.arc(effect.x, effect.y, effect.radius, 0, Math.PI * 2);
-        ctx.stroke();
+        ctx.translate(effect.x, effect.y);
 
-        ctx.globalAlpha = effect.alpha * 0.35;
+        // soft inner glow
+        const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 1.6);
+        glow.addColorStop(0, col);
+        glow.addColorStop(0.4, hexToRgba(col, 0.35));
+        glow.addColorStop(1, hexToRgba(col, 0));
+        ctx.globalAlpha = effect.alpha * 0.5;
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+
+        // outer faint halo
+        ctx.globalAlpha = effect.alpha * 0.3;
+        ctx.strokeStyle = col;
         ctx.lineWidth = 1.2;
         ctx.beginPath();
-        ctx.arc(effect.x, effect.y, effect.radius + 8, 0, Math.PI * 2);
+        ctx.arc(0, 0, r + 10, 0, Math.PI * 2);
         ctx.stroke();
+
+        // swirling arcane rings
+        ctx.globalAlpha = effect.alpha * 0.9;
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.lineWidth = 2.6;
+        ctx.strokeStyle = col;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // broken rune ring (rotating dashes)
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = hexToRgba(col, 0.8);
+        const ringR = r * 0.72;
+        const segs = 9;
+        for (let i = 0; i < segs; i++) {
+            const a0 = effect.spin + (Math.PI * 2 * i) / segs;
+            const a1 = a0 + 0.28;
+            ctx.beginPath();
+            ctx.arc(0, 0, ringR, a0, a1);
+            ctx.stroke();
+        }
+
+        // counter-rotating inner arc
+        ctx.lineWidth = 1.6;
+        ctx.strokeStyle = '#ffffff';
+        ctx.globalAlpha = effect.alpha * 0.55;
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.45, -effect.spin * 1.6, -effect.spin * 1.6 + Math.PI * 1.3);
+        ctx.stroke();
+
+        // bright core
+        ctx.globalAlpha = effect.alpha;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(0, 0, Math.max(1.5, r * 0.22), 0, Math.PI * 2);
+        ctx.fill();
+
+        // orbiting sparks
+        if (effect.sparks) {
+            for (const sp of effect.sparks) {
+                if (sp.life <= 0) continue;
+                const a = sp.a + effect.spin * 2.2;
+                const dist = r * (0.4 + sp.r * 0.9);
+                const sx = Math.cos(a) * dist;
+                const sy = Math.sin(a) * dist;
+                const sa = effect.alpha * Math.min(1, sp.life / 10);
+                ctx.globalAlpha = sa;
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.arc(sx, sy, 1.4, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // expanding shockwave on spawn/fade
+        ctx.globalAlpha = effect.alpha * 0.25;
+        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = col;
+        ctx.beginPath();
+        ctx.arc(0, 0, r + 16 + Math.sin(effect.pulse) * 3, 0, Math.PI * 2);
+        ctx.stroke();
+
         ctx.restore();
     }
 }
@@ -13155,7 +16408,7 @@ function updateTrackerProjectiles() {
         const dy = tracker.targetY - tracker.y;
         const dist = Math.hypot(dx, dy);
         if (dist > 0) {
-            const turnSpeed = 0.08;
+            const turnSpeed = 0.1;
             const targetAngle = Math.atan2(dy, dx);
             const currentAngle = Math.atan2(tracker.vy, tracker.vx);
             let angleDiff = targetAngle - currentAngle;
@@ -13169,9 +16422,54 @@ function updateTrackerProjectiles() {
         tracker.x += tracker.vx;
         tracker.y += tracker.vy;
 
-        if (currentMonster && Math.hypot(tracker.x - currentMonster.x - currentMonster.width / 2, tracker.y - currentMonster.y - currentMonster.height / 2) < currentMonster.width / 2 + tracker.size) {
-            currentMonster.health -= tracker.damage;
-            spawnEvaporationEffect(tracker.x, tracker.y, tracker.color, tracker.size, 8);
+        let hit = false;
+        if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
+            const mx = currentMonster.x + currentMonster.width / 2;
+            const my = currentMonster.y + currentMonster.height / 2;
+            if (Math.hypot(tracker.x - mx, tracker.y - my) < currentMonster.width / 2 + tracker.size) {
+                currentMonster.health -= tracker.damage;
+                currentMonster.tookDamage = true;
+                if (tracker.mark && !currentMonster.isDying) {
+                    currentMonster.avianMarkTimer = Math.max(currentMonster.avianMarkTimer || 0, 240);
+                    currentMonster.avianMarkDamageBonus = Math.max(currentMonster.avianMarkDamageBonus || 0, tracker.markDamageBonus);
+                }
+                spawnEvaporationEffect(tracker.x, tracker.y, tracker.color, tracker.size, 12);
+                spawnAfterImage({
+                    kind: 'projectile',
+                    x: tracker.x - tracker.size,
+                    y: tracker.y - tracker.size,
+                    size: tracker.size * 2,
+                    color: tracker.color,
+                    life: 14,
+                    maxLife: 14,
+                    baseAlpha: 0.55
+                });
+                if (currentMonster.health <= 0 && tracker.chainOnKill) {
+                    const chainRadius = tracker.chainRadius || 180;
+                    const chainDamage = tracker.chainDamage || Math.round(tracker.damage * 0.6);
+                    for (let ci = 0; ci < 3; ci++) {
+                        const cAngle = Math.random() * Math.PI * 2;
+                        const cDist = 30 + Math.random() * chainRadius;
+                        const cx = mx + Math.cos(cAngle) * cDist;
+                        const cy = my + Math.sin(cAngle) * cDist;
+                        spawnPlayerProjectile(mx, my, cx, cy, chainDamage, '#ffaacc', 7, {
+                            style: 'gunBullet',
+                            size: 7,
+                            maxDistance: 400,
+                            explosive: false,
+                            freezer: false,
+                            pierce: false,
+                            noBounce: true
+                        });
+                    }
+                    spawnPassiveImpactEffect(mx, my, 'chainBurst', '#ff88cc', { maxRadius: 45, particleCount: 14, particleSpeed: 3.5, particleSize: 3.5, lineWidth: 2.5 });
+                    screenShakeTimer = Math.max(screenShakeTimer, 8);
+                    frameFreeze = Math.max(frameFreeze || 0, 2);
+                }
+                hit = true;
+            }
+        }
+        if (hit) {
             trackerProjectiles.splice(i, 1);
             continue;
         }
@@ -13227,7 +16525,7 @@ function handleParryProjectile(proj) {
         }
     proj.owner = 'player';
     const currentSpeed = Math.hypot(proj.vx || 0, proj.vy || 0) || 3;
-    const speed = currentSpeed * 5.0; // increased parry speed
+    const speed = currentSpeed * 5.0 + player.projectileSpeedBonus;
     let targetX, targetY;
     if (currentMonster) {
         targetX = currentMonster.x + currentMonster.width / 2;
@@ -13269,55 +16567,85 @@ function handleParryProjectile(proj) {
     if (!playerInsideConstruction) {
         frameFreeze = 2;
     }
-}
 
-function fireGunBurst(count) {
-    if (!player || !player.weapon || player.weapon.type !== 'gun' || !count || count <= 0) return;
-    const preferred = getPreferredTarget();
-    const targetX = preferred.x;
-    const targetY = preferred.y;
-    const baseAngle = Math.atan2(targetY - (player.y + player.height / 2), targetX - (player.x + player.width / 2));
-    const weaponInfo = player.getWeaponMountPoint(baseAngle);
-    const baseWeaponDamage = player.weapon.damage + player.weaponDamage + player.baseDamage;
-    const critRoll = Math.random() * 100;
-    const totalCritChance = player.critChance;
-    const critMultiplier = critRoll < totalCritChance ? 1 + player.critDamage : 1;
-    const gunPowderMult = (1 + 0.2 * (player.gunExtraPowder || 0));
-    const burstDamage = Math.max(1, Math.round(baseWeaponDamage * critMultiplier * (player.damageOutputMultiplier || 1) * gunPowderMult));
-    const burstSpeed = (player.weapon.speed + player.projectileSpeedBonus) * getPlayerInteriorScale();
-    const burstRange = player.weapon.range * getPlayerInteriorScale();
-    for (let burstIndex = 0; burstIndex < count; burstIndex++) {
-        const extraAngle = baseAngle + ((burstIndex + 1) - (count + 1) / 2) * 0.14;
-        const burstTargetX = player.x + player.width / 2 + Math.cos(extraAngle) * burstRange * 0.9;
-        const burstTargetY = player.y + player.height / 2 + Math.sin(extraAngle) * burstRange * 0.9;
-        spawnPlayerProjectile(weaponInfo.tipX, weaponInfo.tipY, burstTargetX, burstTargetY, Math.max(1, Math.round(burstDamage * 0.75)), player.weapon.color, burstSpeed * 0.95, {
-            critPercent: critMultiplier > 1 ? player.critDamage : 0,
-            explosive: player.gunExplosiveAmmo > 0,
-            explosiveRadius: player.gunExplosiveAmmo > 0 ? (48 + 12 * player.gunExplosiveAmmo) : undefined,
-            isGunOriginal: false
-        });
+    const extraCount = Math.floor(player.extraProjectiles || 0);
+    const spread = player.spreadProjectiles || 0;
+    const lateCount = Math.floor(player.lateShots || 0);
+
+    if (extraCount > 0 || lateCount > 0) {
+        const baseAngle = Math.atan2(dy, dx);
+        const cloneDamage = Math.max(1, proj.damage);
+        const cloneColor = proj.color;
+        const cloneSize = proj.size;
+        const cloneStyle = proj.style || 'gunBullet';
+
+        for (let i = 0; i < extraCount; i++) {
+            const angleOffset = ((i + 1) * spread * 0.35) * (i % 2 === 0 ? 1 : -1);
+            const angle = baseAngle + angleOffset;
+            const targetX = proj.x + Math.cos(angle) * 400;
+            const targetY = proj.y + Math.sin(angle) * 400;
+            const clone = new Projectile(proj.x, proj.y, targetX, targetY, cloneDamage, cloneColor, speed * 2, 'player', cloneSize, {
+                style: cloneStyle,
+                canDestroyOnTouch: true,
+                afterImageTrail: true,
+                afterImageInterval: 1,
+                maxDistance: 800
+            });
+            clone.canDestroyOnTouch = true;
+            projectiles.push(clone);
+        }
+
+        for (let i = 0; i < lateCount; i++) {
+            delayedProjectileSpawns.push({
+                kind: 'parryLateShot',
+                timer: 20 + i * 15,
+                srcX: proj.x,
+                srcY: proj.y,
+                targetX: proj.x + Math.cos(baseAngle) * 400,
+                targetY: proj.y + Math.sin(baseAngle) * 400,
+                damage: cloneDamage,
+                color: cloneColor,
+                size: cloneSize,
+                maxDistance: 800,
+                style: cloneStyle,
+                baseActualSpeed: speed / 8.0
+            });
+        }
     }
 }
 
-function spawnGunMuzzleSmoke(x, y, angle, extraPowderLevel = 0) {
-    if (typeof evaporationEffects === 'undefined') return;
-    const count = Math.round(6 * (1 + 0.2 * extraPowderLevel));
-    for (let i = 0; i < count; i++) {
-        const spread = (Math.random() - 0.5) * 0.7;
-        const dir = angle + Math.PI + spread;
-        const speed = 0.5 + Math.random() * 1.1;
-        evaporationEffects.push({
-            x: x + Math.cos(angle) * (2 + Math.random() * 3),
-            y: y + Math.sin(angle) * (2 + Math.random() * 3),
-            vx: Math.cos(dir) * speed,
-            vy: Math.sin(dir) * speed - 0.3,
-            life: 18 + Math.floor(Math.random() * 8),
-            alpha: 0.45,
-            size: 3 + Math.random() * 3,
-            color: '#c4c4c4',
-            smoke: true
-        });
-    }
+function boulderTryParry(monster, proj) {
+    if (!monster || monster.type !== 'boulder_tosser') return false;
+    if (proj.owner !== 'player' || proj.parried || proj.ignoreCollision) return false;
+    if (monster.parryCooldown > 0 || monster.parryActiveTimer > 0 || monster.parryRecoveryTimer > 0) return false;
+    if (Math.random() >= 0.45 + monster.phase * 0.03) return false;
+
+    monster.parryActiveTimer = 8;
+    monster.parryFlashTimer = 8;
+    monster.parryRecoveryTimer = 12;
+    monster.parryCooldown = 60;
+    spawnEvaporationEffect(monster.x + monster.width / 2, monster.y + monster.height / 2, '#aaaaaa', 12, 8);
+    critEffects.push({
+        x: monster.x + monster.width / 2,
+        y: monster.y - 20,
+        alpha: 1,
+        text: 'PARRIED',
+        rise: 0
+    });
+
+    handleParryProjectile(proj);
+    const px = player.x + player.width / 2;
+    const py = player.y + player.height / 2;
+    const dx = px - proj.x;
+    const dy = py - proj.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const speed = Math.hypot(proj.vx || 0, proj.vy || 0) || 3;
+    proj.vx = (dx / dist) * speed;
+    proj.vy = (dy / dist) * speed;
+    proj.owner = 'monster';
+    proj.monsterType = 'boulder_tosser';
+    proj.canDestroyOnTouch = false;
+    return true;
 }
 
 function drawEvaporationEffects() {
@@ -13338,100 +16666,208 @@ function updateEvaporationEffects() {
         effect.x += effect.vx;
         effect.y += effect.vy;
         effect.life -= 1;
-        effect.alpha = Math.max(0, effect.life / 40);
-        effect.size *= 0.96;
+        if (effect.smoke) {
+            effect.alpha = Math.max(0, (effect.life / 40) * 0.7);
+            effect.size *= 1.05;
+            effect.vx *= 0.92;
+            effect.vy *= 0.92;
+        } else {
+            effect.alpha = Math.max(0, effect.life / 40);
+            effect.size *= 0.96;
+        }
         if (effect.life <= 0 || effect.alpha <= 0) {
             evaporationEffects.splice(i, 1);
         }
     }
 }
 
+function updateExplosionEffects() {
+    for (let i = explosionEffects.length - 1; i >= 0; i--) {
+        const e = explosionEffects[i];
+        e.life--;
+        const progress = 1 - e.life / e.maxLife;
+        e.radius = e.maxRadius * progress;
+        if (e.life <= Math.floor(e.maxLife * 0.3) && !e.damageApplied) {
+            e.damageApplied = true;
+            if (currentMonster && currentMonster.health > 0 && !currentMonster.isDying) {
+                const mx = currentMonster.x + currentMonster.width / 2;
+                const my = currentMonster.y + currentMonster.height / 2;
+                if (Math.hypot(mx - e.x, my - e.y) <= e.maxRadius + currentMonster.width / 2) {
+                    currentMonster.takeDamage(e.damage || 0);
+                    if (e.burn && e.burnDamage > 0) {
+                        applyBurnToTarget(currentMonster, e.burnDamage, (e.burnDuration || 120) / 60);
+                    }
+                }
+            }
+            if (playerInsideConstruction) {
+                for (const enemy of castleInteriorEnemies) {
+                    if (enemy.isDying || enemy.health <= 0) continue;
+                    const ex = enemy.x + enemy.width / 2;
+                    const ey = enemy.y + enemy.height / 2;
+                    if (Math.hypot(ex - e.x, ey - e.y) <= e.maxRadius + Math.max(enemy.width, enemy.height) / 2) {
+                        applyDamageToCastleEnemy(enemy, e.damage || 0);
+                        if (e.burn && e.burnDamage > 0) {
+                            applyBurnToTarget(enemy, e.burnDamage, (e.burnDuration || 120) / 60);
+                        }
+                    }
+                }
+            }
+        }
+        if (e.frost && currentMonster && currentMonster.health > 0 && !currentMonster.isDying && e.life <= 0) {
+            const mx = currentMonster.x + currentMonster.width / 2;
+            const my = currentMonster.y + currentMonster.height / 2;
+            if (Math.hypot(mx - e.x, my - e.y) <= e.maxRadius + currentMonster.width / 2) {
+                currentMonster.freezeTimer = Math.max(currentMonster.freezeTimer || 0, e.freezeDuration || 30);
+                spawnEvaporationEffect(mx, my, '#aaeeff', 16, 10);
+            }
+        }
+        if (e.shockwave && currentMonster && currentMonster.health > 0 && !currentMonster.isDying && e.life <= 0) {
+            const mx = currentMonster.x + currentMonster.width / 2;
+            const my = currentMonster.y + currentMonster.height / 2;
+            if (Math.hypot(mx - e.x, my - e.y) <= e.maxRadius + currentMonster.width / 2) {
+                currentMonster.stunTimer = Math.max(currentMonster.stunTimer || 0, e.chainStunDuration || 25);
+                const knockPower = 10;
+                const knockAngle = Math.atan2(my - e.y, mx - e.x);
+                currentMonster.vx = (currentMonster.vx || 0) + Math.cos(knockAngle) * knockPower;
+                currentMonster.vy = (currentMonster.vy || 0) + Math.sin(knockAngle) * knockPower;
+            }
+        }
+        if (e.life <= 0) {
+            explosionEffects.splice(i, 1);
+        }
+    }
+}
+
+function drawExplosionEffects() {
+    for (const e of explosionEffects) {
+        if (e.life <= 0) continue;
+        const progress = 1 - e.life / e.maxLife;
+        const alpha = Math.max(0, e.life / e.maxLife);
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.7;
+        ctx.strokeStyle = e.frost ? '#aaeeff' : '#ff6644';
+        ctx.lineWidth = Math.max(1, 4 * (1 - progress));
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, Math.max(1, e.radius), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = alpha * 0.25;
+        ctx.fillStyle = e.frost ? '#aaeeff' : '#ff6644';
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, Math.max(1, e.radius * 0.6), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+function triggerMarkExplosion(mark, markIndex) {
+    const waspCount = Math.floor(Math.random() * 11) + 5;
+    for (let k = 0; k < waspCount; k++) {
+        const modeRoll = Math.random();
+        const baseAngle = Math.random() * Math.PI * 2;
+        let targetX;
+        let targetY;
+        const speed = 10 + (currentMonster ? currentMonster.phase * 0.5 : 0);
+        let projectileOptions = {
+            monsterType: 'swarm',
+            style: 'swarmBug',
+            size: 8,
+            afterImageTrail: false,
+            afterImageInterval: 0,
+            homing: false
+        };
+
+        if (modeRoll < 0.25) {
+            targetX = player.x + player.width / 2;
+            targetY = player.y + player.height / 2;
+        } else if (modeRoll < 0.55) {
+            const predict = getPredictedPlayerPosition(12);
+            targetX = predict.x;
+            targetY = predict.y;
+        } else if (modeRoll < 0.75) {
+            const offsetAngle = baseAngle;
+            targetX = mark.x + Math.cos(offsetAngle) * 320;
+            targetY = mark.y + Math.sin(offsetAngle) * 320;
+            projectileOptions.homing = true;
+            projectileOptions.homingDuration = 6;
+            projectileOptions.homingStrength = 0.14;
+            projectileOptions.homingTarget = player;
+        } else {
+            targetX = mark.x + Math.cos(baseAngle) * 320;
+            targetY = mark.y + Math.sin(baseAngle) * 320;
+        }
+
+        const waspDamage = Math.max(1, Math.round((currentMonster ? currentMonster.getAttackDamage() : 8) * 0.35));
+        spawnMonsterProjectile(mark.x, mark.y, targetX, targetY, waspDamage, '#9e4cff', speed, projectileOptions);
+    }
+
+    if (slowdownTimer <= 0) {
+        generateSlowdownInsects();
+    }
+    slowdownTimer = Math.max(slowdownTimer, slowdownRampFrames * 2 + slowdownHoldFrames);
+    swarmMarks.splice(markIndex, 1);
+}
+
 function updateAndDrawSwarmMarks() {
     for (let i = swarmMarks.length - 1; i >= 0; i--) {
         const mark = swarmMarks[i];
         
-        // Desenhar a marca
-        const mouthWidth = mark.radius * 2.6;
-        const mouthHeight = mark.radius * 1.25;
-        const leftX = mark.x - mouthWidth / 2;
-        const rightX = mark.x + mouthWidth / 2;
-        const lipHeight = mouthHeight * 0.55;
-
+        mark.lifetime--;
+        if (mark.lifetime <= 0) {
+            swarmMarks.splice(i, 1);
+            continue;
+        }
+        
+        for (let j = projectiles.length - 1; j >= 0; j--) {
+            const p = projectiles[j];
+            if (p.owner === 'monster') {
+                const dx = p.x - mark.x;
+                const dy = p.y - mark.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                if (distance < mark.radius + p.size) {
+                    triggerMarkExplosion(mark, i);
+                    break;
+                }
+            } else if (p.owner === 'player') {
+                const dx = p.x - mark.x;
+                const dy = p.y - mark.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                if (distance < mark.radius + p.size) {
+                    triggerMarkExplosion(mark, i);
+                    break;
+                }
+            }
+        }
+        if (!swarmMarks[i]) continue;
+        
+        // Desenhar a marca - ninho de vespa cinza redondo com buracos
+        const nestR = mark.radius * 0.9;
         ctx.save();
         ctx.translate(mark.x, mark.y);
         ctx.rotate(Math.sin(performance.now() * 0.008) * 0.1);
         ctx.translate(-mark.x, -mark.y);
-
-        // Colmeia de vespa maior e cinza
-        ctx.fillStyle = 'rgba(140, 140, 140, 0.96)';
-        ctx.beginPath();
-        ctx.ellipse(mark.x, mark.y, mouthWidth / 2, mouthHeight / 2, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = 'rgba(55, 55, 55, 0.92)';
-        ctx.beginPath();
-        ctx.ellipse(mark.x, mark.y + mouthHeight * 0.1, mouthWidth / 2.4, mouthHeight / 2.6, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Células de colmeia internas em cinza escuro
-        const hexR = mouthWidth * 0.12;
-        const hexH = Math.sqrt(3) * hexR;
-        const startX = mark.x - hexR * 2.8;
-        const startY = mark.y - hexH * 0.5;
-        ctx.fillStyle = 'rgba(120, 120, 120, 0.95)';
-        ctx.strokeStyle = 'rgba(180, 180, 180, 0.45)';
-        ctx.lineWidth = 1.5;
-        for (let row = 0; row < 3; row++) {
-            for (let col = 0; col < 6; col++) {
-                const x = startX + col * hexR * 1.75 + (row % 2 ? hexR * 0.88 : 0);
-                const y = startY + row * hexH * 0.95;
-                const dx = x - mark.x;
-                const dy = y - mark.y * 0.1;
-                if (Math.hypot(dx, dy) < mouthWidth * 0.66) {
-                    ctx.beginPath();
-                    for (let side = 0; side < 6; side++) {
-                        const angle = Math.PI / 3 * side + Math.PI / 6;
-                        const px = x + Math.cos(angle) * hexR;
-                        const py = y + Math.sin(angle) * hexR;
-                        if (side === 0) ctx.moveTo(px, py);
-                        else ctx.lineTo(px, py);
-                    }
-                    ctx.closePath();
-                    ctx.fill();
-                    ctx.stroke();
-                }
-            }
-        }
-
-        // Superfície circular da colmeia com detalhes sutis
-        const circleGrad = ctx.createRadialGradient(mark.x, mark.y, mouthWidth * 0.18, mark.x, mark.y, mouthWidth * 0.55);
-        circleGrad.addColorStop(0, 'rgba(170, 170, 170, 0.96)');
-        circleGrad.addColorStop(1, 'rgba(100, 100, 100, 0.92)');
-        ctx.fillStyle = circleGrad;
-        ctx.beginPath();
-        ctx.arc(mark.x, mark.y, mouthWidth * 0.45, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = 'rgba(85, 85, 85, 0.9)';
-        ctx.beginPath();
-        ctx.arc(mark.x, mark.y, mouthWidth * 0.33, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(220, 220, 220, 0.3)';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(mark.x, mark.y, mouthWidth * 0.48, 0, Math.PI * 2);
-        ctx.stroke();
-
-        ctx.strokeStyle = 'rgba(160, 160, 160, 0.25)';
+        
+        ctx.fillStyle = '#8a8a7a';
+        ctx.strokeStyle = '#6e6e5e';
         ctx.lineWidth = 2;
-        for (let t = 0; t < 6; t++) {
-            const theta = Math.PI * 2 * t / 6;
+        ctx.beginPath();
+        ctx.arc(mark.x, mark.y, nestR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        
+        ctx.fillStyle = '#5a5a4a';
+        const holes = [
+            { x: 0, y: -nestR * 0.3, r: nestR * 0.22 },
+            { x: -nestR * 0.35, y: nestR * 0.1, r: nestR * 0.18 },
+            { x: nestR * 0.3, y: nestR * 0.25, r: nestR * 0.2 },
+            { x: -nestR * 0.15, y: -nestR * 0.55, r: nestR * 0.15 },
+            { x: nestR * 0.1, y: -nestR * 0.1, r: nestR * 0.16 }
+        ];
+        for (const hole of holes) {
             ctx.beginPath();
-            ctx.moveTo(mark.x, mark.y);
-            ctx.lineTo(mark.x + Math.cos(theta) * mouthWidth * 0.45, mark.y + Math.sin(theta) * mouthWidth * 0.45);
-            ctx.stroke();
+            ctx.arc(mark.x + hole.x, mark.y + hole.y, hole.r, 0, Math.PI * 2);
+            ctx.fill();
         }
+        
         ctx.restore();
     }
 }
@@ -13473,6 +16909,12 @@ function getProjectileDefaultSize(style) {
             return 14;
         case 'swarmPod':
             return 10;
+        case 'casterShard':
+            return 12;
+        case 'arcaneBolt':
+            return 14;
+        case 'casterBurst':
+            return 14;
         case 'casterFlameCircle':
             return 16;
         case 'casterFlameSpiral':
@@ -13489,6 +16931,12 @@ function getProjectileDefaultSize(style) {
             return 14;
         case 'toothBolt':
             return 18;
+        case 'moeRock':
+            return 32;
+        case 'moeStone':
+            return 16;
+        case 'moePebble':
+            return 10;
         default:
             return 10;
     }
@@ -13691,18 +17139,58 @@ function spawnPlayerProjectile(x, y, targetX, targetY, damage, color, speed, opt
     return proj;
 }
 
+function spawnCasterProjectileBurst(proj) {
+    if (!proj || proj._casterBurstTriggered) return;
+    proj._casterBurstTriggered = true;
+
+    const burstCount = Math.max(3, Math.min(6, Math.round((proj.size || 12) / 3)));
+    const burstRadius = Math.max(16, (proj.size || 12) * 0.85);
+    spawnEvaporationEffect(proj.x, proj.y, '#ffb14a', burstRadius, 8);
+
+    for (let i = 0; i < burstCount; i++) {
+        const angle = (Math.PI * 2 * i) / burstCount + Math.random() * 0.2;
+        const targetX = proj.x + Math.cos(angle) * (80 + Math.random() * 60);
+        const targetY = proj.y + Math.sin(angle) * (80 + Math.random() * 60);
+        const shardDamage = Math.max(1, Math.round((proj.damage || 2) * 0.35));
+        spawnMonsterProjectile(
+            proj.x,
+            proj.y,
+            targetX,
+            targetY,
+            shardDamage,
+            '#ff9e3c',
+            2.2 + Math.random() * 1.2,
+            {
+                monsterType: proj.monsterType || 'caster',
+                size: Math.max(5, Math.round((proj.size || 12) * 0.45)),
+                style: 'casterShard',
+                homing: true,
+                homingTarget: player,
+                homingStrength: 0.18,
+                homingDuration: 48,
+                maxDistance: 220,
+                afterImageTrail: false
+            }
+        );
+    }
+}
+
 function spawnMonsterProjectile(x, y, targetX, targetY, damage, color, speed, opts = {}) {
     opts.monsterType = opts.monsterType || currentMonster?.type || '';
     opts.style = opts.style || getMonsterProjectileStyle(opts.monsterType);
-    const isCasterProjectile = opts.monsterType === 'caster' || opts.style === 'casterFlameCircle' || opts.style === 'casterFlameSpiral' || opts.style === 'casterFlameRing' || opts.style === 'casterFlameVolley';
+    const isCasterProjectile = opts.monsterType === 'caster' || opts.style === 'casterFlameCircle' || opts.style === 'casterFlameSpiral' || opts.style === 'casterFlameRing' || opts.style === 'casterFlameVolley' || opts.style === 'casterBurst' || opts.style === 'casterShard' || opts.style === 'arcaneBolt';
     const isCircleCasterAttack = opts.style === 'casterFlameCircle' || opts.style === 'casterFlameSpiral' || opts.style === 'casterFlameRing';
     if (isCasterProjectile) {
-        opts.afterImageTrail = typeof opts.afterImageTrail === 'boolean' ? opts.afterImageTrail : false;
+        opts.afterImageTrail = typeof opts.afterImageTrail === 'boolean' ? opts.afterImageTrail : true;
         opts.afterImageInterval = typeof opts.afterImageInterval === 'number' ? opts.afterImageInterval : (isCircleCasterAttack ? 5 : 2);
         opts.homing = typeof opts.homing === 'boolean' ? opts.homing : (isCircleCasterAttack ? false : true);
         opts.homingStrength = typeof opts.homingStrength === 'number' ? opts.homingStrength : 0.035;
         opts.homingDuration = typeof opts.homingDuration === 'number' ? opts.homingDuration : 90;
         opts.maxDistance = typeof opts.maxDistance === 'number' ? opts.maxDistance : 980;
+        if (isCircleCasterAttack || opts.style === 'casterFlameVolley') {
+            opts.explodeOnExpire = typeof opts.explodeOnExpire === 'boolean' ? opts.explodeOnExpire : true;
+            opts.explodeCount = typeof opts.explodeCount === 'number' ? opts.explodeCount : 3;
+        }
     }
     // Garantir que projéteis de monstros usem o timer offscreen (padrão 60 frames)
     if (typeof opts.offscreenLimit !== 'number') opts.offscreenLimit = 60;
@@ -13715,6 +17203,68 @@ function spawnMonsterProjectile(x, y, targetX, targetY, damage, color, speed, op
     }
     projectiles.push(proj);
     return proj;
+}
+
+// Moe-style split helper: rock -> stone -> pebble. Only pebbles are terminal.
+function spawnMoeSplit(rock) {
+    const stage = rock.moeStage || 0;
+    const ox = rock.x;
+    const oy = rock.y;
+    const baseDamage = Math.max(1, rock.damage);
+
+    if (stage === 0) {
+        const stoneRange = 2.67 * MOE_TILE;
+        const stoneDamage = baseDamage;
+        const angles = [Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2];
+        for (const a of angles) {
+            const tx = ox + Math.cos(a) * stoneRange;
+            const ty = oy + Math.sin(a) * stoneRange;
+            const proj = new Projectile(ox, oy, tx, ty, stoneDamage, '#caa472', 5, 'monster', 16, {
+                monsterType: rock.monsterType || 'boulder_tosser',
+                style: 'moeStone',
+                maxDistance: stoneRange * 2 + 4,
+                moeStage: 1,
+                ignoreCollision: true,
+                _moeFromSplit: true
+            });
+            projectiles.push(proj);
+        }
+        if (rock.traveled >= rock.maxDistance && !(rock._moeHitPlayer)) {
+            const bonusRange = 1.67 * MOE_TILE;
+            const bonusDamage = Math.max(1, Math.round(baseDamage * 0.85));
+            const angles2 = [Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2];
+            for (const a of angles2) {
+                const tx = ox + Math.cos(a) * bonusRange;
+                const ty = oy + Math.sin(a) * bonusRange;
+                const proj = new Projectile(ox, oy, tx, ty, bonusDamage, '#b89a6c', 5, 'monster', 14, {
+                    monsterType: rock.monsterType || 'boulder_tosser',
+                    style: 'moeStone',
+                    maxDistance: bonusRange * 2 + 4,
+                    moeStage: 1,
+                    ignoreCollision: true,
+                    _moeFromSplit: true
+                });
+                projectiles.push(proj);
+            }
+        }
+    } else if (stage === 1) {
+        const pebbleRange = 1.5 * MOE_TILE;
+        const pebbleDamage = Math.max(1, Math.round(baseDamage * 0.6));
+        const angles = [Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2];
+        for (const a of angles) {
+            const tx = ox + Math.cos(a) * pebbleRange;
+            const ty = oy + Math.sin(a) * pebbleRange;
+            const proj = new Projectile(ox, oy, tx, ty, pebbleDamage, '#a08060', 4, 'monster', 10, {
+                monsterType: rock.monsterType || 'boulder_tosser',
+                style: 'moePebble',
+                maxDistance: pebbleRange * 2 + 4,
+                moeStage: 2,
+                ignoreCollision: true,
+                _moeFromSplit: true
+            });
+            projectiles.push(proj);
+        }
+    }
 }
 
 function spawnStaffBurst(centerX, centerY, color, miniDamage, miniSpeed, burstCount) {
@@ -13852,6 +17402,97 @@ function drawCritEffects() {
     }
 }
 
+function spawnCastBanner(text, color = '#ff5a3c') {
+    if (towerSummonBigBanner) return;
+    castBannerEffects.push({ text, color, life: 75, maxLife: 75, scale: 0.4 });
+}
+
+function updateCastBanners() {
+    if (towerSummonBigBanner) {
+        castBannerEffects = [];
+        return;
+    }
+    for (let i = castBannerEffects.length - 1; i >= 0; i--) {
+        const e = castBannerEffects[i];
+        e.life -= 1;
+        const t = 1 - e.life / e.maxLife;
+        // pop-in then hold then fade
+        e.scale = t < 0.2 ? 0.4 + (t / 0.2) * 0.6 : Math.max(0, 1 - Math.max(0, t - 0.7) / 0.3);
+        if (e.life <= 0) castBannerEffects.splice(i, 1);
+    }
+}
+
+function drawCastBanners() {
+    if (!castBannerEffects.length || towerSummonBigBanner) return;
+    const vw = (typeof viewportWidth !== 'undefined' ? viewportWidth : (typeof screenWidth !== 'undefined' ? screenWidth : 800));
+    const vh = (typeof viewportHeight !== 'undefined' ? viewportHeight : (typeof screenHeight !== 'undefined' ? screenHeight : 600));
+    const topY = Math.max(70, vh * 0.18);
+    const slotGap = 42;
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let idx = 0; idx < castBannerEffects.length; idx++) {
+        const e = castBannerEffects[idx];
+        const alpha = Math.max(0, Math.min(1, e.life / 30));
+        const size = Math.round(34 * e.scale);
+        const cx = vw / 2;
+        const cy = topY + idx * slotGap;
+        ctx.globalAlpha = alpha;
+        ctx.font = `bold ${size}px Arial`;
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+        ctx.strokeText(e.text, cx, cy);
+        ctx.fillStyle = e.color;
+        ctx.fillText(e.text, cx, cy);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+}
+
+function updateTowerSummonBigBanner() {
+    if (!towerSummonBigBanner) return;
+    towerSummonBigBanner.life -= 1;
+    if (towerSummonBigBanner.flash > 0) towerSummonBigBanner.flash--;
+    if (towerSummonBigBanner.life <= 0) towerSummonBigBanner = null;
+}
+
+function drawTowerSummonBigBanner() {
+    if (!towerSummonBigBanner) return;
+    const e = towerSummonBigBanner;
+    const vw = viewportWidth;
+    const vh = viewportHeight;
+    const cx = vw / 2;
+    const cy = vh / 2;
+
+    if (e.flash > 0) {
+        const flashAlpha = (e.flash / 45) * 0.45;
+        ctx.fillStyle = `rgba(255, 50, 50, ${flashAlpha})`;
+        ctx.fillRect(0, 0, vw, vh);
+    }
+
+    const t = 1 - e.life / e.maxLife;
+    const scale = t < 0.15 ? 0.5 + (t / 0.15) * 0.5 : Math.max(0, 1 - Math.max(0, t - 0.7) / 0.3);
+    const size = Math.round(80 * scale);
+    const alpha = Math.max(0, Math.min(1, e.life / 30));
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `bold ${size}px Arial`;
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.95)';
+    ctx.strokeText(e.text, cx, cy);
+    ctx.fillStyle = e.color;
+    ctx.fillText(e.text, cx, cy);
+    ctx.shadowColor = e.color;
+    ctx.shadowBlur = 40;
+    ctx.fillStyle = e.color;
+    ctx.fillText(e.text, cx, cy);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+}
+
 function spawnSweatEffect(x, y) {
     const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.9;
     const speed = 0.8 + Math.random() * 1.4;
@@ -13897,6 +17538,89 @@ function drawSweatEffects() {
         const x = effect.x + Math.sin(effect.wobble) * 2;
         const y = effect.y + Math.cos(effect.wobble) * 2;
         ctx.fillText(effect.text, x, y);
+        ctx.restore();
+    }
+}
+
+function spawnPassiveImpactEffect(x, y, kind, color, opts = {}) {
+    const effect = {
+        x, y, kind, color,
+        life: opts.life || 22,
+        maxLife: opts.life || 22,
+        maxRadius: opts.maxRadius || 40,
+        lineWidth: opts.lineWidth || 3,
+        particleCount: opts.particleCount || 10,
+        particleSpeed: opts.particleSpeed || 3,
+        particleSize: opts.particleSize || 3,
+        particles: []
+    };
+    for (let i = 0; i < effect.particleCount; i++) {
+        const angle = (Math.PI * 2 * i) / effect.particleCount + (Math.random() - 0.5) * 0.5;
+        const speed = effect.particleSpeed * (0.6 + Math.random() * 0.8);
+        effect.particles.push({
+            angle,
+            speed,
+            size: effect.particleSize * (0.5 + Math.random()),
+            lifeOffset: Math.floor(Math.random() * 8)
+        });
+    }
+    passiveImpactEffects.push(effect);
+}
+
+function applyPassiveImpactFrame(shake = 8) {
+    if (currentMonster) {
+        currentMonster.flashTimer = 14;
+        currentMonster.impactShakeTimer = 18;
+    }
+    screenShakeTimer = Math.max(screenShakeTimer, shake);
+    frameFreeze = Math.max(frameFreeze || 0, 2);
+}
+
+function updatePassiveImpactEffects() {
+    for (let i = passiveImpactEffects.length - 1; i >= 0; i--) {
+        passiveImpactEffects[i].life--;
+        if (passiveImpactEffects[i].life <= 0) {
+            passiveImpactEffects.splice(i, 1);
+        }
+    }
+}
+
+function drawPassiveImpactEffects() {
+    for (const effect of passiveImpactEffects) {
+        if (effect.life <= 0) continue;
+        const progress = 1 - effect.life / effect.maxLife;
+        const alpha = Math.max(0, effect.life / effect.maxLife);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.translate(effect.x, effect.y);
+        ctx.shadowColor = effect.color;
+        ctx.shadowBlur = 10;
+        const radius = effect.maxRadius * progress;
+        ctx.strokeStyle = effect.color;
+        ctx.lineWidth = Math.max(0.5, effect.lineWidth * (1 - progress));
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, 0, radius * 0.65, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ffffff';
+        ctx.globalAlpha = alpha * 0.4;
+        ctx.lineWidth = Math.max(0.3, effect.lineWidth * 0.4 * (1 - progress));
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        for (const p of effect.particles) {
+            const pLife = effect.life - p.lifeOffset;
+            if (pLife <= 0) continue;
+            const pProgress = Math.max(0, Math.min(1, pLife / (effect.maxLife - p.lifeOffset)));
+            const dist = p.speed * pProgress * 28;
+            const px = Math.cos(p.angle) * dist;
+            const py = Math.sin(p.angle) * dist;
+            ctx.globalAlpha = alpha * pProgress;
+            ctx.fillStyle = effect.color;
+            ctx.beginPath();
+            ctx.arc(px, py, p.size * (1 - progress * 0.4), 0, Math.PI * 2);
+            ctx.fill();
+        }
         ctx.restore();
     }
 }
@@ -14238,6 +17962,9 @@ function updateUI() {
                 cooldownFill.style.width = `${frac * 100}%`;
             } else if (player.weapon && player.weapon.type === 'gun') {
                 renderGunAmmoCooldownBar();
+            } else if (player.weapon && player.weapon.type === 'grenade') {
+                const frac = Math.max(0, Math.min(1, 1 - player.landmineCooldown / (player.landmineCooldownMax || 12 * 60)));
+                cooldownFill.style.width = `${frac * 100}%`;
             } else {
                 let cooldown = 0;
                 let max = 1;
@@ -14271,10 +17998,7 @@ function isRectOverlap(x1, y1, w1, h1, x2, y2, w2, h2) {
 }
 
 function getRandomCrocIndicatorTarget() {
-    return {
-        x: Math.random() * Math.max(1, gameWidth - 40) + 20,
-        y: Math.random() * Math.max(1, gameHeight - 40) + 20
-    };
+    return getRandomPointInMapCircle(0);
 }
 
 function createWeaponPickup(x, y, weapon) {
@@ -14450,10 +18174,55 @@ function drawWeaponPickups() {
     }
 }
 
+function getAccurateIndicatorPosition(targetX, targetY, edgeMargin) {
+    const screenCenterX = viewportWidth / 2;
+    const screenCenterY = viewportHeight / 2;
+    const tx = targetX - cameraX;
+    const ty = targetY - cameraY;
+    const dx = tx - screenCenterX;
+    const dy = ty - screenCenterY;
+
+    const xMin = edgeMargin;
+    const xMax = viewportWidth - edgeMargin;
+    const yMin = edgeMargin;
+    const yMax = viewportHeight - edgeMargin;
+
+    let t = Infinity;
+
+    if (dx < 0) {
+        const tLeft = (xMin - screenCenterX) / dx;
+        if (tLeft > 0 && tLeft < t) t = tLeft;
+    } else if (dx > 0) {
+        const tRight = (xMax - screenCenterX) / dx;
+        if (tRight > 0 && tRight < t) t = tRight;
+    }
+
+    if (dy < 0) {
+        const tTop = (yMin - screenCenterY) / dy;
+        if (tTop > 0 && tTop < t) t = tTop;
+    } else if (dy > 0) {
+        const tBottom = (yMax - screenCenterY) / dy;
+        if (tBottom > 0 && tBottom < t) t = tBottom;
+    }
+
+    if (t === Infinity || t <= 0) {
+        const angle = Math.atan2(dy, dx);
+        let indicatorX = screenCenterX + Math.cos(angle) * (viewportWidth / 2 - edgeMargin);
+        let indicatorY = screenCenterY + Math.sin(angle) * (viewportHeight / 2 - edgeMargin);
+        indicatorX = Math.max(edgeMargin, Math.min(viewportWidth - edgeMargin, indicatorX));
+        indicatorY = Math.max(edgeMargin, Math.min(viewportHeight - edgeMargin, indicatorY));
+        return { x: indicatorX, y: indicatorY, angle };
+    }
+
+    const indicatorX = screenCenterX + t * dx;
+    const indicatorY = screenCenterY + t * dy;
+    const angle = Math.atan2(dy, dx);
+    return { x: indicatorX, y: indicatorY, angle };
+}
+
 function drawWeaponPickupIndicators() {
     for (const pickup of weaponPickups) {
         if (!pickup || pickup.collected) continue;
-
         const centerX = pickup.x + pickup.width / 2;
         const centerY = pickup.y + pickup.height / 2;
         const viewLeft = cameraX;
@@ -14462,19 +18231,11 @@ function drawWeaponPickupIndicators() {
         const viewBottom = cameraY + viewportHeight;
         const isVisible = centerX + 24 >= viewLeft && centerX - 24 <= viewRight && centerY + 24 >= viewTop && centerY - 24 <= viewBottom;
         if (isVisible) continue;
-
-        const screenCenterX = viewportWidth / 2;
-        const screenCenterY = viewportHeight / 2;
-        const dx = centerX - (viewLeft + viewportWidth / 2);
-        const dy = centerY - (viewTop + viewportHeight / 2);
-        const angle = Math.atan2(dy, dx);
-
         const edgeMargin = 30;
-        let indicatorX = screenCenterX + Math.cos(angle) * (viewportWidth / 2 - edgeMargin);
-        let indicatorY = screenCenterY + Math.sin(angle) * (viewportHeight / 2 - edgeMargin);
-        indicatorX = Math.max(edgeMargin, Math.min(viewportWidth - edgeMargin, indicatorX));
-        indicatorY = Math.max(edgeMargin, Math.min(viewportHeight - edgeMargin, indicatorY));
-
+        const pos = getAccurateIndicatorPosition(centerX, centerY, edgeMargin);
+        const indicatorX = pos.x;
+        const indicatorY = pos.y;
+        const angle = pos.angle;
         ctx.save();
         ctx.translate(indicatorX, indicatorY);
         ctx.rotate(angle);
@@ -14490,7 +18251,6 @@ function drawWeaponPickupIndicators() {
         ctx.fill();
         ctx.stroke();
         ctx.restore();
-
         ctx.save();
         ctx.font = 'bold 12px Arial';
         ctx.fillStyle = 'rgba(255,255,255,0.95)';
@@ -14517,7 +18277,6 @@ function ensureCrocFakeIndicatorTarget(monster) {
 
 function drawOffscreenMonsterIndicator() {
     if (!currentMonster || !ctx) return;
-
     const monsterLeft = currentMonster.x;
     const monsterTop = currentMonster.y;
     const monsterRight = currentMonster.x + currentMonster.width;
@@ -14526,10 +18285,8 @@ function drawOffscreenMonsterIndicator() {
     const viewTop = cameraY;
     const viewRight = cameraX + viewportWidth;
     const viewBottom = cameraY + viewportHeight;
-
     const isVisible = monsterRight >= viewLeft && monsterLeft <= viewRight && monsterBottom >= viewTop && monsterTop <= viewBottom;
     if (isVisible) return;
-
     const monsterCenterX = currentMonster.x + currentMonster.width / 2;
     const monsterCenterY = currentMonster.y + currentMonster.height / 2;
     let targetX = monsterCenterX;
@@ -14538,23 +18295,18 @@ function drawOffscreenMonsterIndicator() {
         targetX = currentMonster.fakeMarkerX || monsterCenterX;
         targetY = currentMonster.fakeMarkerY || monsterCenterY;
     }
-
-    const screenCenterX = viewportWidth / 2;
-    const screenCenterY = viewportHeight / 2;
-    const dx = targetX - (viewLeft + viewportWidth / 2);
-    const dy = targetY - (viewTop + viewportHeight / 2);
-    const angle = Math.atan2(dy, dx);
-
+    if (currentMonster.type === 'boulder_tosser') {
+        targetX = currentMonster.fakeMarkerX || monsterCenterX;
+        targetY = currentMonster.fakeMarkerY || monsterCenterY;
+    }
     const edgeMargin = 32;
-    let indicatorX = screenCenterX + Math.cos(angle) * (viewportWidth / 2 - edgeMargin);
-    let indicatorY = screenCenterY + Math.sin(angle) * (viewportHeight / 2 - edgeMargin);
-    indicatorX = Math.max(edgeMargin, Math.min(viewportWidth - edgeMargin, indicatorX));
-    indicatorY = Math.max(edgeMargin, Math.min(viewportHeight - edgeMargin, indicatorY));
-
+    const pos = getAccurateIndicatorPosition(targetX, targetY, edgeMargin);
+    const indicatorX = pos.x;
+    const indicatorY = pos.y;
+    const angle = pos.angle;
     ctx.save();
     ctx.translate(indicatorX, indicatorY);
     ctx.rotate(angle);
-
     ctx.fillStyle = 'rgba(255, 100, 100, 0.95)';
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
     ctx.lineWidth = 2;
@@ -14567,7 +18319,6 @@ function drawOffscreenMonsterIndicator() {
     ctx.fill();
     ctx.stroke();
     ctx.restore();
-
     ctx.save();
     ctx.font = 'bold 12px Arial';
     ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
@@ -14661,8 +18412,78 @@ function drawOffscreenTransitionIndicator() {
     }
 }
 
+function getOffscreenStructureTargets() {
+    const targets = [];
+    if (!currentMonster) return targets;
+    if (currentMonster.type === 'caster' && currentMonster.tower) {
+        const t = currentMonster.tower;
+        targets.push({ x: t.x + t.width / 2, y: t.y + t.height / 2, label: 'TORRE', color: 'rgba(170, 110, 255, 0.95)' });
+    }
+    if (currentMonster.type === 'shooter') {
+        for (const spot of currentMonster.patrolSpots) {
+            if (spot.turret) {
+                const t = spot.turret;
+                targets.push({ x: t.x + t.width / 2, y: t.y + t.height / 2, label: 'TORRETA', color: 'rgba(68, 170, 255, 0.95)' });
+            }
+        }
+    }
+    return targets;
+}
+
+function drawOffscreenStructureIndicators() {
+    if (!ctx) return;
+    const viewLeft = cameraX;
+    const viewTop = cameraY;
+    const viewRight = cameraX + viewportWidth;
+    const viewBottom = cameraY + viewportHeight;
+    const targets = getOffscreenStructureTargets();
+    if (!targets.length) return;
+
+    const screenCenterX = viewportWidth / 2;
+    const screenCenterY = viewportHeight / 2;
+    const edgeMargin = 32;
+
+    for (const target of targets) {
+        const isVisible = target.x >= viewLeft && target.x <= viewRight && target.y >= viewTop && target.y <= viewBottom;
+        if (isVisible) continue;
+
+        const dx = target.x - (viewLeft + viewportWidth / 2);
+        const dy = target.y - (viewTop + viewportHeight / 2);
+        const angle = Math.atan2(dy, dx);
+
+        let indicatorX = screenCenterX + Math.cos(angle) * (viewportWidth / 2 - edgeMargin);
+        let indicatorY = screenCenterY + Math.sin(angle) * (viewportHeight / 2 - edgeMargin);
+        indicatorX = Math.max(edgeMargin, Math.min(viewportWidth - edgeMargin, indicatorX));
+        indicatorY = Math.max(edgeMargin, Math.min(viewportHeight - edgeMargin, indicatorY));
+
+        ctx.save();
+        ctx.translate(indicatorX, indicatorY);
+        ctx.rotate(angle);
+        ctx.fillStyle = target.color;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(14, 0);
+        ctx.lineTo(-10, -8);
+        ctx.lineTo(-4, 0);
+        ctx.lineTo(-10, 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = 'bold 12px Arial';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(target.label, indicatorX, indicatorY - 14);
+        ctx.restore();
+    }
+}
+
 function spawnGhostArmyAroundMonster(monster) {
-    if (!monster || !ghostArmyUnlocked) {
+    if (!monster) {
         ghostArmyEntities = [];
         return;
     }
@@ -14746,36 +18567,89 @@ function drawGhostArmy() {
     ctx.restore();
 }
 
-function positionMonsterAwayFromPlayer(monster) {
+function positionMonsterInsideSpawnCircle(monster) {
     const { centerX, centerY, spawnRadius } = getMapCircle();
+    const halfW = monster.width / 2;
+    const halfH = monster.height / 2;
+    // Keep the full monster body inside the visual spawn circle (with margin)
+    const maxR = Math.max(0, spawnRadius - Math.max(halfW, halfH) - 12);
+    const playerCenterX = player.x + player.width / 2;
+    const playerCenterY = player.y + player.height / 2;
+    for (let a = 0; a < 200; a++) {
+        const angle = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(Math.random()) * maxR;
+        const cx = centerX + Math.cos(angle) * r;
+        const cy = centerY + Math.sin(angle) * r;
+        const x = cx - halfW;
+        const y = cy - halfH;
+        const dist = Math.hypot(cx - playerCenterX, cy - playerCenterY);
+        if (dist >= 80 && !isRectOverlap(x, y, monster.width, monster.height, player.x, player.y, player.width, player.height)) {
+            monster.x = x;
+            monster.y = y;
+            return true;
+        }
+    }
+    return false;
+}
+
+function positionMonsterAwayFromPlayer(monster) {
+    const margin = 20;
     const playerCenterX = player.x + player.width / 2;
     const playerCenterY = player.y + player.height / 2;
 
-    let attempt = 0;
-    while (attempt < 200) {
-        const pos = getRandomPointInRing(centerX, centerY, 0, spawnRadius * 0.92);
-        monster.x = Math.max(0, Math.min(gameWidth - monster.width, pos.x - monster.width / 2));
-        monster.y = Math.max(0, Math.min(gameHeight - monster.height, pos.y - monster.height / 2));
+    const { centerX, centerY, spawnRadius } = getMapCircle();
+    const halfW = monster.width / 2;
+    const halfH = monster.height / 2;
+    const maxSpawnR = Math.max(0, spawnRadius - Math.max(halfW, halfH) - margin);
 
-        const monsterCenterX = monster.x + monster.width / 2;
-        const monsterCenterY = monster.y + monster.height / 2;
-        const dist = Math.hypot(monsterCenterX - playerCenterX, monsterCenterY - playerCenterY);
-        if (dist >= 80 && !isRectOverlap(monster.x, monster.y, monster.width, monster.height, player.x, player.y, player.width, player.height)) {
-            break;
+    if (positionMonsterInsideSpawnCircle(monster)) {
+        // fallthrough to portal setup below
+    } else {
+        let attempt = 0;
+        while (attempt < 200) {
+            const pos = getRandomPointInSpawnRing(Math.max(monster.width, monster.height));
+            monster.x = pos.x;
+            monster.y = pos.y;
+
+            const monsterCenterX = monster.x + monster.width / 2;
+            const monsterCenterY = monster.y + monster.height / 2;
+            const dist = Math.hypot(monsterCenterX - playerCenterX, monsterCenterY - playerCenterY);
+            if (dist >= 80 && !isRectOverlap(monster.x, monster.y, monster.width, monster.height, player.x, player.y, player.width, player.height)) {
+                break;
+            }
+            attempt++;
         }
-        attempt++;
-    }
 
-    if (attempt >= 200) {
-        const angle = Math.atan2(centerY - playerCenterY, centerX - playerCenterX);
-        const radius = spawnRadius * 0.5;
-        monster.x = Math.max(0, Math.min(gameWidth - monster.width, centerX + Math.cos(angle) * radius - monster.width / 2));
-        monster.y = Math.max(0, Math.min(gameHeight - monster.height, centerY + Math.sin(angle) * radius - monster.height / 2));
+        if (attempt >= 200) {
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.sqrt(Math.random()) * maxSpawnR;
+            monster.x = centerX + Math.cos(angle) * r - halfW;
+            monster.y = centerY + Math.sin(angle) * r - halfH;
+        }
     }
 
     monster.portalX = monster.x + monster.width / 2;
     monster.portalY = monster.y + monster.height / 2;
-    monster.patrolTarget = { x: monster.x + monster.width / 2, y: monster.y + monster.height / 2 };
+
+    if (monster.type === 'caster') {
+        let sniperTarget = null;
+        const spawnCX = monster.x + monster.width / 2;
+        const spawnCY = monster.y + monster.height / 2;
+        for (let a = 0; a < 120; a++) {
+            const cand = getRandomPointInMapCircle(0);
+            if (Math.hypot(cand.x - spawnCX, cand.y - spawnCY) >= 300) {
+                sniperTarget = cand;
+                break;
+            }
+        }
+        if (!sniperTarget) {
+            sniperTarget = getRandomPointInMapCircle(0);
+        }
+        monster.patrolTarget = sniperTarget;
+    } else {
+        monster.patrolTarget = { x: monster.x + monster.width / 2, y: monster.y + monster.height / 2 };
+    }
+
 }
 
 function spawnNewMonster() {
@@ -14789,7 +18663,8 @@ function spawnNewMonster() {
     lastMonsterType = currentMonster ? currentMonster.type : null;
 
     projectiles = [];
-    monsterHitscans = [];
+    boulderMarks = [];
+    boulderProjectiles = [];
     if (castleBossQueued && !playerInsideConstruction) {
         currentMonster = new Monster(phase, 'castle_bone_sphere');
         castleBossQueued = false;
@@ -14799,10 +18674,16 @@ function spawnNewMonster() {
         currentMonster = new Monster(phase, chooseMonsterType());
     }
 
+    positionMonsterAwayFromPlayer(currentMonster);
+
     if (currentMonster.type === 'castle_bone_sphere') {
         spawnCastleBossSkeletons(1 + Math.floor(Math.random() * 3));
     }
     if (currentMonster.type === 'croc') {
+        currentMonster.fakeMarkerX = currentMonster.crocDecoyX;
+        currentMonster.fakeMarkerY = currentMonster.crocDecoyY;
+    }
+    if (currentMonster.type === 'boulder_tosser') {
         currentMonster.fakeMarkerX = currentMonster.crocDecoyX;
         currentMonster.fakeMarkerY = currentMonster.crocDecoyY;
     }
@@ -14813,7 +18694,6 @@ function spawnNewMonster() {
     player.autoAttackEnabled = false;
     spawnSpinAttackStartProjectiles();
     spawnGhostArmyAroundMonster(currentMonster);
-    positionMonsterAwayFromPlayer(currentMonster);
     upgradeChoices = getRandomUpgrades(6);
     selectedUpgradeIndex = 0;
     isUpgrading = false;
@@ -14959,29 +18839,58 @@ function getDebugUpgradeChoices() {
     return combined.filter((choice, index, list) => index === list.findIndex((candidate) => candidate.name === choice.name && candidate.effect === choice.effect));
 }
 
-function getPassiveMenuChoices() {
-    const defs = [
-        { flag: 'shooterMachineGunUnlocked', countKey: 'shooterMachineGunCount', name: 'Shooter Machine Gun', desc: 'Desbloqueia o atirador automático.' },
-        { flag: 'swarmNubeUnlocked', countKey: 'swarmNubeCount', name: 'Swarm Nube', desc: 'Desbloqueia enxame auxiliar.' },
-        { flag: 'casterPortalUnlocked', countKey: 'casterPortalCount', name: 'Caster Portal', desc: 'Desbloqueia portais do caster.' },
-        { flag: 'avianTrackerUnlocked', countKey: 'avianTrackerCount', name: 'Avian Tracker', desc: 'Desbloqueia rastreadores aéreos.' },
-        { flag: 'smartRicochetUnlocked', countKey: 'smartRicochetCount', name: 'Smart Ricochet', desc: 'Desbloqueia ricochetes inteligentes.' },
-        { flag: 'simpleExplosiveUnlocked', countKey: 'simpleExplosiveCount', name: 'Simple Explosive', desc: 'Desbloqueia explosivos simples.' },
-        { flag: 'crocFreezerUnlocked', countKey: 'crocFreezerCount', name: 'Croc Freezer', desc: 'Desbloqueia congelador do croc.' },
-        { flag: 'tankImpulseUnlocked', countKey: 'tankImpulseCount', name: 'Tank Impulse', desc: 'Desbloqueia impulso do tank.' },
-        { flag: 'castleBoneUnlocked', countKey: 'castleBoneHitCounter', name: 'Castle Bone', desc: 'Desbloqueia habilidade do ossoboss do castelo.' }
+    const AVAILABLE_PASSIVE_TRIGGERS = [
+        { id: 'onHit', label: 'Ao Acertar' },
+        { id: 'onKill', label: 'Ao Matar' },
+        { id: 'onParry', label: 'Ao Desviar' },
+        { id: 'onDash', label: 'Ao Investir' },
+        { id: 'onReload', label: 'Ao Recarregar' },
+        { id: 'onTakeDamage', label: 'Ao Sofrer Dano' },
+        { id: 'onCrit', label: 'No Crítico' }
     ];
 
-    return defs.map(d => ({
-        name: d.name,
-        effect: 'unlockPassive',
-        passive: d.flag,
-        passiveCountKey: d.countKey || null,
-        value: (player && player[d.countKey]) ? player[d.countKey] : 1,
-        desc: d.desc,
-        exclusive: false
-    }));
-}
+    function getPassiveTrigger(player, flag) {
+        return player[flag + 'Trigger'] || 'onHit';
+    }
+
+    function setPassiveTrigger(player, flag, trigger) {
+        player[flag + 'Trigger'] = trigger;
+    }
+
+    function getPassiveMenuChoices() {
+        const defs = [
+            { flag: 'shooterMachineGunUnlocked', countKey: 'shooterMachineGunCount', name: 'Shooter Machine Gun', desc: 'Desbloqueia o atirador automático.' },
+            { flag: 'swarmNubeUnlocked', countKey: 'swarmNubeCount', name: 'Swarm Nube', desc: 'Desbloqueia enxame auxiliar.' },
+            { flag: 'casterPortalUnlocked', countKey: 'casterPortalCount', name: 'Caster Portal', desc: 'Desbloqueia portais do caster.' },
+            { flag: 'avianTrackerUnlocked', countKey: 'avianTrackerCount', name: 'Avian Tracker', desc: 'Desbloqueia rastreadores aéreos.' },
+            { flag: 'smartRicochetUnlocked', countKey: 'smartRicochetCount', name: 'Smart Ricochet', desc: 'Desbloqueia ricochetes inteligentes.' },
+            { flag: 'simpleExplosiveUnlocked', countKey: 'simpleExplosiveCount', name: 'Simple Explosive', desc: 'Desbloqueia explosivos simples.' },
+            { flag: 'crocFreezerUnlocked', countKey: 'crocFreezerCount', name: 'Croc Freezer', desc: 'Desbloqueia congelador do croc.' },
+            { flag: 'tankImpulseUnlocked', countKey: 'tankImpulseCount', name: 'Tank Impulse', desc: 'Desbloqueia impulso do tank.' },
+            { flag: 'castleBoneUnlocked', countKey: 'castleBoneHitCounter', name: 'Castle Bone', desc: 'Desbloqueia habilidade do ossoboss do castelo.' },
+            { flag: 'mansionGhostCopyUnlocked', countKey: null, name: 'Mansion Ghost Copy', desc: 'Desbloqueia eco fantasma da mansão.' }
+        ];
+
+        const choices = [];
+        for (const d of defs) {
+            const currentTrigger = getPassiveTrigger(player, d.flag);
+            for (const trig of AVAILABLE_PASSIVE_TRIGGERS) {
+                const isCurrent = trig.id === currentTrigger;
+                const suffix = isCurrent ? ' [ATUAL]' : '';
+                choices.push({
+                    name: `${d.name}${d.countKey && player && player[d.flag] ? ` x${player[d.countKey] || 0}` : ''} — ${trig.label}${suffix}`,
+                    effect: 'unlockPassive',
+                    passive: d.flag,
+                    passiveCountKey: d.countKey || null,
+                    trigger: trig.id,
+                    value: (player && player[d.countKey]) ? player[d.countKey] : 1,
+                    desc: `${d.desc} Gatilho: ${trig.label}.`,
+                    exclusive: false
+                });
+            }
+        }
+        return choices;
+    }
 
 function applyUpgradeChoice(pick, quantity = 1) {
     if (!pick) return;
@@ -15013,9 +18922,6 @@ function applyUpgradeChoice(pick, quantity = 1) {
                 break;
             case 'gunBurstFire':
                 player.gunBurstFire = (player.gunBurstFire || 0) + pick.value;
-                break;
-            case 'gunExplosiveAmmo':
-                player.gunExplosiveAmmo = (player.gunExplosiveAmmo || 0) + pick.value;
                 break;
             case 'gunExtraPowder':
                 player.gunExtraPowder = (player.gunExtraPowder || 0) + pick.value;
@@ -15124,11 +19030,13 @@ function applyUpgradeChoice(pick, quantity = 1) {
                     const flag = pick.passive;
                     const countKey = pick.passiveCountKey || null;
                     if (flag) {
-                        // Marcar como desbloqueado
                         player[flag] = true;
                     }
                     if (countKey) {
                         player[countKey] = (player[countKey] || 0) + (pick.value || 1);
+                    }
+                    if (pick.trigger) {
+                        setPassiveTrigger(player, flag, pick.trigger);
                     }
                 } catch (e) {}
                 break;
@@ -15188,7 +19096,11 @@ function applyDebugUpgrade() {
     if (!pick) return;
 
     applyUpgradeChoice(pick, debugMenuQuantity);
-    debugMenuUpgradeChoices = getDebugUpgradeChoices();
+    if (passiveMenuMode) {
+        debugMenuUpgradeChoices = getPassiveMenuChoices();
+    } else {
+        debugMenuUpgradeChoices = getDebugUpgradeChoices();
+    }
     if (selectedDebugUpgradeIndex >= debugMenuUpgradeChoices.length) {
         selectedDebugUpgradeIndex = Math.max(0, debugMenuUpgradeChoices.length - 1);
     }
@@ -15236,90 +19148,6 @@ function drawPlayerConfusionOverlay() {
     ctx.restore();
 }
 
-// Desenha estrelas douradas orbitando ao redor de um ponto (usado no stun).
-function drawStunStars(x, y, baseRadius, intensity = 1, goldTint = true) {
-    const starCount = 5;
-    const orbitRadius = baseRadius * (1.0 + 0.12 * Math.sin(gameFrameCount * 0.12));
-    const baseRotation = gameFrameCount * 0.06;
-    const opacity = (0.7 + 0.25 * Math.sin(gameFrameCount * 0.18)) * intensity;
-
-    // Anel de brilho dourado pulsante
-    ctx.save();
-    ctx.globalAlpha = opacity * 0.5;
-    ctx.strokeStyle = goldTint ? 'rgba(255, 214, 90, 0.9)' : 'rgba(255, 240, 150, 0.9)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(x, y, orbitRadius, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-
-    ctx.save();
-    ctx.translate(x, y);
-    for (let i = 0; i < starCount; i++) {
-        const angle = (Math.PI * 2 / starCount) * i + baseRotation;
-        const starX = Math.cos(angle) * orbitRadius;
-        const starY = Math.sin(angle) * orbitRadius * 0.42;
-        const starSize = baseRadius * 0.2 * (0.85 + 0.15 * Math.sin(gameFrameCount * 0.22 + i));
-        const innerRadius = starSize * 0.42;
-
-        ctx.save();
-        ctx.translate(starX, starY);
-        ctx.rotate(angle + baseRotation * 1.5);
-        ctx.fillStyle = `rgba(255, ${goldTint ? 220 : 240}, 110, ${opacity})`;
-        ctx.shadowColor = 'rgba(255, 200, 60, 0.9)';
-        ctx.shadowBlur = 10;
-        ctx.beginPath();
-        for (let p = 0; p < 10; p++) {
-            const pointAngle = p * (Math.PI / 5);
-            const r = (p % 2 === 0) ? starSize : innerRadius;
-            ctx.lineTo(Math.cos(pointAngle) * r, Math.sin(pointAngle) * r);
-        }
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-    }
-    ctx.restore();
-}
-
-function drawPlayerStunOverlay() {
-    if (!player || (player.stunTimer || 0) <= 0) return;
-
-    const intensity = Math.min(1, player.stunTimer / 90);
-    const pulse = 0.16 + 0.1 * Math.sin(gameFrameCount * 0.14);
-    const alpha = 0.1 + intensity * 0.18 + pulse * 0.06;
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
-
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = 'rgba(255, 210, 70, 0.14)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.globalCompositeOperation = 'screen';
-    ctx.strokeStyle = `rgba(255, 235, 120, ${0.18 + intensity * 0.22})`;
-    ctx.lineWidth = 2;
-    const ringCount = 6;
-    for (let i = 0; i < ringCount; i++) {
-        const radius = 110 + i * 34 + Math.sin(gameFrameCount * 0.07 + i) * 10;
-        const offset = gameFrameCount * 0.05 + i * 0.6;
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius, offset, offset + Math.PI * 1.3);
-        ctx.stroke();
-    }
-    ctx.restore();
-
-    // Estrelas girando pela tela
-    const starCount = 10;
-    const orbitRadius = Math.max(canvas.width, canvas.height) * 0.42;
-    const baseRotation = gameFrameCount * 0.03;
-    for (let i = 0; i < starCount; i++) {
-        const angle = (Math.PI * 2 / starCount) * i + baseRotation;
-        const sx = centerX + Math.cos(angle) * orbitRadius * (0.6 + 0.4 * Math.random());
-        const sy = centerY + Math.sin(angle) * orbitRadius * (0.6 + 0.4 * Math.random());
-        drawStunStars(sx, sy, 16 + Math.random() * 10, intensity, true);
-    }
-}
-
 function drawCountdownOverlay(text, subtitle = '', y = canvas.height / 2, alpha = 1) {
     const screenWidth = canvas.width;
     const screenHeight = canvas.height;
@@ -15350,6 +19178,47 @@ function drawCountdownOverlay(text, subtitle = '', y = canvas.height / 2, alpha 
         ctx.shadowBlur = 14;
         ctx.fillText(subtitle, screenWidth / 2, y + 62);
     }
+    ctx.restore();
+}
+
+function drawGunSpinKeyPrompt(ctx, x, y, prompt) {
+    ctx.save();
+    const elapsed = (performance.now() - prompt.startTime) / 1000;
+    const pulse = elapsed >= 0.05 ? 0.5 + 0.5 * Math.sin(performance.now() * 0.025) : 0;
+    const scale = prompt.scale + pulse * 0.15;
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+    ctx.globalAlpha = prompt.alpha;
+    const keyWidth = 90;
+    const keyHeight = 90;
+    const radius = 16;
+    ctx.fillStyle = 'rgba(20, 20, 30, 0.9)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.lineWidth = 4;
+    ctx.shadowColor = 'rgba(255, 255, 255, 0.6)';
+    ctx.shadowBlur = 20;
+    ctx.beginPath();
+    ctx.moveTo(-keyWidth / 2 + radius, -keyHeight / 2);
+    ctx.lineTo(keyWidth / 2 - radius, -keyHeight / 2);
+    ctx.arcTo(keyWidth / 2, -keyHeight / 2, keyWidth / 2, -keyHeight / 2 + radius, radius);
+    ctx.lineTo(keyWidth / 2, keyHeight / 2 - radius);
+    ctx.arcTo(keyWidth / 2, keyHeight / 2, keyWidth / 2 - radius, keyHeight / 2, radius);
+    ctx.lineTo(-keyWidth / 2 + radius, keyHeight / 2);
+    ctx.arcTo(-keyWidth / 2, keyHeight / 2, -keyWidth / 2, keyHeight / 2 - radius, radius);
+    ctx.lineTo(-keyWidth / 2, -keyHeight / 2 + radius);
+    ctx.arcTo(-keyWidth / 2, -keyHeight / 2, -keyWidth / 2 + radius, -keyHeight / 2, radius);
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.stroke();
+    const displayText = prompt.key === 'Space' ? 'SPACE' : prompt.key.toUpperCase();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+    ctx.shadowBlur = 6;
+    ctx.fillText(displayText, 0, 0);
     ctx.restore();
 }
 
@@ -15414,10 +19283,10 @@ function getDebugChoiceCurrentValue(choice) {
 
 function getDebugActionChoices() {
     const actions = [];
-    const monsterTypes = ['simple', 'croc', 'shooter', 'swarm', 'caster', 'avianightmare', 'smart', 'tank'];
+    const monsterTypes = ['simple', 'croc', 'shooter', 'swarm', 'caster', 'avianightmare', 'smart', 'tank', 'boulder_tosser', 'skeleton_boss'];
     for (const type of monsterTypes) {
         actions.push({
-            name: `Invocar ${type === 'simple' ? 'Monstro Simples' : type === 'croc' ? 'Croc' : type === 'tank' ? 'Tanque' : type.charAt(0).toUpperCase() + type.slice(1)}`,
+            name: `Invocar ${type === 'simple' ? 'Monstro Simples' : type === 'croc' ? 'Croc' : type === 'boulder_tosser' ? 'Boulder Tosser' : type === 'tank' ? 'Tanque' : type.charAt(0).toUpperCase() + type.slice(1)}`,
             category: 'MONSTRO',
             desc: `Substitui o monstro atual por um ${type}. Use este comando para forçar o próximo combate.`,
             effect: 'spawnMonster',
@@ -15482,7 +19351,6 @@ function applyDebugAction(action, quantity = 1) {
                     spawnCastleBossSkeletons(1 + Math.floor(Math.random() * 3));
                 }
                 spawnGhostArmyAroundMonster(currentMonster);
-                positionMonsterAwayFromPlayer(currentMonster);
             }
             break;
         case 'ghostArmy':
@@ -16272,8 +20140,6 @@ function getUpgradeDescription(upgrade) {
 
 function gameLoop() {
     gameFrameCount += 1;
-    // Desliga o glow dos projéteis/afterimages quando há muitos na tela (performance).
-    projectileGlowEnabled = projectiles.length < PROJECTILE_GLOW_DISABLE_THRESHOLD;
     if (typeof cameraLockTarget === 'object' && cameraLockTarget !== null) {
         cameraLockTarget.timer--;
         if (cameraLockTarget.timer <= 0) cameraLockTarget = null;
@@ -16315,6 +20181,8 @@ function gameLoop() {
     } else if (upgradeDelayTimer > 0) {
         beginCamera();
         drawBackground();
+        drawAmbientAnimals();
+        drawAmbientCritters();
         player.draw();
         currentMonster.draw();
         drawMonsterDeathEffects();
@@ -16337,6 +20205,8 @@ function gameLoop() {
     } else if (upgradeOverlayAnimating) {
         beginCamera();
         drawBackground();
+        drawAmbientAnimals();
+        drawAmbientCritters();
         player.draw();
         currentMonster.draw();
         drawMonsterDeathEffects();
@@ -16362,6 +20232,8 @@ function gameLoop() {
     } else if (isUpgrading) {
         beginCamera();
         drawBackground();
+        drawAmbientAnimals();
+        drawAmbientCritters();
         player.draw();
         currentMonster.draw();
         drawMonsterDeathEffects();
@@ -16377,6 +20249,8 @@ function gameLoop() {
     } else if (!gameOver) {
         if (roundStartTimer > 0) {
             beginCamera();
+            updateAmbientAnimals();
+            updateAmbientCritters();
             drawBackground();
             drawAmbientAnimals();
             drawAmbientCritters();
@@ -16414,8 +20288,6 @@ function gameLoop() {
             drawMonsterDeathEffects();
             drawWeaponPickups();
             drawProjectiles();
-            drawMonsterHitscans();
-            drawTowerHitscans();
             drawCritEffects();
             drawAfterImages();
             drawAccelParticles();
@@ -16424,11 +20296,44 @@ function gameLoop() {
 
             updateHealthBars();
             updateUI();
-            // overlay esbranquiçado durante o freeze (20% branco)
+            
+            if (gunSpinKeyPrompt && gunSpinKeyPromptTimer > 0) {
+                gunSpinKeyPromptTimer--;
+                const keyMap = {
+                    'Space': [' '],
+                    'ArrowLeft': ['arrowleft', 'a'],
+                    'ArrowRight': ['arrowright', 'd'],
+                    'ArrowUp': ['arrowup', 'w'],
+                    'ArrowDown': ['arrowdown', 's']
+                };
+                const requiredKeys = keyMap[gunSpinKeyPrompt.key];
+                const pressed = requiredKeys && requiredKeys.some(k => keys[k]);
+                if (pressed) {
+                    player.gunRechargeBoost = player.gunSpinBoostPending;
+                    gunSpinKeyPrompt = null;
+                } else if (gunSpinKeyPromptTimer <= 0) {
+                    player.gunRechargeBoost = false;
+                    player.gunSpinBurnChance = 0;
+                    gunSpinKeyPrompt = null;
+                }
+            }
+            
+            ctx.save();
+            ctx.fillStyle = 'rgba(0,0,0,0.45)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.restore();
+            
             ctx.save();
             ctx.fillStyle = 'rgba(255,255,255,0.20)';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.restore();
+            
+            if (gunSpinKeyPrompt && gunSpinKeyPrompt.startTime !== undefined) {
+                const elapsed = (performance.now() - gunSpinKeyPrompt.startTime) / 1000;
+                if (elapsed >= 0.05) {
+                    drawGunSpinKeyPrompt(ctx, canvas.width / 2, canvas.height / 2, gunSpinKeyPrompt);
+                }
+            }
             if (screenShakeActive) ctx.restore();
             requestAnimationFrame(gameLoop);
             return;
@@ -16472,11 +20377,44 @@ function gameLoop() {
             
             // Atualizar inimigos interiores
             if (playerInsideConstruction) {
-                updateInteriorEnemies();
+                const construction = constructions.find(c => c.id === currentConstructionId);
+                if (construction && construction.type === 'mansion') {
+                    updateInteriorEnemies();
+                    dungeonUpdateWallGhosts();
+                    dungeonUpdateCameraForRoom(dungeonCurrentRoom, false);
+                } else {
+                    updateInteriorEnemies();
+                }
             }
 
             if (currentMonster && currentMonster.health <= 0) {
                 if (!currentMonster.isDying) {
+                    if (player.castleBoneUnlocked && player.castleBoneOrbiters.length > 0) {
+                        const mx = currentMonster.x + currentMonster.width / 2;
+                        const my = currentMonster.y + currentMonster.height / 2;
+                        const activeBones = player.castleBoneOrbiters.filter(b => !b.isExploding);
+                        for (const bone of activeBones) {
+                            bone.isExploding = true;
+                            spawnPassiveImpactEffect(bone.x, bone.y, 'boneExplosion', '#ffaa44', { maxRadius: 55, particleCount: 16, particleSpeed: 4, particleSize: 4, lineWidth: 3.5 });
+                            explosionEffects.push({
+                                x: bone.x,
+                                y: bone.y,
+                                radius: 0,
+                                maxRadius: bone.explosionRadius || 50,
+                                life: 10,
+                                maxLife: 10,
+                                damage: bone.explosionDamage || 6,
+                                burn: true,
+                                burnDamage: 3,
+                                burnDuration: 120
+                            });
+                            if (bone.curse && currentMonster.health <= 0) {
+                                screenShakeTimer = Math.max(screenShakeTimer, 10);
+                                frameFreeze = Math.max(frameFreeze || 0, 3);
+                            }
+                        }
+                        player.castleBoneKills = (player.castleBoneKills || 0) + 1;
+                    }
                     currentMonster.startDeathAnimation();
                 } else {
                     currentMonster.updateDeathAnimation();
@@ -16493,26 +20431,28 @@ function gameLoop() {
             updateAmbientCritters();
             updateCastleBoneOrbiters();
             updateGhostArmy();
+            updateBoulderMarks();
+            updateBoulderProjectiles();
             updateProjectiles();
             updateThrownExplosives();
             updateFireZones();
             updateGrenadeFragments();
-            updateExplosionEffects();
-            updateBoulderMarks();
-            updateBoulderProjectiles();
+            updateLandmines();
             updateBurningEffects();
             updateWeaponPickups();
-            updateMonsterHitscans();
-            updateTowerHitscans();
             updateAndDrawSwarmMarks();
             updateDelayedShots();
             updateSweatEffects();
+            updateCastBanners();
+            updateTowerSummonBigBanner();
             updateAfterImages();
             updateAccelParticles();
             updateMonsterDeathEffects();
             updatePortalEffects();
             updateEvaporationEffects();
+            updateExplosionEffects();
             updateTrackerProjectiles();
+            updatePassiveImpactEffects();
             updateCastleBossSpawnTimer();
             updateCastleBossAlert();
 
@@ -16526,26 +20466,8 @@ function gameLoop() {
                     player.y + player.height > currentMonster.y;
 
                 if (isColliding && currentMonster.attackCooldown === 0) {
-                    if (currentMonster.type === 'croc') {
-                        currentMonster.contactGraceTimer = (currentMonster.contactGraceTimer || 0) + 1;
-                        const monsterCenterX = currentMonster.x + currentMonster.width / 2;
-                        const monsterCenterY = currentMonster.y + currentMonster.height / 2;
-                        const playerCenterX = player.x + player.width / 2;
-                        const playerCenterY = player.y + player.height / 2;
-                        const distToPlayer = Math.hypot(playerCenterX - monsterCenterX, playerCenterY - monsterCenterY);
-                        const biteTriggerRadius = 150;
-                        if (distToPlayer <= biteTriggerRadius) {
-                            currentMonster.attackCooldown = 180;
-                            if (!currentMonster.isBiting && currentMonster.biteCooldown <= 0) {
-                                currentMonster.isBiting = true;
-                                currentMonster.biteAnimationTimer = currentMonster.biteAnimationDuration;
-                                currentMonster.biteDirection = Math.atan2(playerCenterY - monsterCenterY, playerCenterX - monsterCenterX);
-                            }
-                        } else {
-                            currentMonster.attackCooldown = 10;
-                        }
-                    } else if (player.dashTimer > 0 || player.postDashInvulnTimer > 0 || player.slashDashInvulnTimer > 0) {
-                        currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
+                    if (player.dashTimer > 0 || player.postDashInvulnTimer > 0 || player.slashDashInvulnTimer > 0) {
+                        currentMonster.attackCooldown = currentMonster.type === 'croc' || currentMonster.type === 'boulder_tosser' ? 180 : 60;
                     } else if (player.weapon && player.weapon.type === 'gun' && player.gunReloadCooldown > 0 && player.gunReloadInvulnCharges > 0) {
                         player.gunReloadInvulnCharges = 0;
                         spawnAfterImage({
@@ -16558,7 +20480,7 @@ function gameLoop() {
                             maxLife: 18,
                             baseAlpha: 0.55
                         });
-                        currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
+                        currentMonster.attackCooldown = currentMonster.type === 'croc' || currentMonster.type === 'boulder_tosser' ? 180 : 60;
                     } else {
                         let effectiveDamage = Math.max(0, currentMonster.getAttackDamage() - player.damageReduction);
                         if (player.parryCooldown > 0 && player.parryDefenseBonus > 0) {
@@ -16567,6 +20489,8 @@ function gameLoop() {
                         player.health -= effectiveDamage;
                         if (currentMonster.type === 'simple') {
                             tryApplyPlayerConfusionFromAttack(currentMonster.type, { chance: 2 });
+                        } else if (currentMonster.type === 'boulder_tosser') {
+                            player.stunTimer = Math.max(player.stunTimer || 0, 6);
                         } else if (currentMonster.type === 'croc') {
                             player.stunTimer = Math.max(player.stunTimer || 0, 12);
                             tryApplyPlayerConfusionFromAttack('croc', {
@@ -16578,18 +20502,10 @@ function gameLoop() {
                             player.poisonDamagePerTick = 2;
                             currentMonster.consecutiveHitsOnPlayer = (currentMonster.consecutiveHitsOnPlayer || 0) + 1;
                             if (currentMonster.consecutiveHitsOnPlayer >= 2) {
-                                const monsterCenterX = currentMonster.x + currentMonster.width / 2;
-                                const monsterCenterY = currentMonster.y + currentMonster.height / 2;
-                                const escapeDir = Math.atan2(
-                                    monsterCenterY - (player.y + player.height / 2),
-                                    monsterCenterX - (player.x + player.width / 2)
-                                );
-                                currentMonster.sprintEscapeDir = escapeDir;
-                                currentMonster.sprintEscapeTimer = 40;
                                 currentMonster.consecutiveHitsOnPlayer = 0;
                             }
                         }
-                        currentMonster.attackCooldown = currentMonster.type === 'croc' ? 180 : 60;
+                        currentMonster.attackCooldown = currentMonster.type === 'croc' || currentMonster.type === 'boulder_tosser' ? 180 : 60;
                     }
                 }
             } else if (currentMonster && currentMonster.type === 'croc') {
@@ -16600,7 +20516,7 @@ function gameLoop() {
             processConeHit();
 
             if (player.autoAttackEnabled && player.attackCooldown === 0 && !(player.weapon && player.weapon.type === 'gun' && player.gunSpinTimer > 0) && canInteractWithMonster) {
-                attemptAttack();
+                attemptAttack('auto');
             }
         } else {
             if (currentMonster && currentMonster.health <= 0) {
@@ -16701,23 +20617,27 @@ function gameLoop() {
             // Renderizar interior da construção
             drawConstructionInterior();
             beginCamera();
+            dungeonDraw();
             player.draw();
             drawConstructionExitZone();
             drawCurrentInteriorEnemies();
+            drawDungeonWallGhosts();
             drawProjectiles();
+            drawBoulderMarks();
+            drawBoulderProjectiles();
             drawThrownExplosives();
             drawFireZones();
             drawGrenadeFragments();
-            drawExplosionEffects();
-            drawBoulderMarks();
-            drawBoulderProjectiles();
+            drawLandmines();
             drawEvaporationEffects();
+            drawExplosionEffects();
             drawCastleBoneOrbiters();
-            drawMonsterHitscans();
-            drawTowerHitscans();
             drawAfterImages();
             drawCritEffects();
+            drawPassiveImpactEffects();
             endCamera();
+            drawCastBanners();
+            drawTowerSummonBigBanner();
         } else {
             // Renderizar mapa normal
             beginCamera();
@@ -16732,19 +20652,19 @@ function gameLoop() {
             drawPortalEffects();
             drawTrackerProjectiles();
             drawProjectiles();
-            drawThrownExplosives();
-            drawFireZones();
-            drawGrenadeFragments();
-            drawEvaporationEffects();
-            drawThrownExplosives();
-            drawFireZones();
-            drawGrenadeFragments();
-            drawExplosionEffects();
             drawBoulderMarks();
             drawBoulderProjectiles();
+            drawThrownExplosives();
+            drawFireZones();
+            drawGrenadeFragments();
+            drawLandmines();
+            drawEvaporationEffects();
+            drawExplosionEffects();
+            drawThrownExplosives();
+            drawFireZones();
+            drawGrenadeFragments();
+            drawLandmines();
             drawCastleBoneOrbiters();
-            drawMonsterHitscans();
-            drawTowerHitscans();
             drawSlowdownInsects();
             drawCritEffects();
             drawSweatEffects();
@@ -16752,13 +20672,15 @@ function gameLoop() {
             drawMapDecor();
             drawConstructionEntrancePortals();
             endCamera();
+            drawCastBanners();
+            drawTowerSummonBigBanner();
         }
 
         drawPlayerConfusionOverlay();
-        drawPlayerStunOverlay();
         drawWeaponPickupIndicators();
         drawOffscreenMonsterIndicator();
         drawOffscreenTransitionIndicator();
+        drawOffscreenStructureIndicators();
         updateHealthBars();
         updateUI();
         drawCastleBossAlertOverlay();
@@ -16785,17 +20707,79 @@ function gameLoop() {
         }
     }
 
-    // Game Over
     if (gameOver) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        const pulse = 0.7 + Math.sin(gameFrameCount * 0.08) * 0.3;
+        
+        const overlayGrad = ctx.createRadialGradient(
+            canvas.width / 2, canvas.height / 2, 0,
+            canvas.width / 2, canvas.height / 2, Math.max(canvas.width, canvas.height) * 0.7
+        );
+        overlayGrad.addColorStop(0, 'rgba(80, 0, 0, 0.85)');
+        overlayGrad.addColorStop(1, 'rgba(0, 0, 0, 0.95)');
+        ctx.fillStyle = overlayGrad;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = '#ff0000';
-        ctx.font = 'bold 40px Arial';
+        
+        ctx.save();
         ctx.textAlign = 'center';
-        ctx.fillText('DERROTA!', canvas.width / 2, canvas.height / 2);
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = `rgba(255, 0, 0, ${pulse})`;
+        ctx.shadowBlur = 40;
+        ctx.fillStyle = '#ff3333';
+        ctx.font = 'bold 56px Arial';
+        ctx.fillText('DERROTA!', canvas.width / 2, canvas.height / 2 - 60);
+        ctx.shadowBlur = 0;
+        ctx.restore();
+        
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
         ctx.font = '20px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(`Fase alcançada: ${phase}`, canvas.width / 2, canvas.height / 2 + 10);
+        ctx.fillText(`Monstros derrotados: ${defeatedTotal}`, canvas.width / 2, canvas.height / 2 + 40);
+        
+        const btnX = canvas.width / 2 - 110;
+        const btnY = canvas.height / 2 + 80;
+        const btnW = 220;
+        const btnH = 50;
+        const btnRadius = 12;
+        const isHovered = mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= btnY && mouseY <= btnY + btnH;
+        
+        ctx.save();
+        ctx.shadowColor = isHovered ? 'rgba(255, 50, 50, 0.6)' : 'rgba(255, 0, 0, 0.3)';
+        ctx.shadowBlur = isHovered ? 20 : 10;
+        
+        const btnGrad = ctx.createLinearGradient(btnX, btnY, btnX, btnY + btnH);
+        if (isHovered) {
+            btnGrad.addColorStop(0, 'rgba(180, 20, 20, 0.95)');
+            btnGrad.addColorStop(1, 'rgba(100, 0, 0, 0.95)');
+        } else {
+            btnGrad.addColorStop(0, 'rgba(120, 15, 15, 0.9)');
+            btnGrad.addColorStop(1, 'rgba(70, 0, 0, 0.9)');
+        }
+        ctx.fillStyle = btnGrad;
+        ctx.beginPath();
+        ctx.moveTo(btnX + btnRadius, btnY);
+        ctx.lineTo(btnX + btnW - btnRadius, btnY);
+        ctx.quadraticCurveTo(btnX + btnW, btnY, btnX + btnW, btnY + btnRadius);
+        ctx.lineTo(btnX + btnW, btnY + btnH - btnRadius);
+        ctx.quadraticCurveTo(btnX + btnW, btnY + btnH, btnX + btnW - btnRadius, btnY + btnH);
+        ctx.lineTo(btnX + btnRadius, btnY + btnH);
+        ctx.quadraticCurveTo(btnX, btnY + btnH, btnX, btnY + btnH - btnRadius);
+        ctx.lineTo(btnX, btnY + btnRadius);
+        ctx.quadraticCurveTo(btnX, btnY, btnX + btnRadius, btnY);
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.shadowColor = 'transparent';
+        ctx.strokeStyle = isHovered ? '#ff5555' : '#cc3333';
+        ctx.lineWidth = isHovered ? 3 : 2;
+        ctx.stroke();
+        
         ctx.fillStyle = '#ffffff';
-        ctx.fillText('Recarregue a página para tentar novamente', canvas.width / 2, canvas.height / 2 + 50);
+        ctx.font = 'bold 22px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Tente de novo', btnX + btnW / 2, btnY + btnH / 2);
+        ctx.restore();
     }
 
     if (screenShakeActive) ctx.restore();
@@ -16808,3 +20792,6 @@ currentMonster = new Monster(phase, chooseMonsterType());
 positionMonsterAwayFromPlayer(currentMonster);
 isSelectingWeapon = true;
 gameLoop();
+
+
+
