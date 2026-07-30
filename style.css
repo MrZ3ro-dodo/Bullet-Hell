@@ -57,6 +57,11 @@ body {
     color: #7efff7;
 }
 
+#currencyDisplay {
+    font-size: 16px;
+    color: #ffd97d;
+}
+
 .healthBar {
     width: 100%;
     height: 20px;
@@ -81,6 +86,31 @@ body {
 /* disable default ::after for cooldownBar so inner fill controls width */
 #cooldownBar::after { display: none; }
 
+#monsterHealth {
+    display: flex;
+    overflow: hidden;
+    position: relative;
+}
+#monsterHealth::after { display: none; }
+
+.monsterHealthRow {
+    flex: 1;
+    position: relative;
+    height: 100%;
+    border-right: 2px solid rgba(0, 212, 255, 0.35);
+    background: rgba(0, 0, 0, 0.2);
+}
+.monsterHealthRow:last-child {
+    border-right: none;
+}
+.monsterHealthFill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #72ff72 0%, #00c8ff 40%, #4a8aff 100%);
+    box-shadow: 0 0 18px rgba(0, 212, 255, 0.22);
+    transition: width 0.2s ease;
+}
+
 #cooldownBar {
     height: 14px;
     background: rgba(40, 40, 60, 0.5);
@@ -93,6 +123,16 @@ body {
     width: 0%;
     transition: width 0.12s linear;
 }
+
+#staminaBarFill {
+    height: 100%;
+    background: linear-gradient(90deg, #ffeb3b, #ff9800);
+    box-shadow: 0 0 18px rgba(255,152,0,0.22);
+    width: 100%;
+    transition: width 0.12s linear;
+}
+
+#staminaBar::after { display: none; }
 
 .glow {
     text-shadow: 0 0 10px rgba(255,215,120,0.95), 0 0 24px rgba(255,180,80,0.5);

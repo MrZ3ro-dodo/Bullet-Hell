@@ -19,6 +19,7 @@
             </div>
             <div class="hudSection">
                 <span id="phaseDisplay">Fase: 1</span>
+                <span id="currencyDisplay">Moedas: 005</span>
             </div>
             <div class="hudSection">
                 <span>Cooldown Bar</span>
@@ -26,10 +27,16 @@
                     <div id="cooldownBarFill" style="width:0%"></div>
                 </div>
             </div>
+            <div class="hudSection">
+                <span>Stamina</span>
+                <div id="staminaBar" class="healthBar">
+                    <div id="staminaBarFill" style="width:100%"></div>
+                </div>
+            </div>
         </div>
         <canvas id="gameCanvas"></canvas>
         <div id="gameInfo">
-            <p id="instructions">Escolha sua arma | Use WASD ou Setas para mover | Clique ou Espaço para agir (espada: dash)</p>
+            <p id="instructions">Escolha sua arma | Use WASD ou Setas para mover | Shift para correr | Clique ou Espaço para agir (espada: dash)</p>
             <div id="statsDisplay"></div>
         </div>
     </div>
@@ -50,6 +57,8 @@
             document.body.appendChild(el);
         };
     </script>
+    <script src="projectiles/crowBolt.js"></script>
+    <script src="projectiles/feather.js"></script>
     <script src="script.js?v=20260721b"></script>
 </body>
 </html>
